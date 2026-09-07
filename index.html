@@ -316,6 +316,7 @@ function daysBetweenInclusive(startStr, endStr){
 }
 const UNAVAIL_REASON_PRESETS=['出車','體檢','體測','開會','帶廠商','留守'];
 const MEDCERT_OPTIONS=['EMT-1','EMT-2','EMT-P','醫生證書'];
+const SKILL_OPTIONS=['技工','車勤'];
 /* 事故/請假 (uses a preset reason list or a custom typed one) */
 /* 衛哨 (安全士官/橋哨/指管) rule: the same person should not stand the same
    time-slot two days running — check whether they held this exact shift
@@ -736,7 +737,14 @@ function autoAssignMiscForDate(date){
           !(sMin!==null && eMinRaw!==null && isPersonUnavailable(p.id, date, sMin, eMinRaw===0?1440:eMinRaw))
         );
         if(candidates.length){
-          candidates.sort((a,b)=>groupIndex(a.group)-groupIndex(b.group) || rankIndex(a.rank)-rankIndex(b.rank));
+          candidates.sort((a,b)=>{
+            // prefer someone with the matching specialty skill for this duty
+            // (e.g. 技工 for a 技工 entry) before falling back to normal order
+            const skillMatch = p=> (p.skills||[]).includes(entry.role) ? 0 : 1;
+            const sa=skillMatch(a), sb=skillMatch(b);
+            if(sa!==sb) return sa-sb;
+            return groupIndex(a.group)-groupIndex(b.group) || rankIndex(a.rank)-rankIndex(b.rank);
+          });
           entry.personIds[0]=candidates[0].id;
         }
       }
@@ -872,6 +880,13 @@ function renderPeople(){
         </div>
       </div>
       <div class="row wrap" style="margin-bottom:8px">
+        <div class="grow"><label>特殊專長技能(選填，可複選)</label>
+          <select id="npSkills" multiple size="2">
+            ${SKILL_OPTIONS.map(s=>`<option value="${s}">${s}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+      <div class="row wrap" style="margin-bottom:8px">
         <div class="grow"><label>長期事故</label>
           <select id="npLongTermMode">
             <option value="off">（無）</option>
@@ -993,13 +1008,14 @@ function renderPeople(){
     const rank=document.getElementById('npRank').value;
     const license=document.getElementById('npLicense').value;
     const medCert=document.getElementById('npMedCert').value;
+    const skills=[...document.getElementById('npSkills').selectedOptions].map(o=>o.value);
     const mode=document.getElementById('npLongTermMode').value;
     const longTerm = mode==='range'
       ? {mode:'range', start:document.getElementById('npLTStart').value, end:document.getElementById('npLTEnd').value}
       : {mode};
     const note = document.getElementById('npNote').value.trim();
     if(!name) return;
-    state.personnel.push({id:uid(),name,group,rank,license,medCert,longTerm,note});
+    state.personnel.push({id:uid(),name,group,rank,license,medCert,skills,longTerm,note});
     saveState(); render();
   };
   document.getElementById('importBtn').onclick=()=>document.getElementById('importFile').click();
@@ -1028,6 +1044,10 @@ function openPersonEditor(personId){
         <option value="" ${!p.medCert?'selected':''}>（無）</option>
         ${MEDCERT_OPTIONS.map(c=>`<option value="${c}" ${p.medCert===c?'selected':''}>${c}</option>`).join('')}
       </select>
+      <label>特殊專長技能(可複選)</label>
+      <select id="epSkills" multiple size="2" style="margin-bottom:8px">
+        ${SKILL_OPTIONS.map(s=>`<option value="${s}" ${(p.skills||[]).includes(s)?'selected':''}>${s}</option>`).join('')}
+      </select>
       <label>長期事故</label>
       <select id="epLongTermMode" style="margin-bottom:8px">
         <option value="off" ${lt.mode==='off'?'selected':''}>（無）</option>
@@ -1053,6 +1073,7 @@ function openPersonEditor(personId){
     p.rank=document.getElementById('epRank').value;
     p.license=document.getElementById('epLicense').value;
     p.medCert=document.getElementById('epMedCert').value;
+    p.skills=[...document.getElementById('epSkills').selectedOptions].map(o=>o.value);
     const mode=document.getElementById('epLongTermMode').value;
     p.longTerm = mode==='range'
       ? {mode:'range', start:document.getElementById('epLTStart').value, end:document.getElementById('epLTEnd').value}
@@ -1071,7 +1092,7 @@ function renderPeopleGroups(groups, filterFn){
     return `<h3>${g? esc(g) : '未分組'}（${members.length}）</h3>` + members.map(p=>`
       <div class="list-item">
         <span class="tag rank-${rankCategory(p.rank)}">${p.rank}</span>
-        <span class="grow">${esc(p.name)}${p.license? `<div class="muted">駕照：${esc(p.license)}</div>`:''}${p.medCert? `<div class="muted">救護證照：${esc(p.medCert)}</div>`:''}${p.note? `<div class="muted">備考：${esc(p.note)}</div>`:''}${longTermLabel(p)? `<div class="warn">🚫 ${longTermLabel(p)}</div>`:''}</span>
+        <span class="grow">${esc(p.name)}${p.license? `<div class="muted">駕照：${esc(p.license)}</div>`:''}${p.medCert? `<div class="muted">救護證照：${esc(p.medCert)}</div>`:''}${(p.skills&&p.skills.length)? `<div class="muted">專長：${p.skills.map(esc).join('、')}</div>`:''}${p.note? `<div class="muted">備考：${esc(p.note)}</div>`:''}${longTermLabel(p)? `<div class="warn">🚫 ${longTermLabel(p)}</div>`:''}</span>
         <button class="ghost small" data-edit-person="${p.id}">編輯</button>
         <button class="ghost small danger" data-del-person="${p.id}">刪除</button>
       </div>`).join('');
@@ -1403,7 +1424,7 @@ function personOptions(selected, groupFilter){
   let sorted=[...state.personnel].sort((a,b)=> groupIndex(a.group)-groupIndex(b.group) || rankIndex(a.rank)-rankIndex(b.rank));
   if(groupFilter) sorted = groupFilter==='__none'? sorted.filter(p=>!p.group) : sorted.filter(p=>p.group===groupFilter);
   if(!sorted.length) return `<option value="">（此排組無人員）</option>`;
-  return sorted.map(p=>`<option value="${p.id}" ${p.id===selected?'selected':''}>${esc(p.name)}（${p.group||'未分組'}·${p.rank}${p.license? '·🚗'+esc(p.license):''}${p.medCert? '·⛑️'+esc(p.medCert):''}${personLongTerm(p).mode!=='off'?'·🚫長期':''}）</option>`).join('');
+  return sorted.map(p=>`<option value="${p.id}" ${p.id===selected?'selected':''}>${esc(p.name)}（${p.group||'未分組'}·${p.rank}${p.license? '·🚗'+esc(p.license):''}${p.medCert? '·⛑️'+esc(p.medCert):''}${(p.skills&&p.skills.length)? '·🔧'+p.skills.map(esc).join('/'):''}${personLongTerm(p).mode!=='off'?'·🚫長期':''}）</option>`).join('');
 }
 /* same as personOptions, but people for whom eligibleFn(p) is true are
    sorted to the top of the list (still shown either way, just reordered) —
@@ -1422,7 +1443,7 @@ function personOptionsForIncident(selected, groupFilter, date){
     if(aa!==bb) return aa-bb;
     return groupIndex(a.group)-groupIndex(b.group) || rankIndex(a.rank)-rankIndex(b.rank);
   });
-  return list.map(p=>`<option value="${p.id}" ${p.id===selected?'selected':''}>${esc(p.name)}（${p.group||'未分組'}·${p.rank}${p.license? '·🚗'+esc(p.license):''}${p.medCert? '·⛑️'+esc(p.medCert):''}${hasAllDay(p)?'　✅已登記全天':''}）</option>`).join('');
+  return list.map(p=>`<option value="${p.id}" ${p.id===selected?'selected':''}>${esc(p.name)}（${p.group||'未分組'}·${p.rank}${p.license? '·🚗'+esc(p.license):''}${p.medCert? '·⛑️'+esc(p.medCert):''}${(p.skills&&p.skills.length)? '·🔧'+p.skills.map(esc).join('/'):''}${hasAllDay(p)?'　✅已登記全天':''}）</option>`).join('');
 }
 function personOptionsPrioritized(selected, eligibleFn){
   if(!state.personnel.length) return `<option value="">（尚無人員）</option>`;
@@ -1431,7 +1452,7 @@ function personOptionsPrioritized(selected, eligibleFn){
     if(pa!==pb) return pa-pb;
     return groupIndex(a.group)-groupIndex(b.group) || rankIndex(a.rank)-rankIndex(b.rank);
   });
-  return sorted.map(p=>`<option value="${p.id}" ${p.id===selected?'selected':''}>${esc(p.name)}（${p.group||'未分組'}·${p.rank}${p.license? '·🚗'+esc(p.license):''}${p.medCert? '·⛑️'+esc(p.medCert):''}${personLongTerm(p).mode!=='off'?'·🚫長期':''}）</option>`).join('');
+  return sorted.map(p=>`<option value="${p.id}" ${p.id===selected?'selected':''}>${esc(p.name)}（${p.group||'未分組'}·${p.rank}${p.license? '·🚗'+esc(p.license):''}${p.medCert? '·⛑️'+esc(p.medCert):''}${(p.skills&&p.skills.length)? '·🔧'+p.skills.map(esc).join('/'):''}${personLongTerm(p).mode!=='off'?'·🚫長期':''}）</option>`).join('');
 }
 function fmtDate(d){ return d; }
 const WEEKDAY_CH=['日','一','二','三','四','五','六'];
