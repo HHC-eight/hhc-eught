@@ -52,7 +52,8 @@ button.ghost{background:transparent;}
 button.danger{color:var(--danger);border-color:var(--danger);background:transparent;}
 button.small{padding:5px 9px;font-size:12px;}
 button{transition:transform .12s ease, opacity .12s ease;}
-button:active{opacity:.65;transform:scale(.95);}
+button:active{opacity:.6;transform:scale(.94);}
+button.pressed,.pill-btn.pressed{opacity:.6;transform:scale(.94);}
 .tabs{position:fixed;bottom:0;left:0;right:0;display:flex;background:var(--panel);border-top:1px solid var(--line);z-index:30;padding-bottom:env(safe-area-inset-bottom);}
 .tabs button{flex:1;background:transparent;border:none;border-radius:0;padding:11px 4px;font-size:12px;color:var(--dim);}
 .tabs button.active{color:var(--accent);font-weight:600;}
@@ -127,6 +128,26 @@ function loadState(){
 function saveState(){ localStorage.setItem(LS_KEY, JSON.stringify(state)); }
 
 function uid(){ return Math.random().toString(36).slice(2,9); }
+
+/* explicit press feedback for every button/pill, via one delegated listener
+   on document (so it keeps working through re-renders without re-wiring) —
+   iOS Safari's :active pseudo-class doesn't reliably fire on tap by itself,
+   so we toggle a class directly on touch/mouse down and up instead. */
+(function(){
+  function pressOn(ev){
+    const el = ev.target.closest('button, .pill-btn');
+    if(el) el.classList.add('pressed');
+  }
+  function pressOff(){
+    document.querySelectorAll('.pressed').forEach(el=>el.classList.remove('pressed'));
+  }
+  document.addEventListener('touchstart', pressOn, {passive:true});
+  document.addEventListener('touchend', pressOff, {passive:true});
+  document.addEventListener('touchcancel', pressOff, {passive:true});
+  document.addEventListener('mousedown', pressOn);
+  document.addEventListener('mouseup', pressOff);
+  document.addEventListener('mouseleave', pressOff);
+})();
 
 /* ---------------- rank system ---------------- */
 const RANK_DEFS=[
