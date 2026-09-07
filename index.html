@@ -1227,19 +1227,21 @@ function renderUnavail(){
       <div class="hint">要修改或恢復可排，到「人員」分頁點該人「編輯」調整長期事故設定。</div>
     </div>`:''}
     <div class="card">
-      <h2>人員事故登載（單日或指定時段）</h2>
+      <h2>人員事故登載（單日或指定時段，可多人多日）</h2>
       <div class="row wrap" style="margin-bottom:8px">
-        <div style="width:120px"><label>排組篩選</label>
+        <div class="grow"><label>排組篩選</label>
           <select id="uaGroupFilter">
             <option value="">（全部）</option>
             ${[...new Set(state.personnel.map(p=>p.group).filter(Boolean))].sort((a,b)=>groupIndex(a)-groupIndex(b)).map(g=>`<option value="${esc(g)}">${esc(g)}</option>`).join('')}
             <option value="__none">未分組</option>
           </select>
         </div>
-        <div class="grow"><label>姓名</label>
-          <select id="uaPerson">${personOptionsForIncident(undefined, undefined, currentDate)}</select>
-        </div>
       </div>
+      <div class="row wrap" style="margin-bottom:6px">
+        <button class="ghost small" id="uaSelectAll">全選</button>
+        <button class="ghost small" id="uaClearAll">清空</button>
+      </div>
+      <div id="uaPeopleList" style="max-height:220px;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:8px;margin-bottom:8px">${uaPeopleCheckboxesHTML(undefined, currentDate)}</div>
       <div class="row wrap" style="margin-bottom:8px">
         <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text)">
           <input type="checkbox" id="uaAllDay" style="width:auto"> 全天不能排
@@ -1263,7 +1265,7 @@ function renderUnavail(){
       </div>
       <div class="row wrap" style="margin-bottom:8px">
         <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text)">
-          <input type="checkbox" id="uaMultiDay" style="width:auto"> 連續多日（例：9/8-9/9 都登記同一筆事故）
+          <input type="checkbox" id="uaMultiDay" style="width:auto"> 連續多日（例：9/8-9/9 都登記同一筆事故，會套用到上面勾選的每一位人員）
         </label>
       </div>
       <div class="row wrap" id="uaMultiDayRow" style="margin-bottom:8px;display:none">
@@ -1370,7 +1372,13 @@ function renderUnavail(){
   `;
   document.getElementById('dateSel').onchange=(e)=>{ currentDate=e.target.value; render(); };
   document.getElementById('uaGroupFilter').onchange=(e)=>{
-    document.getElementById('uaPerson').innerHTML = personOptionsForIncident(undefined, e.target.value||undefined, currentDate);
+    document.getElementById('uaPeopleList').innerHTML = uaPeopleCheckboxesHTML(e.target.value||undefined, currentDate);
+  };
+  document.getElementById('uaSelectAll').onclick=()=>{
+    document.querySelectorAll('.ua-person-cb').forEach(cb=>cb.checked=true);
+  };
+  document.getElementById('uaClearAll').onclick=()=>{
+    document.querySelectorAll('.ua-person-cb').forEach(cb=>cb.checked=false);
   };
   if(document.getElementById('clearDayBtn')){
     document.getElementById('clearDayBtn').onclick=()=>{
@@ -1418,8 +1426,8 @@ function renderUnavail(){
     });
   };
   document.getElementById('uaAdd').onclick=()=>{
-    const personId=document.getElementById('uaPerson').value;
-    if(!personId){ showAlert('請先到「人員」分頁新增人員'); return; }
+    const personIds=[...document.querySelectorAll('.ua-person-cb:checked')].map(cb=>cb.value);
+    if(!personIds.length){ showAlert('請至少勾選一位人員'); return; }
     const allDay=document.getElementById('uaAllDay').checked;
     const start=document.getElementById('uaStart').value, end=document.getElementById('uaEnd').value;
     const preset=document.getElementById('uaReasonPreset').value;
@@ -1433,7 +1441,9 @@ function renderUnavail(){
     }
     dates.forEach(d=>{
       if(!state.unavail[d]) state.unavail[d]=[];
-      state.unavail[d].push({id:uid(),personId,allDay,start,end,reason});
+      personIds.forEach(personId=>{
+        state.unavail[d].push({id:uid(),personId,allDay,start,end,reason});
+      });
     });
     saveState(); render();
   };
@@ -1534,6 +1544,27 @@ function personOptionsForIncident(selected, groupFilter, date){
     return groupIndex(a.group)-groupIndex(b.group) || rankIndex(a.rank)-rankIndex(b.rank);
   });
   return list.map(p=>`<option value="${p.id}" ${p.id===selected?'selected':''}>${esc(p.name)}（${p.group||'未分組'}·${p.rank}${p.license? '·🚗'+esc(p.license):''}${p.medCert? '·⛑️'+esc(p.medCert):''}${(p.skills&&p.skills.length)? '·🔧'+p.skills.map(esc).join('/'):''}${hasAllDay(p)?'　✅已登記全天':''}）</option>`).join('');
+}
+/* checkbox-list version for the 事故登載 form — lets you register the same
+   incident for several people at once, not just one at a time. People
+   already carrying an all-day incident for this date sort to the bottom
+   and are marked, same as the single-select version. */
+function uaPeopleCheckboxesHTML(groupFilter, date){
+  if(!state.personnel.length) return `<div class="empty">尚無人員</div>`;
+  let list=[...state.personnel];
+  if(groupFilter) list = groupFilter==='__none'? list.filter(p=>!p.group) : list.filter(p=>p.group===groupFilter);
+  if(!list.length) return `<div class="empty">此排組無人員</div>`;
+  const hasAllDay = p => (state.unavail[date]||[]).some(u=>u.personId===p.id && u.allDay);
+  list.sort((a,b)=>{
+    const aa=hasAllDay(a)?1:0, bb=hasAllDay(b)?1:0;
+    if(aa!==bb) return aa-bb;
+    return groupIndex(a.group)-groupIndex(b.group) || rankIndex(a.rank)-rankIndex(b.rank);
+  });
+  return list.map(p=>`
+    <label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0">
+      <input type="checkbox" class="ua-person-cb" value="${p.id}" style="width:auto">
+      ${esc(p.name)}（${p.group||'未分組'}·${p.rank}）${hasAllDay(p)?' <span class="warn">✅已登記全天</span>':''}
+    </label>`).join('');
 }
 function personOptionsPrioritized(selected, eligibleFn){
   if(!state.personnel.length) return `<option value="">（尚無人員）</option>`;
