@@ -118,7 +118,8 @@ function loadState(){
     categories: defaultCategories(),
     unavail: {},      // date -> [{id,personId,allDay,start,end}]
     assign: {},       // date -> categoryId -> shiftId -> [personId,...]
-    misc: {}          // date -> [{id,role,text}]
+    misc: {},         // date -> [{id,role,text}]
+    miscCustomPresets: [] // [{role,start,end}] user-added quick-add presets for 其他勤務
   };
 }
 function saveState(){ localStorage.setItem(LS_KEY, JSON.stringify(state)); }
@@ -244,6 +245,7 @@ function validateMiscEntry(entry){
 }
 
 let state = loadState();
+if(!state.miscCustomPresets) state.miscCustomPresets=[];
 let currentTab='people';
 let currentDate = todayStr();
 
@@ -274,6 +276,10 @@ function dateRangeList(startStr, endStr){
     if(out.length>366) break; // safety guard
   }
   return out;
+}
+function daysBetweenInclusive(startStr, endStr){
+  const ds=new Date(startStr+'T00:00:00'), de=new Date(endStr+'T00:00:00');
+  return Math.round((de-ds)/86400000)+1;
 }
 const UNAVAIL_REASON_PRESETS=['出車','體檢','體測','開會','帶廠商'];
 /* 事故/請假 (uses a preset reason list or a custom typed one) */
@@ -725,6 +731,9 @@ function renderPeople(){
         <div class="grow"><label>每天開始</label><select id="npLTStart">${timeOptions().map(t=>`<option ${t==='18:00'?'selected':''}>${t}</option>`).join('')}</select></div>
         <div class="grow"><label>到隔天/當天</label><select id="npLTEnd">${timeOptions().map(t=>`<option ${t==='08:30'?'selected':''}>${t}</option>`).join('')}</select></div>
       </div>
+      <div class="row wrap" style="margin-bottom:8px">
+        <div class="grow"><label>備考(選填)</label><input type="text" id="npNote" placeholder="例：新兵、隔宿另計"></div>
+      </div>
       <button class="primary" id="npAdd" style="width:100%">新增</button>
     </div>
     <div class="card">
@@ -749,8 +758,9 @@ function renderPeople(){
     const longTerm = mode==='range'
       ? {mode:'range', start:document.getElementById('npLTStart').value, end:document.getElementById('npLTEnd').value}
       : {mode};
+    const note = document.getElementById('npNote').value.trim();
     if(!name) return;
-    state.personnel.push({id:uid(),name,group,rank,license,longTerm});
+    state.personnel.push({id:uid(),name,group,rank,license,longTerm,note});
     saveState(); render();
   };
   document.getElementById('importBtn').onclick=()=>document.getElementById('importFile').click();
@@ -799,6 +809,7 @@ function openPersonEditor(personId){
         <div class="grow"><label>每天開始</label><select id="epLTStart">${timeOptions().map(t=>`<option ${t===(lt.start||'18:00')?'selected':''}>${t}</option>`).join('')}</select></div>
         <div class="grow"><label>到隔天/當天</label><select id="epLTEnd">${timeOptions().map(t=>`<option ${t===(lt.end||'08:30')?'selected':''}>${t}</option>`).join('')}</select></div>
       </div>
+      <label>備考</label><input type="text" id="epNote" value="${esc(p.note||'')}" placeholder="例：新兵、隔宿另計" style="margin-bottom:8px">
       <button class="primary" id="saveP" style="width:100%">儲存</button>
     </div>
   `;
@@ -816,6 +827,7 @@ function openPersonEditor(personId){
     p.longTerm = mode==='range'
       ? {mode:'range', start:document.getElementById('epLTStart').value, end:document.getElementById('epLTEnd').value}
       : {mode};
+    p.note = document.getElementById('epNote').value.trim();
     delete p.longTermUnavailable;
     saveState(); modal.remove(); render();
   };
@@ -828,7 +840,7 @@ function renderPeopleGroups(groups){
     return `<h3>${g? esc(g) : '未分組'}（${members.length}）</h3>` + members.map(p=>`
       <div class="list-item">
         <span class="tag rank-${rankCategory(p.rank)}">${p.rank}</span>
-        <span class="grow">${esc(p.name)}${p.license? `<div class="muted">駕照：${esc(p.license)}</div>`:''}${longTermLabel(p)? `<div class="warn">🚫 ${longTermLabel(p)}</div>`:''}</span>
+        <span class="grow">${esc(p.name)}${p.license? `<div class="muted">駕照：${esc(p.license)}</div>`:''}${p.note? `<div class="muted">備考：${esc(p.note)}</div>`:''}${longTermLabel(p)? `<div class="warn">🚫 ${longTermLabel(p)}</div>`:''}</span>
         <button class="ghost small" data-edit-person="${p.id}">編輯</button>
         <button class="ghost small danger" data-del-person="${p.id}">刪除</button>
       </div>`).join('');
@@ -913,9 +925,19 @@ function renderUnavail(){
         <div class="grow"><label>休假第一天</label><input type="date" id="lvStart" value="${currentDate}"></div>
         <div class="grow"><label>休假最後一天</label><input type="date" id="lvEnd" value="${currentDate}"></div>
       </div>
+      <div class="row wrap" style="margin-bottom:8px">
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text)">
+          <input type="checkbox" id="lvHonor" style="width:auto"> 榮譽提早假（前一天提早到12:00開始，僅適用4天以內）
+        </label>
+      </div>
+      <div class="row wrap" style="margin-bottom:8px">
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text)">
+          <input type="checkbox" id="lvOverride" style="width:auto"> 特殊情況（允許榮譽假超過天數限制使用，如有特殊核准）
+        </label>
+      </div>
       <div class="hint" id="lvPreview" style="margin-bottom:8px"></div>
       <button class="primary" id="lvAdd" style="width:100%">新增休假</button>
-      <div class="hint">會自動往前後各加一段緩衝：從休假第一天「前一天18:00」到休假最後一天「隔天07:30」都會標記不可排（例：休9/8-9/10，會從9/7 18:00封鎖到9/11 07:30）。</div>
+      <div class="hint">一般休假：從休假第一天「前一天18:00」到休假最後一天「隔天07:30」都會標記不可排（例：休9/8-9/10，會從9/7 18:00封鎖到9/11 07:30）。「榮譽提早假」只適用4天以內的假期，前一天會提早到12:00開始（例：休9/8-9/10會從9/7 12:00封鎖到9/11 07:30）；5天以上的假期一律用一般18:00起算，除非勾選「特殊情況」允許例外套用。</div>
     </div>
     ${Object.keys(leaveBlocks).length? `<div class="card">
       <h2>目前登記的休假</h2>
@@ -961,28 +983,43 @@ function renderUnavail(){
   };
   function updateLeavePreview(){
     const s=document.getElementById('lvStart').value, e=document.getElementById('lvEnd').value;
+    const honor=document.getElementById('lvHonor').checked;
+    const override=document.getElementById('lvOverride').checked;
     if(!s||!e||s>e){ document.getElementById('lvPreview').textContent=''; return; }
-    document.getElementById('lvPreview').textContent = `實際封鎖範圍：${prevDateStr(s)} 18:00 → ${nextDateStr(e)} 07:30`;
+    const days=daysBetweenInclusive(s,e);
+    const honorApplies = honor && (days<=4 || override);
+    const startTime = honorApplies? '12:00':'18:00';
+    let note = `實際封鎖範圍：${prevDateStr(s)} ${startTime} → ${nextDateStr(e)} 07:30（共${days}天）`;
+    if(honor && days>4 && !override) note += '　⚠️ 已超過4天，榮譽假不適用，改用一般18:00起算（如有特殊核准可勾選「特殊情況」）';
+    document.getElementById('lvPreview').textContent = note;
   }
   document.getElementById('lvStart').onchange=updateLeavePreview;
   document.getElementById('lvEnd').onchange=updateLeavePreview;
+  document.getElementById('lvHonor').onchange=updateLeavePreview;
+  document.getElementById('lvOverride').onchange=updateLeavePreview;
   updateLeavePreview();
   document.getElementById('lvAdd').onclick=()=>{
     const personId=document.getElementById('lvPerson').value;
     if(!personId){ showAlert('請先到「人員」分頁新增人員'); return; }
     const s=document.getElementById('lvStart').value, e=document.getElementById('lvEnd').value;
     if(!s||!e||s>e){ showAlert('請確認休假日期範圍正確'); return; }
+    const honor=document.getElementById('lvHonor').checked;
+    const override=document.getElementById('lvOverride').checked;
+    const days=daysBetweenInclusive(s,e);
+    const honorApplies = honor && (days<=4 || override);
     const leaveId=uid();
     const firstRoster=prevDateStr(s);
     const lastRoster=nextDateStr(e);
+    const firstStart = honorApplies? '12:00':'18:00';
+    const reasonLabel = honorApplies? '榮譽假':'休假';
     if(!state.unavail[firstRoster]) state.unavail[firstRoster]=[];
-    state.unavail[firstRoster].push({id:uid(),personId,allDay:false,start:'18:00',end:'24:00',reason:'休假',leaveId});
+    state.unavail[firstRoster].push({id:uid(),personId,allDay:false,start:firstStart,end:'24:00',reason:reasonLabel,leaveId});
     dateRangeList(s,e).forEach(d=>{
       if(!state.unavail[d]) state.unavail[d]=[];
-      state.unavail[d].push({id:uid(),personId,allDay:true,start:'',end:'',reason:'休假',leaveId});
+      state.unavail[d].push({id:uid(),personId,allDay:true,start:'',end:'',reason:reasonLabel,leaveId});
     });
     if(!state.unavail[lastRoster]) state.unavail[lastRoster]=[];
-    state.unavail[lastRoster].push({id:uid(),personId,allDay:false,start:'00:00',end:'07:30',reason:'休假',leaveId});
+    state.unavail[lastRoster].push({id:uid(),personId,allDay:false,start:'00:00',end:'07:30',reason:reasonLabel,leaveId});
     saveState(); render();
   };
   document.getElementById('autoAssignBtn').onclick=()=>{
@@ -1140,8 +1177,31 @@ function renderStats(){
       .sort((a,b)=>b.dur-a.dur);
     const resultEl=document.getElementById('queryResult');
     if(!state.personnel.length){ resultEl.innerHTML=`<div class="empty">尚未新增人員</div>`; return; }
+    function rankBreakdown(list){
+      const c={軍官:0,士官:0,士兵:0};
+      list.forEach(p=>{ const k=rankCategory(p.rank); if(k) c[k]++; });
+      return c;
+    }
+    const groupsForTable = groups.length? groups : [''];
+    const rows = groupsForTable.map(g=>{
+      const members = state.personnel.filter(p=>p.group===g);
+      const total = rankBreakdown(members);
+      const absentMembers = members.filter(p=>isPersonUnavailable(p.id,currentDate,qMin,qMin+1));
+      const absent = rankBreakdown(absentMembers);
+      const present = {軍官:total.軍官-absent.軍官, 士官:total.士官-absent.士官, 士兵:total.士兵-absent.士兵};
+      return {label:g||'未分組', total, absent, present};
+    });
+    const totalAll = rankBreakdown(state.personnel);
+    const absentAll = rankBreakdown(state.personnel.filter(p=>isPersonUnavailable(p.id,currentDate,qMin,qMin+1)));
+    const presentAll = {軍官:totalAll.軍官-absentAll.軍官, 士官:totalAll.士官-absentAll.士官, 士兵:totalAll.士兵-absentAll.士兵};
+    const fmtRank=c=>`官${c.軍官} 士${c.士官} 兵${c.士兵}`;
     resultEl.innerHTML = `
       <div class="muted" style="margin-bottom:6px">${t} 有空：${free.length} / ${state.personnel.length} 人</div>
+      <table class="hr-table" style="margin-bottom:10px">
+        <tr><th style="text-align:left">排組</th><th>應到</th><th>事故</th><th>實到</th></tr>
+        ${rows.map(r=>`<tr><td style="text-align:left">${esc(r.label)}</td><td>${fmtRank(r.total)}</td><td>${fmtRank(r.absent)}</td><td>${fmtRank(r.present)}</td></tr>`).join('')}
+        <tr style="font-weight:600"><td style="text-align:left">總計</td><td>${fmtRank(totalAll)}</td><td>${fmtRank(absentAll)}</td><td>${fmtRank(presentAll)}</td></tr>
+      </table>
       ${free.map(x=>`<div class="list-item"><span class="grow">${esc(x.p.name)}（${x.p.group||'未分組'}·${x.p.rank}）</span><span class="muted">空 ${Math.floor(x.dur/60)}小時${x.dur%60?x.dur%60+'分':''}</span></div>`).join('')}
     `;
   };
@@ -1169,7 +1229,6 @@ function renderSchedule(){
         <button class="ghost small" id="addCat">＋新增類別</button>
       </div>
       <button class="primary" id="autoAssignBtn2" style="width:100%;margin-bottom:8px">🪄 自動補空缺（不覆蓋已排的）</button>
-      <button class="ghost" id="applyMealTimes" style="width:100%;margin-bottom:8px">🔄 套用最新打飯班設定（早/午/晚各2人＝1士官1士兵、整天2人固定訓練役、午10:10-13:20補休至15:30、晚16:20-19:30）</button>
       <div class="hint">安全士官／橋哨／指管：前後兩班（衛哨對衛哨）需間隔≥6小時、單日累計上限6小時（系統自動檢查，違反會標紅；此規則不含準備時間，純粹以衛哨排定時間計算）。每班衛哨開始前需空30分鐘準備：若前一段時間還在忙其他勤務（如採買、打飯班），系統會擋下並標紅，避免像「採買到08:00、緊接著08:00-12:00衛哨」這種沒時間準備的排法。橋哨／指管優先排下士，其次其他士兵/士官。打飯班早/午/晚每班2人＝1位帶隊士官（優先下士→中士→上士）＋1位士兵，盡量避免安排軍官；整天固定2人優先排訓練役，沒有訓練役才依二兵→一兵→上兵遞補。下拉選單已依此優先順序排序，越上面越優先。有設定「補休至」的班別（例：22:00-06:00 各節衛哨補休至08:00、06-08衛哨與早餐打飯班補休至08:30、午餐打飯班補休至15:30），下班後系統會自動把該員在補休時段內標示為不可排，也會檢查補休時段有沒有跟已排的其他勤務衝突，可到各類別「編輯」調整補休時間。</div>
       <div class="hint">下拉選單中的 🚫不可排 已同時涵蓋：請假/管制、長期事故、補休、以及當天其他勤務的重複指派。</div>
     </div>
@@ -1184,18 +1243,6 @@ function renderSchedule(){
   `;
   document.getElementById('dateSel').onchange=(e)=>{ currentDate=e.target.value; render(); };
   document.getElementById('autoAssignBtn2').onclick=()=>{ autoAssignDay(currentDate); render(); };
-  document.getElementById('applyMealTimes').onclick=()=>{
-    showConfirm('把「打飯班」早/午/晚改成各2人（1士官帶隊＋1士兵）、整天改成2人（固定訓練役），午餐時間改成10:10-13:20（補休至15:30）、晚餐改成16:20-19:30？（不影響已排的人員名單，只改班別設定，人數上限會變成2）', ()=>{
-      const meal = state.categories.find(c=>c.id==='meal') || state.categories.find(c=>c.needsNCO);
-      if(!meal){ showAlert('目前沒有找到「打飯班」類別，可能需要先用上面的還原功能或手動新增。'); return; }
-      const noon = meal.shifts.find(s=>s.label==='午');
-      const evening = meal.shifts.find(s=>s.label==='晚');
-      if(noon){ noon.start='10:10'; noon.end='13:20'; noon.restUntil='15:30'; }
-      if(evening){ evening.start='16:20'; evening.end='19:30'; }
-      meal.shifts.forEach(s=>{ s.count=2; });
-      saveState(); render();
-    });
-  };
   app.querySelectorAll('[data-restore-cat]').forEach(b=>{
     b.onclick=()=>{
       const d=defaults.find(x=>x.id===b.dataset.restoreCat);
@@ -1539,7 +1586,18 @@ function renderMisc(){
     <div class="card">
       <h2>常用項目（點一下自動帶入名稱、時間與角色）</h2>
       <div class="row wrap">
-        ${MISC_PRESETS.map((mp,i)=>`<button class="pill-btn" data-preset="${i}" style="cursor:pointer">${esc(mp.role)} ${mp.start}-${mp.end}</button>`).join('')}
+        ${MISC_PRESETS.map((mp,i)=>`<button class="pill-btn" data-preset="b${i}" style="cursor:pointer">${esc(mp.role)} ${mp.start}-${mp.end}</button>`).join('')}
+        ${state.miscCustomPresets.map((mp,i)=>`<button class="pill-btn" data-preset="c${i}" style="cursor:pointer">${esc(mp.role)} ${mp.start}-${mp.end} <span data-del-preset="${i}" style="color:var(--danger);margin-left:3px">✕</span></button>`).join('')}
+      </div>
+      <div class="divider"></div>
+      <h3>新增常用項目</h3>
+      <div class="row wrap" style="margin-bottom:6px">
+        <div class="grow"><label>名稱</label><input type="text" id="npPresetName" placeholder="例：查哨"></div>
+      </div>
+      <div class="row wrap">
+        <div class="grow"><label>開始</label><select id="npPresetStart">${timeOptions().map(t=>`<option ${t==='06:00'?'selected':''}>${t}</option>`).join('')}</select></div>
+        <div class="grow"><label>結束</label><select id="npPresetEnd">${timeOptions().map(t=>`<option ${t==='07:00'?'selected':''}>${t}</option>`).join('')}</select></div>
+        <button class="ghost small" id="addPresetBtn">＋新增</button>
       </div>
     </div>
     <div class="card">
@@ -1612,9 +1670,11 @@ function renderMisc(){
     document.getElementById('mFreeform').onclick=()=>{ miscSelectedRoles=null; render(); };
   }
   app.querySelectorAll('[data-preset]').forEach(b=>{
-    b.onclick=()=>{
-      const mp=MISC_PRESETS[Number(b.dataset.preset)];
-      miscSelectedRoles = mp.roles;
+    b.onclick=(ev)=>{
+      if(ev.target.closest('[data-del-preset]')) return; // let the delete X handle itself
+      const key=b.dataset.preset;
+      const mp = key.startsWith('b')? MISC_PRESETS[Number(key.slice(1))] : state.miscCustomPresets[Number(key.slice(1))];
+      miscSelectedRoles = mp.roles||null;
       render();
       document.getElementById('mRole').value=mp.role;
       document.getElementById('mStart').value=mp.start;
@@ -1622,6 +1682,20 @@ function renderMisc(){
       refreshPeopleFlags();
     };
   });
+  app.querySelectorAll('[data-del-preset]').forEach(x=>{
+    x.onclick=(ev)=>{
+      ev.stopPropagation();
+      state.miscCustomPresets.splice(Number(x.dataset.delPreset),1);
+      saveState(); render();
+    };
+  });
+  document.getElementById('addPresetBtn').onclick=()=>{
+    const role=document.getElementById('npPresetName').value.trim();
+    if(!role){ showAlert('請輸入項目名稱'); return; }
+    const start=document.getElementById('npPresetStart').value, end=document.getElementById('npPresetEnd').value;
+    state.miscCustomPresets.push({role,start,end});
+    saveState(); render();
+  };
   document.getElementById('mAdd').onclick=()=>{
     const role=document.getElementById('mRole').value.trim();
     if(!role) return;
