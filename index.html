@@ -153,12 +153,13 @@ function dutySortIndex(rank, cat, slotIdx, shift){
   // for 打飯班 is satisfied elsewhere (早/午/晚 each get their own leader), so
   // every slot on 整天 just prefers the lowest-rank enlisted first.
   if(cat.needsNCO && shift && shift.label==='整天'){
-    const i=MEAL_HELPER_PRIORITY.indexOf(rank);
-    return i<0? MEAL_HELPER_PRIORITY.length : i;
+    const helperOrder = cat.customPriorityHelper || MEAL_HELPER_PRIORITY;
+    const i=helperOrder.indexOf(rank);
+    return i<0? helperOrder.length : i;
   }
   const order = cat.needsNCO
-    ? ((slotIdx||0)===0 ? NCO_LEAD_PRIORITY : MEAL_HELPER_PRIORITY)
-    : (cat.preferLowRank ? LOW_RANK_PRIORITY : null);
+    ? ((slotIdx||0)===0 ? (cat.customPriority||NCO_LEAD_PRIORITY) : (cat.customPriorityHelper||MEAL_HELPER_PRIORITY))
+    : (cat.customPriority ? cat.customPriority : (cat.preferLowRank ? LOW_RANK_PRIORITY : null));
   let base = order ? (order.indexOf(rank)<0? order.length : order.indexOf(rank)) : rankIndex(rank);
   // a rank the category would rather not use (but may, if nobody else is
   // available) gets pushed to the very back of the priority order
@@ -1560,6 +1561,32 @@ function openTextShareModal(title, text){
   };
 }
 
+/* human-readable priority order for a category, shown on its schedule card
+   so the ranking logic used by the dropdown/auto-assign is visible per table */
+function normalizePriorityArray(arr){
+  const result = [...arr];
+  RANK_DEFS.forEach(r=>{ if(!result.includes(r.rank)) result.push(r.rank); });
+  return result;
+}
+function defaultPriorityArray(cat){
+  if(cat.needsNCO) return normalizePriorityArray(NCO_LEAD_PRIORITY);
+  if(cat.preferLowRank) return normalizePriorityArray(LOW_RANK_PRIORITY);
+  return RANK_DEFS.map(r=>r.rank);
+}
+function defaultHelperPriorityArray(){
+  return normalizePriorityArray(MEAL_HELPER_PRIORITY);
+}
+function categoryPriorityLabel(cat){
+  if(cat.needsNCO){
+    const lead = cat.customPriority || normalizePriorityArray(NCO_LEAD_PRIORITY);
+    const helper = cat.customPriorityHelper || normalizePriorityArray(MEAL_HELPER_PRIORITY);
+    return `帶隊(第1位)優先：${lead.join('→')}｜其餘成員優先：${helper.join('→')}｜整天班全部依：${helper.join('→')}`;
+  }
+  if(cat.preferLowRank){
+    return `優先順序：${(cat.customPriority || normalizePriorityArray(LOW_RANK_PRIORITY)).join('→')}`;
+  }
+  return `優先順序：${(cat.customPriority || RANK_DEFS.map(r=>r.rank)).join('→')}`;
+}
 function renderCategoryCard(cat){
   const dayAssign = (state.assign[currentDate]||{})[cat.id] || {};
   return `
@@ -1577,6 +1604,7 @@ function renderCategoryCard(cat){
         <button class="ghost small danger" data-clear-cat="${cat.id}">清空排班</button>
       </div>
     </div>
+    <div class="hint" style="margin-bottom:8px">${esc(categoryPriorityLabel(cat))}</div>
     ${cat.shifts.map(s=>{
       const assigned = dayAssign[s.id] || [];
       const timeLabel = s.label? s.label+'（'+s.start+'-'+s.end+'）' : (s.start+'-'+s.end);
@@ -1666,6 +1694,17 @@ function openCategoryEditor(catId){
         </div>
       </div>
       <div class="divider"></div>
+      <h3>階級優先順序（可自行調整，越上面越優先）</h3>
+      ${cat.needsNCO? `
+        <div class="muted" style="margin-bottom:4px">帶隊(第1位)優先順序</div>
+        <div id="priListLead"></div>
+        <div class="muted" style="margin:10px 0 4px">其餘成員／整天優先順序</div>
+        <div id="priListHelper"></div>
+      ` : `
+        <div id="priListMain"></div>
+      `}
+      <button class="ghost small" id="priReset" style="margin-top:8px">還原成預設順序</button>
+      <div class="divider"></div>
       <h3>班別時段</h3>
       <div id="shiftEditList">${cat.shifts.map((s,i)=>shiftEditRow(s,i)).join('')}</div>
       <button class="ghost small" id="addShift">＋新增班別</button>
@@ -1674,6 +1713,55 @@ function openCategoryEditor(catId){
     </div>
   `;
   document.body.appendChild(modal);
+  let priorityDraft = normalizePriorityArray(cat.customPriority || defaultPriorityArray(cat));
+  let priorityHelperDraft = cat.needsNCO ? normalizePriorityArray(cat.customPriorityHelper || defaultHelperPriorityArray()) : null;
+  function renderPriorityListHTML(listId, arr){
+    return arr.map((r,i)=>`
+      <div class="row" style="margin-bottom:4px">
+        <span class="grow">${i+1}. ${r}</span>
+        <button class="ghost small" data-pri-up="${listId}:${i}" ${i===0?'disabled':''}>▲</button>
+        <button class="ghost small" data-pri-down="${listId}:${i}" ${i===arr.length-1?'disabled':''}>▼</button>
+      </div>`).join('');
+  }
+  function arrForList(listId){
+    if(listId==='lead') return priorityDraft;
+    if(listId==='helper') return priorityHelperDraft;
+    return priorityDraft; // 'main'
+  }
+  function rerenderPriorityLists(){
+    if(cat.needsNCO){
+      document.getElementById('priListLead').innerHTML = renderPriorityListHTML('lead', priorityDraft);
+      document.getElementById('priListHelper').innerHTML = renderPriorityListHTML('helper', priorityHelperDraft);
+    } else {
+      document.getElementById('priListMain').innerHTML = renderPriorityListHTML('main', priorityDraft);
+    }
+    wirePriorityButtons();
+  }
+  function wirePriorityButtons(){
+    document.querySelectorAll('[data-pri-up]').forEach(b=>{
+      b.onclick=()=>{
+        const [listId,idxStr]=b.dataset.priUp.split(':');
+        const idx=Number(idxStr), arr=arForListSafe(listId);
+        if(idx>0){ [arr[idx-1],arr[idx]]=[arr[idx],arr[idx-1]]; }
+        rerenderPriorityLists();
+      };
+    });
+    document.querySelectorAll('[data-pri-down]').forEach(b=>{
+      b.onclick=()=>{
+        const [listId,idxStr]=b.dataset.priDown.split(':');
+        const idx=Number(idxStr), arr=arForListSafe(listId);
+        if(idx<arr.length-1){ [arr[idx+1],arr[idx]]=[arr[idx],arr[idx+1]]; }
+        rerenderPriorityLists();
+      };
+    });
+  }
+  function arForListSafe(listId){ return arrForList(listId); }
+  rerenderPriorityLists();
+  document.getElementById('priReset').onclick=()=>{
+    priorityDraft = defaultPriorityArray(cat);
+    if(cat.needsNCO) priorityHelperDraft = defaultHelperPriorityArray();
+    rerenderPriorityLists();
+  };
   function shiftEditRowRerender(){
     document.getElementById('shiftEditList').innerHTML = cat.shifts.map((s,i)=>shiftEditRow(s,i)).join('');
     wireShiftRows();
@@ -1695,6 +1783,9 @@ function openCategoryEditor(catId){
     cat.needsNCO=document.getElementById('catNCO').checked;
     cat.excludeRanks=[...document.getElementById('catExclude').selectedOptions].map(o=>o.value);
     cat.avoidRanks=[...document.getElementById('catAvoid').selectedOptions].map(o=>o.value);
+    cat.customPriority=[...priorityDraft];
+    if(cat.needsNCO) cat.customPriorityHelper=[...priorityHelperDraft];
+    else delete cat.customPriorityHelper;
     document.querySelectorAll('.shiftEditItem').forEach((row,i)=>{
       cat.shifts[i].start=row.querySelector('.se-start').value;
       cat.shifts[i].end=row.querySelector('.se-end').value;
