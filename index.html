@@ -742,14 +742,58 @@ function renderPeople(){
     </div>
     <div class="card">
       <div class="section-title"><h2 style="margin:0">名冊（${state.personnel.length}人）</h2></div>
+      <div class="row wrap" style="margin-bottom:8px">
+        <div class="grow"><label>搜尋姓名</label><input type="text" id="pplSearch" placeholder="輸入姓名關鍵字"></div>
+        <div style="width:120px"><label>排組篩選</label>
+          <select id="pplGroupFilter">
+            <option value="">（全部）</option>
+            ${groups.map(g=>`<option value="${esc(g)}">${esc(g)}</option>`).join('')}
+            <option value="__none">未分組</option>
+          </select>
+        </div>
+      </div>
       ${groups.length===0 && state.personnel.length===0 ? `<div class="empty">尚未新增人員</div>` : ''}
-      ${renderPeopleGroups(groups)}
+      <div id="pplListArea">${renderPeopleGroups(groups)}</div>
     </div>
     <div class="hint">💡 名單一次輸入後會持續保留在此裝置（localStorage）；用右上角「匯出」可備份，之後可再匯入。</div>
     <div class="card">
       <button class="ghost small" id="importBtn">📥 匯入備份 JSON</button>
     </div>
   `;
+  function wirePeopleListButtons(){
+    document.querySelectorAll('[data-del-person]').forEach(b=>{
+      b.onclick=()=>{
+        showConfirm('刪除此人員？（也會一併移除其請假紀錄與排班）', ()=>{
+          const id=b.dataset.delPerson;
+          state.personnel = state.personnel.filter(p=>p.id!==id);
+          Object.values(state.unavail).forEach(arr=>{ const i=arr.findIndex(u=>u.personId===id); if(i>-1) arr.splice(i,1); });
+          Object.values(state.assign).forEach(cats=>Object.values(cats).forEach(shifts=>Object.keys(shifts).forEach(sid=>{
+            shifts[sid]=shifts[sid].filter(pid=>pid!==id);
+          })));
+          saveState(); render();
+        });
+      };
+    });
+    document.querySelectorAll('[data-edit-person]').forEach(b=>{
+      b.onclick=()=>openPersonEditor(b.dataset.editPerson);
+    });
+  }
+  function applyPeopleFilter(){
+    const kw=document.getElementById('pplSearch').value.trim();
+    const gf=document.getElementById('pplGroupFilter').value;
+    const filterFn = p=>{
+      if(kw && !p.name.includes(kw)) return false;
+      if(gf==='__none' && p.group) return false;
+      if(gf && gf!=='__none' && p.group!==gf) return false;
+      return true;
+    };
+    const area=document.getElementById('pplListArea');
+    const html=renderPeopleGroups(groups, filterFn);
+    area.innerHTML = html || `<div class="empty">找不到符合的人員</div>`;
+    wirePeopleListButtons();
+  }
+  document.getElementById('pplSearch').oninput=applyPeopleFilter;
+  document.getElementById('pplGroupFilter').onchange=applyPeopleFilter;
   document.getElementById('npLongTermMode').onchange=(e)=>{
     document.getElementById('npLongTermRange').style.display = e.target.value==='range'? 'flex':'none';
   };
@@ -768,22 +812,7 @@ function renderPeople(){
     saveState(); render();
   };
   document.getElementById('importBtn').onclick=()=>document.getElementById('importFile').click();
-  app.querySelectorAll('[data-del-person]').forEach(b=>{
-    b.onclick=()=>{
-      showConfirm('刪除此人員？（也會一併移除其請假紀錄與排班）', ()=>{
-        const id=b.dataset.delPerson;
-        state.personnel = state.personnel.filter(p=>p.id!==id);
-        Object.values(state.unavail).forEach(arr=>{ const i=arr.findIndex(u=>u.personId===id); if(i>-1) arr.splice(i,1); });
-        Object.values(state.assign).forEach(cats=>Object.values(cats).forEach(shifts=>Object.keys(shifts).forEach(sid=>{
-          shifts[sid]=shifts[sid].filter(pid=>pid!==id);
-        })));
-        saveState(); render();
-      });
-    };
-  });
-  app.querySelectorAll('[data-edit-person]').forEach(b=>{
-    b.onclick=()=>openPersonEditor(b.dataset.editPerson);
-  });
+  wirePeopleListButtons();
 }
 function openPersonEditor(personId){
   const p = state.personnel.find(p=>p.id===personId);
@@ -836,10 +865,11 @@ function openPersonEditor(personId){
     saveState(); modal.remove(); render();
   };
 }
-function renderPeopleGroups(groups){
+function renderPeopleGroups(groups, filterFn){
+  filterFn = filterFn || (()=>true);
   const list = groups.length? groups : (state.personnel.length? [''] : []);
   return list.map(g=>{
-    const members = state.personnel.filter(p=>p.group===g).sort((a,b)=>rankIndex(a.rank)-rankIndex(b.rank));
+    const members = state.personnel.filter(p=>p.group===g && filterFn(p)).sort((a,b)=>rankIndex(a.rank)-rankIndex(b.rank));
     if(!members.length) return '';
     return `<h3>${g? esc(g) : '未分組'}（${members.length}）</h3>` + members.map(p=>`
       <div class="list-item">
@@ -889,8 +919,15 @@ function renderUnavail(){
       <div class="hint">要修改或恢復可排，到「人員」分頁點該人「編輯」調整長期事故設定。</div>
     </div>`:''}
     <div class="card">
-      <h2>新增請假/管制（單日或指定時段）</h2>
+      <h2>人員事故登載（單日或指定時段）</h2>
       <div class="row wrap" style="margin-bottom:8px">
+        <div style="width:120px"><label>排組篩選</label>
+          <select id="uaGroupFilter">
+            <option value="">（全部）</option>
+            ${[...new Set(state.personnel.map(p=>p.group).filter(Boolean))].sort((a,b)=>groupIndex(a)-groupIndex(b)).map(g=>`<option value="${esc(g)}">${esc(g)}</option>`).join('')}
+            <option value="__none">未分組</option>
+          </select>
+        </div>
         <div class="grow"><label>姓名</label>
           <select id="uaPerson">${personOptions()}</select>
         </div>
@@ -917,6 +954,30 @@ function renderUnavail(){
         <div class="grow"><label>原因內容</label><input type="text" id="uaReasonCustom" placeholder="請輸入原因"></div>
       </div>
       <button class="primary" id="uaAdd" style="width:100%">新增</button>
+    </div>
+    <div class="card">
+      <h2>反向登記（僅勾選人員可排，其餘視為休假）</h2>
+      <div class="hint" style="margin-bottom:8px">適用於例如演習、外派等大部分人員都不在的情況：勾選當天「有在、可以排班」的人，其餘全部人員會自動標記為當天全天休假。</div>
+      <div class="row wrap" style="margin-bottom:8px">
+        <button class="ghost small" id="reverseSelectAll">全選</button>
+        <button class="ghost small" id="reverseClearAll">清空</button>
+      </div>
+      <div id="reverseCheckArea" style="max-height:260px;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:8px;margin-bottom:8px">
+        ${(()=>{
+          const rGroups=[...new Set(state.personnel.map(p=>p.group).filter(Boolean))].sort((a,b)=>groupIndex(a)-groupIndex(b));
+          const rList = rGroups.length? rGroups : (state.personnel.length? [''] : []);
+          if(!state.personnel.length) return `<div class="empty">尚未新增人員</div>`;
+          return rList.map(g=>{
+            const members=state.personnel.filter(p=>p.group===g).sort((a,b)=>rankIndex(a.rank)-rankIndex(b.rank));
+            if(!members.length) return '';
+            return `<h3>${g?esc(g):'未分組'}</h3>` + members.map(p=>`
+              <label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0">
+                <input type="checkbox" data-reverse-check="${p.id}" style="width:auto"> ${esc(p.name)}（${p.rank}）
+              </label>`).join('');
+          }).join('');
+        })()}
+      </div>
+      <button class="primary" id="reverseApply" style="width:100%">套用反向登記</button>
     </div>
     <div class="card">
       <h2>新增人員休假（連續多天）</h2>
@@ -967,11 +1028,36 @@ function renderUnavail(){
     <div class="hint">💡 範例格式：柏凱：0800-1200不能、或全天不能 — 上面登記後會自動整理成這種清單。若是長期全天無法排的人員，建議改到「人員」分頁設定「長期全天不可排」，不用每天在這裡重複登記。</div>
   `;
   document.getElementById('dateSel').onchange=(e)=>{ currentDate=e.target.value; render(); };
+  document.getElementById('uaGroupFilter').onchange=(e)=>{
+    document.getElementById('uaPerson').innerHTML = personOptions(undefined, e.target.value||undefined);
+  };
   document.getElementById('uaAllDay').onchange=(e)=>{
     document.getElementById('uaTimeRow').style.display = e.target.checked? 'none':'flex';
   };
   document.getElementById('uaReasonPreset').onchange=(e)=>{
     document.getElementById('uaReasonCustomRow').style.display = e.target.value==='__custom'? 'flex':'none';
+  };
+  document.getElementById('reverseSelectAll').onclick=()=>{
+    document.querySelectorAll('[data-reverse-check]').forEach(cb=>cb.checked=true);
+  };
+  document.getElementById('reverseClearAll').onclick=()=>{
+    document.querySelectorAll('[data-reverse-check]').forEach(cb=>cb.checked=false);
+  };
+  document.getElementById('reverseApply').onclick=()=>{
+    if(!state.personnel.length) return;
+    const checkedIds = [...document.querySelectorAll('[data-reverse-check]:checked')].map(cb=>cb.dataset.reverseCheck);
+    if(!checkedIds.length){ showAlert('請至少勾選一位可以排班的人員'); return; }
+    const others = state.personnel.filter(p=>!checkedIds.includes(p.id));
+    showConfirm(`確定要把「${currentDate}」除了勾選的 ${checkedIds.length} 人以外，其餘 ${others.length} 人都標記為當天全天休假嗎？`, ()=>{
+      if(!state.unavail[currentDate]) state.unavail[currentDate]=[];
+      others.forEach(p=>{
+        const already = state.unavail[currentDate].some(u=>u.personId===p.id);
+        if(!already){
+          state.unavail[currentDate].push({id:uid(),personId:p.id,allDay:true,start:'',end:'',reason:'反向登記'});
+        }
+      });
+      saveState(); render();
+    });
   };
   document.getElementById('uaAdd').onclick=()=>{
     const personId=document.getElementById('uaPerson').value;
@@ -1052,9 +1138,11 @@ function renderUnavail(){
     };
   });
 }
-function personOptions(selected){
+function personOptions(selected, groupFilter){
   if(!state.personnel.length) return `<option value="">（尚無人員）</option>`;
-  const sorted=[...state.personnel].sort((a,b)=> groupIndex(a.group)-groupIndex(b.group) || rankIndex(a.rank)-rankIndex(b.rank));
+  let sorted=[...state.personnel].sort((a,b)=> groupIndex(a.group)-groupIndex(b.group) || rankIndex(a.rank)-rankIndex(b.rank));
+  if(groupFilter) sorted = groupFilter==='__none'? sorted.filter(p=>!p.group) : sorted.filter(p=>p.group===groupFilter);
+  if(!sorted.length) return `<option value="">（此排組無人員）</option>`;
   return sorted.map(p=>`<option value="${p.id}" ${p.id===selected?'selected':''}>${esc(p.name)}（${p.group||'未分組'}·${p.rank}${p.license? '·🚗'+esc(p.license):''}${personLongTerm(p).mode!=='off'?'·🚫長期':''}）</option>`).join('');
 }
 function fmtDate(d){ return d; }
