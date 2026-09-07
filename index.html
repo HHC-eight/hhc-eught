@@ -344,6 +344,7 @@ function daysBetweenInclusive(startStr, endStr){
 const UNAVAIL_REASON_PRESETS=['出車','體檢','體測','開會','帶廠商','留守'];
 const MEDCERT_OPTIONS=['EMT-1','EMT-2','EMT-P','醫生證書'];
 const SKILL_OPTIONS=['技工','車勤'];
+if(!state.skillOptions) state.skillOptions=[...SKILL_OPTIONS];
 /* 事故/請假 (uses a preset reason list or a custom typed one) */
 /* 衛哨 (安全士官/橋哨/指管) rule: the same person should not stand the same
    time-slot two days running — check whether they held this exact shift
@@ -926,10 +927,16 @@ function renderPeople(){
         </div>
       </div>
       <div class="row wrap" style="margin-bottom:8px">
-        <div class="grow"><label>特殊專長技能(選填，可複選)</label>
-          <select id="npSkills" multiple size="2">
-            ${SKILL_OPTIONS.map(s=>`<option value="${s}">${s}</option>`).join('')}
-          </select>
+        <div class="grow">
+          <label>特殊專長技能(選填，可複選)</label>
+          <div id="npSkillsList">${state.skillOptions.map(s=>`
+            <label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0">
+              <input type="checkbox" class="np-skill-cb" value="${esc(s)}" style="width:auto"> ${esc(s)}
+            </label>`).join('')}</div>
+          <div class="row wrap" style="margin-top:4px">
+            <input type="text" id="npNewSkillName" placeholder="新增技能類別，例：無線電" style="flex:1">
+            <button class="ghost small" id="npAddSkillType">＋新增類別</button>
+          </div>
         </div>
       </div>
       <div class="row wrap" style="margin-bottom:8px">
@@ -1052,13 +1059,28 @@ function renderPeople(){
   document.getElementById('npLongTermMode').onchange=(e)=>{
     document.getElementById('npLongTermRange').style.display = e.target.value==='range'? 'flex':'none';
   };
+  document.getElementById('npAddSkillType').onclick=()=>{
+    const name=document.getElementById('npNewSkillName').value.trim();
+    if(!name){ showAlert('請輸入技能類別名稱'); return; }
+    if(state.skillOptions.includes(name)){ showAlert('這個技能類別已經存在'); return; }
+    state.skillOptions.push(name);
+    saveState();
+    // add the checkbox to the list live (unchecked by default) without
+    // losing whatever the user already typed for the new person's other fields
+    const list=document.getElementById('npSkillsList');
+    const label=document.createElement('label');
+    label.style.cssText='display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0';
+    label.innerHTML=`<input type="checkbox" class="np-skill-cb" value="${esc(name)}" style="width:auto"> ${esc(name)}`;
+    list.appendChild(label);
+    document.getElementById('npNewSkillName').value='';
+  };
   document.getElementById('npAdd').onclick=()=>{
     const name=document.getElementById('npName').value.trim();
     const group=document.getElementById('npGroup').value;
     const rank=document.getElementById('npRank').value;
     const license=document.getElementById('npLicense').value;
     const medCert=document.getElementById('npMedCert').value;
-    const skills=[...document.getElementById('npSkills').selectedOptions].map(o=>o.value);
+    const skills=[...document.querySelectorAll('.np-skill-cb:checked')].map(cb=>cb.value);
     const mode=document.getElementById('npLongTermMode').value;
     const longTerm = mode==='range'
       ? {mode:'range', start:document.getElementById('npLTStart').value, end:document.getElementById('npLTEnd').value}
@@ -1095,9 +1117,14 @@ function openPersonEditor(personId){
         ${MEDCERT_OPTIONS.map(c=>`<option value="${c}" ${p.medCert===c?'selected':''}>${c}</option>`).join('')}
       </select>
       <label>特殊專長技能(可複選)</label>
-      <select id="epSkills" multiple size="2" style="margin-bottom:8px">
-        ${SKILL_OPTIONS.map(s=>`<option value="${s}" ${(p.skills||[]).includes(s)?'selected':''}>${s}</option>`).join('')}
-      </select>
+      <div id="epSkillsList" style="margin-bottom:6px">${state.skillOptions.map(s=>`
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0">
+          <input type="checkbox" class="ep-skill-cb" value="${esc(s)}" style="width:auto" ${(p.skills||[]).includes(s)?'checked':''}> ${esc(s)}
+        </label>`).join('')}</div>
+      <div class="row wrap" style="margin-bottom:8px">
+        <input type="text" id="epNewSkillName" placeholder="新增技能類別，例：無線電" style="flex:1">
+        <button class="ghost small" id="epAddSkillType">＋新增類別</button>
+      </div>
       <label>長期事故</label>
       <select id="epLongTermMode" style="margin-bottom:8px">
         <option value="off" ${lt.mode==='off'?'selected':''}>（無）</option>
@@ -1114,6 +1141,19 @@ function openPersonEditor(personId){
   `;
   document.body.appendChild(modal);
   document.getElementById('closeModal').onclick=()=>modal.remove();
+  document.getElementById('epAddSkillType').onclick=()=>{
+    const name=document.getElementById('epNewSkillName').value.trim();
+    if(!name){ showAlert('請輸入技能類別名稱'); return; }
+    if(state.skillOptions.includes(name)){ showAlert('這個技能類別已經存在'); return; }
+    state.skillOptions.push(name);
+    saveState();
+    const list=document.getElementById('epSkillsList');
+    const label=document.createElement('label');
+    label.style.cssText='display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0';
+    label.innerHTML=`<input type="checkbox" class="ep-skill-cb" value="${esc(name)}" style="width:auto"> ${esc(name)}`;
+    list.appendChild(label);
+    document.getElementById('epNewSkillName').value='';
+  };
   document.getElementById('epLongTermMode').onchange=(e)=>{
     document.getElementById('epLongTermRange').style.display = e.target.value==='range'? 'flex':'none';
   };
@@ -1123,7 +1163,7 @@ function openPersonEditor(personId){
     p.rank=document.getElementById('epRank').value;
     p.license=document.getElementById('epLicense').value;
     p.medCert=document.getElementById('epMedCert').value;
-    p.skills=[...document.getElementById('epSkills').selectedOptions].map(o=>o.value);
+    p.skills=[...document.querySelectorAll('.ep-skill-cb:checked')].map(cb=>cb.value);
     const mode=document.getElementById('epLongTermMode').value;
     p.longTerm = mode==='range'
       ? {mode:'range', start:document.getElementById('epLTStart').value, end:document.getElementById('epLTEnd').value}
