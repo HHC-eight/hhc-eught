@@ -773,6 +773,23 @@ function renderPeople(){
           </select>
         </div>
       </div>
+      <div class="row wrap" style="margin-bottom:8px">
+        <div class="grow"><label>駕照篩選(可複選)</label>
+          <select id="pplLicenseFilter" multiple size="4">
+            <option value="小型車">小型車</option>
+            <option value="大型車">大型車</option>
+            <option value="大客車">大客車</option>
+            <option value="__none">未登記駕照</option>
+          </select>
+        </div>
+        <div class="grow"><label>EMT篩選(可複選)</label>
+          <select id="pplMedCertFilter" multiple size="5">
+            ${MEDCERT_OPTIONS.map(c=>`<option value="${c}">${c}</option>`).join('')}
+            <option value="__none">未登記救護證照</option>
+          </select>
+        </div>
+      </div>
+      <div class="hint" style="margin-bottom:8px">駕照/EMT篩選可以按住Ctrl(電腦)或直接點多個選項(手機)一次選多個；不選任何項目代表不篩選。</div>
       ${groups.length===0 && state.personnel.length===0 ? `<div class="empty">尚未新增人員</div>` : ''}
       <div id="pplListArea">${renderPeopleGroups(groups)}</div>
     </div>
@@ -802,10 +819,20 @@ function renderPeople(){
   function applyPeopleFilter(){
     const kw=document.getElementById('pplSearch').value.trim();
     const gf=document.getElementById('pplGroupFilter').value;
+    const lf=[...document.getElementById('pplLicenseFilter').selectedOptions].map(o=>o.value);
+    const mf=[...document.getElementById('pplMedCertFilter').selectedOptions].map(o=>o.value);
     const filterFn = p=>{
       if(kw && !p.name.includes(kw)) return false;
       if(gf==='__none' && p.group) return false;
       if(gf && gf!=='__none' && p.group!==gf) return false;
+      if(lf.length){
+        const matchLicense = lf.includes('__none')? !p.license : false;
+        if(!matchLicense && !lf.includes(p.license)) return false;
+      }
+      if(mf.length){
+        const matchMed = mf.includes('__none')? !p.medCert : false;
+        if(!matchMed && !mf.includes(p.medCert)) return false;
+      }
       return true;
     };
     const area=document.getElementById('pplListArea');
@@ -815,6 +842,8 @@ function renderPeople(){
   }
   document.getElementById('pplSearch').oninput=applyPeopleFilter;
   document.getElementById('pplGroupFilter').onchange=applyPeopleFilter;
+  document.getElementById('pplLicenseFilter').onchange=applyPeopleFilter;
+  document.getElementById('pplMedCertFilter').onchange=applyPeopleFilter;
   document.getElementById('npLongTermMode').onchange=(e)=>{
     document.getElementById('npLongTermRange').style.display = e.target.value==='range'? 'flex':'none';
   };
