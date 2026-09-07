@@ -213,16 +213,25 @@ function orderedCategories(){
 }
 /* preset quick-add templates for 其他勤務 (misc duty) with usual times, per unit SOP */
 const MISC_PRESETS=[
-  {role:'採買',start:'05:30',end:'08:00',roles:['車長','駕駛']},
-  {role:'愛心便當',start:'16:00',end:'18:00',roles:['車長','駕駛']},
-  {role:'消防車',start:'06:00',end:'08:00',roles:['車長','駕駛']},
-  {role:'救護車',start:'06:00',end:'08:00',roles:['車長','駕駛']},
+  {role:'採買',start:'05:30',end:'08:00',roles:['駕駛','車長']},
+  {role:'愛心便當',start:'16:00',end:'18:00',roles:['駕駛','車長']},
+  {role:'消防車',start:'06:00',end:'08:00',roles:['駕駛','車長']},
+  {role:'救護車',start:'06:30',end:'06:30',roles:['駕駛','車長']},
   {role:'技工',start:'06:30',end:'07:30',roles:null},
-  {role:'話務',start:'06:30',end:'07:30',roles:['話務(需小型車以上駕照)']}
+  {role:'話務',start:'06:30',end:'07:30',roles:['話務(需小型車以上駕照)']},
+  {role:'督伙',start:'04:30',end:'20:00',roles:null}
 ];
+/* driver license requirements differ per vehicle type; anything not listed
+   here (採買/愛心便當/etc) just needs some license (小型車 or better). */
+function requiredDriverLicenses(roleName){
+  if(roleName==='消防車') return ['大型車','大客車'];
+  if(roleName==='救護車') return ['小型車','大型車','大客車'];
+  return ['小型車','大型車','大客車'];
+}
 /* validation for structured misc entries (entry.roles present): 車長/駕駛 pairs
-   need the driver to hold at least a 小型車 license and the chief to be an
-   NCO+ outranking the driver; anything tagged 話務 just needs a license. */
+   need the driver to hold the right license for that vehicle type and the
+   chief to be an NCO+ outranking the driver; anything tagged 話務 just needs
+   a license. */
 function validateMiscEntry(entry){
   if(!entry.roles) return [];
   const issues=[];
@@ -231,7 +240,8 @@ function validateMiscEntry(entry){
   if(chiefIdx>-1 && driverIdx>-1){
     const chief=state.personnel.find(p=>p.id===entry.personIds[chiefIdx]);
     const driver=state.personnel.find(p=>p.id===entry.personIds[driverIdx]);
-    if(driver && !driver.license) issues.push(`駕駛 ${driver.name}：沒有駕照，至少需要小型車駕照`);
+    const required=requiredDriverLicenses(entry.role);
+    if(driver && (!driver.license || !required.includes(driver.license))) issues.push(`駕駛 ${driver.name}：需持有${required.join('或')}駕照`);
     if(chief && !['士官','軍官'].includes(rankCategory(chief.rank))) issues.push(`車長 ${chief.name}：需為士官以上`);
     if(chief && driver && rankIndex(chief.rank)>=rankIndex(driver.rank)) issues.push(`車長 ${chief.name} 階級須高於駕駛 ${driver.name}`);
   }
@@ -1186,6 +1196,18 @@ function personOptions(selected, groupFilter){
   if(!sorted.length) return `<option value="">（此排組無人員）</option>`;
   return sorted.map(p=>`<option value="${p.id}" ${p.id===selected?'selected':''}>${esc(p.name)}（${p.group||'未分組'}·${p.rank}${p.license? '·🚗'+esc(p.license):''}${personLongTerm(p).mode!=='off'?'·🚫長期':''}）</option>`).join('');
 }
+/* same as personOptions, but people for whom eligibleFn(p) is true are
+   sorted to the top of the list (still shown either way, just reordered) —
+   used for 車長/駕駛 selects so a valid candidate is easy to find */
+function personOptionsPrioritized(selected, eligibleFn){
+  if(!state.personnel.length) return `<option value="">（尚無人員）</option>`;
+  const sorted=[...state.personnel].sort((a,b)=>{
+    const pa=eligibleFn(a)?0:1, pb=eligibleFn(b)?0:1;
+    if(pa!==pb) return pa-pb;
+    return groupIndex(a.group)-groupIndex(b.group) || rankIndex(a.rank)-rankIndex(b.rank);
+  });
+  return sorted.map(p=>`<option value="${p.id}" ${p.id===selected?'selected':''}>${esc(p.name)}（${p.group||'未分組'}·${p.rank}${p.license? '·🚗'+esc(p.license):''}${personLongTerm(p).mode!=='off'?'·🚫長期':''}）</option>`).join('');
+}
 function fmtDate(d){ return d; }
 const WEEKDAY_CH=['日','一','二','三','四','五','六'];
 function fmtDateShort(dateStr){
@@ -1712,6 +1734,7 @@ function runDailyCheck(){
 
 /* ---- MISC TAB (簡易勤務，如採買/技工/查哨等免時段的項目) ---- */
 let miscSelectedRoles=null; // set by clicking a preset with structured roles (車長/駕駛 etc)
+let miscSelectedPresetRole=null; // the preset's role name (e.g. '消防車'), used to pick license requirements
 function openMiscPresetModal(){
   const opts=timeOptions();
   const modal=document.createElement('div');
@@ -1764,12 +1787,21 @@ function renderMisc(){
       </div>
       ${miscSelectedRoles? `
         <div class="hint" style="margin-bottom:6px">此項目需分別指定：${miscSelectedRoles.join('、')}</div>
-        ${miscSelectedRoles.map((r,i)=>`
+        ${miscSelectedRoles.map((r,i)=>{
+          let eligibleFn = ()=>false;
+          if(r==='駕駛'){
+            const required=requiredDriverLicenses(miscSelectedPresetRole);
+            eligibleFn = p=>p.license && required.includes(p.license);
+          } else if(r==='車長'){
+            eligibleFn = p=>['士官','軍官'].includes(rankCategory(p.rank));
+          }
+          return `
           <div class="row wrap" style="margin-bottom:8px">
             <div class="grow"><label>${esc(r)}</label>
-              <select id="mRoleSel${i}"><option value="">（未指派）</option>${personOptions()}</select>
+              <select id="mRoleSel${i}"><option value="">（未指派）</option>${personOptionsPrioritized(undefined, eligibleFn)}</select>
             </div>
-          </div>`).join('')}
+          </div>`;
+        }).join('')}
         <button class="ghost small" id="mFreeform" style="margin-bottom:8px">改用自由複選人員</button>
       ` : `
         <div class="row wrap" style="margin-bottom:8px">
@@ -1797,7 +1829,7 @@ function renderMisc(){
         </div>`;
       }).join('')}
     </div>
-    <div class="hint">此區用於不需6小時規則的項目，如：技工、採買、愛心便當、消防車、救護車、話務、督伙、開關門、健身房簽到等，依你們單位每日需要自行新增，也可以直接點上方常用項目快速帶入。採買/愛心便當/消防車/救護車需分別指定車長與駕駛：駕駛至少要有小型車駕照，車長需士官以上且階級高於駕駛；話務需至少小型車駕照。</div>
+    <div class="hint">此區用於不需6小時規則的項目，如：技工、採買、愛心便當、消防車、救護車、話務、督伙、開關門、健身房簽到等，依你們單位每日需要自行新增，也可以直接點上方常用項目快速帶入。採買/愛心便當/消防車/救護車需分別指定駕駛與車長：消防車駕駛需大型車或大客車駕照，救護車駕駛需小型車/大型車/大客車其中一種，其餘車輛駕駛至少需小型車駕照；車長需士官以上且階級高於駕駛，選單會把符合資格的人排到最上面。話務需至少小型車駕照。</div>
   `;
   document.getElementById('dateSel').onchange=(e)=>{ currentDate=e.target.value; render(); };
   function refreshPeopleFlags(){
@@ -1820,7 +1852,22 @@ function renderMisc(){
   document.getElementById('mEnd').onchange=refreshPeopleFlags;
   refreshPeopleFlags();
   if(document.getElementById('mFreeform')){
-    document.getElementById('mFreeform').onclick=()=>{ miscSelectedRoles=null; render(); };
+    document.getElementById('mFreeform').onclick=()=>{ miscSelectedRoles=null; miscSelectedPresetRole=null; render(); };
+  }
+  if(miscSelectedRoles){
+    const driverIdx=miscSelectedRoles.indexOf('駕駛');
+    const chiefIdx=miscSelectedRoles.indexOf('車長');
+    if(driverIdx>-1 && chiefIdx>-1){
+      const driverSel=document.getElementById('mRoleSel'+driverIdx);
+      driverSel.addEventListener('change', ()=>{
+        const driver=state.personnel.find(p=>p.id===driverSel.value);
+        const chiefSel=document.getElementById('mRoleSel'+chiefIdx);
+        const curVal=chiefSel.value;
+        const eligibleFn = p=>['士官','軍官'].includes(rankCategory(p.rank)) && (!driver || rankIndex(p.rank)<rankIndex(driver.rank));
+        chiefSel.innerHTML = `<option value="">（未指派）</option>` + personOptionsPrioritized(curVal, eligibleFn);
+        refreshPeopleFlags();
+      });
+    }
   }
   app.querySelectorAll('[data-preset]').forEach(b=>{
     b.onclick=(ev)=>{
@@ -1828,6 +1875,7 @@ function renderMisc(){
       const key=b.dataset.preset;
       const mp = key.startsWith('b')? MISC_PRESETS[Number(key.slice(1))] : state.miscCustomPresets[Number(key.slice(1))];
       miscSelectedRoles = mp.roles||null;
+      miscSelectedPresetRole = mp.role;
       render();
       document.getElementById('mRole').value=mp.role;
       document.getElementById('mStart').value=mp.start;
@@ -1856,6 +1904,7 @@ function renderMisc(){
       state.misc[currentDate].push({id:uid(),role,start,end,personIds});
     }
     miscSelectedRoles=null;
+    miscSelectedPresetRole=null;
     saveState(); render();
   };
   app.querySelectorAll('[data-del-misc]').forEach(b=>{
