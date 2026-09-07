@@ -281,7 +281,7 @@ function daysBetweenInclusive(startStr, endStr){
   const ds=new Date(startStr+'T00:00:00'), de=new Date(endStr+'T00:00:00');
   return Math.round((de-ds)/86400000)+1;
 }
-const UNAVAIL_REASON_PRESETS=['出車','體檢','體測','開會','帶廠商'];
+const UNAVAIL_REASON_PRESETS=['出車','體檢','體測','開會','帶廠商','留守'];
 /* 事故/請假 (uses a preset reason list or a custom typed one) */
 /* 衛哨 (安全士官/橋哨/指管) rule: the same person should not stand the same
    time-slot two days running — check whether they held this exact shift
@@ -957,7 +957,7 @@ function renderUnavail(){
     </div>
     <div class="card">
       <h2>反向登記（僅勾選人員可排，其餘視為休假）</h2>
-      <div class="hint" style="margin-bottom:8px">適用於例如演習、外派等大部分人員都不在的情況：勾選當天「有在、可以排班」的人，其餘全部人員會自動標記為當天全天休假。</div>
+      <div class="hint" style="margin-bottom:8px">適用於留守或其他大部分人員都不在的情況：勾選當天「有在、可以排班」的人，其餘全部人員會自動標記為當天全天休假。</div>
       <div class="row wrap" style="margin-bottom:8px">
         <button class="ghost small" id="reverseSelectAll">全選</button>
         <button class="ghost small" id="reverseClearAll">清空</button>
@@ -977,7 +977,20 @@ function renderUnavail(){
           }).join('');
         })()}
       </div>
+      <div class="row wrap" style="margin-bottom:8px">
+        <div class="grow"><label>未勾選人員的事故原因(選填)</label>
+          <select id="reverseReasonPreset">
+            <option value="">（不指定）</option>
+            ${UNAVAIL_REASON_PRESETS.map(r=>`<option>${r}</option>`).join('')}
+            <option value="__custom">其他(手動輸入)</option>
+          </select>
+        </div>
+      </div>
+      <div class="row wrap" id="reverseReasonCustomRow" style="margin-bottom:8px;display:none">
+        <div class="grow"><label>原因內容</label><input type="text" id="reverseReasonCustom" placeholder="請輸入原因"></div>
+      </div>
       <button class="primary" id="reverseApply" style="width:100%">套用反向登記</button>
+      <div class="hint">被自動標記的人之後仍可到下面「單筆登記」用「刪除」移除，或另外針對個人改登記更明確的事故原因（例：從「反向登記」改成「出車」）。</div>
     </div>
     <div class="card">
       <h2>新增人員休假（連續多天）</h2>
@@ -1014,7 +1027,7 @@ function renderUnavail(){
       }).join('')}
     </div>`:''}
     <div class="card">
-      <h2>${fmtDate(currentDate)} 名單（${list.length}）</h2>
+      <div class="section-title"><h2 style="margin:0">${fmtDate(currentDate)} 名單（${list.length}）</h2>${list.length? `<button class="ghost small danger" id="clearDayBtn">一鍵清空當日</button>`:''}</div>
       ${list.length===0? `<div class="empty">此日尚無登記</div>` : list.map(u=>`
         <div class="list-item">
           <span class="grow">${esc(personName(u.personId))}：${u.allDay? '全天不能' : (u.start+'-'+u.end+' 不能')}${u.reason? `（${esc(u.reason)}）`:''}${u.leaveId?'　🏖️休假':''}</span>
@@ -1031,6 +1044,14 @@ function renderUnavail(){
   document.getElementById('uaGroupFilter').onchange=(e)=>{
     document.getElementById('uaPerson').innerHTML = personOptions(undefined, e.target.value||undefined);
   };
+  if(document.getElementById('clearDayBtn')){
+    document.getElementById('clearDayBtn').onclick=()=>{
+      showConfirm(`確定要清空「${currentDate}」當天登記的所有事故/管制紀錄嗎？（此操作也會清掉落在這天的休假緩衝紀錄，多日休假的其他天不受影響）`, ()=>{
+        state.unavail[currentDate]=[];
+        saveState(); render();
+      });
+    };
+  }
   document.getElementById('uaAllDay').onchange=(e)=>{
     document.getElementById('uaTimeRow').style.display = e.target.checked? 'none':'flex';
   };
@@ -1043,17 +1064,22 @@ function renderUnavail(){
   document.getElementById('reverseClearAll').onclick=()=>{
     document.querySelectorAll('[data-reverse-check]').forEach(cb=>cb.checked=false);
   };
+  document.getElementById('reverseReasonPreset').onchange=(e)=>{
+    document.getElementById('reverseReasonCustomRow').style.display = e.target.value==='__custom'? 'flex':'none';
+  };
   document.getElementById('reverseApply').onclick=()=>{
     if(!state.personnel.length) return;
     const checkedIds = [...document.querySelectorAll('[data-reverse-check]:checked')].map(cb=>cb.dataset.reverseCheck);
     if(!checkedIds.length){ showAlert('請至少勾選一位可以排班的人員'); return; }
     const others = state.personnel.filter(p=>!checkedIds.includes(p.id));
-    showConfirm(`確定要把「${currentDate}」除了勾選的 ${checkedIds.length} 人以外，其餘 ${others.length} 人都標記為當天全天休假嗎？`, ()=>{
+    const preset=document.getElementById('reverseReasonPreset').value;
+    const reason = preset==='__custom'? (document.getElementById('reverseReasonCustom').value.trim()||'反向登記') : (preset||'反向登記');
+    showConfirm(`確定要把「${currentDate}」除了勾選的 ${checkedIds.length} 人以外，其餘 ${others.length} 人都標記為當天全天休假（原因：${reason}）嗎？`, ()=>{
       if(!state.unavail[currentDate]) state.unavail[currentDate]=[];
       others.forEach(p=>{
         const already = state.unavail[currentDate].some(u=>u.personId===p.id);
         if(!already){
-          state.unavail[currentDate].push({id:uid(),personId:p.id,allDay:true,start:'',end:'',reason:'反向登記'});
+          state.unavail[currentDate].push({id:uid(),personId:p.id,allDay:true,start:'',end:'',reason});
         }
       });
       saveState(); render();
@@ -1234,15 +1260,6 @@ function renderStats(){
       <input type="date" id="dateSel" value="${currentDate}">
     </div>
     <div class="card">
-      <h2>人員區分（排組 × 階級）</h2>
-      ${state.personnel.length===0? `<div class="empty">尚未新增人員</div>` : renderPeopleGroups(groups.length?groups:[''])}
-    </div>
-    <div class="card">
-      <h2>${fmtDate(currentDate)} 事故/管制名單</h2>
-      ${(state.unavail[currentDate]||[]).length===0? `<div class="empty">此日無人登記</div>` :
-        (state.unavail[currentDate]||[]).map(u=>`<div class="muted">・${esc(personName(u.personId))}：${u.allDay?'全天不能':(u.start+'-'+u.end+' 不能')}</div>`).join('')}
-    </div>
-    <div class="card">
       <h2>指定時間查詢</h2>
       <div class="row wrap" style="margin-bottom:8px">
         <div class="grow"><label>時間</label><select id="queryTime">${timeOptionsFine(10).map(t=>`<option ${t==='08:00'?'selected':''}>${t}</option>`).join('')}</select></div>
@@ -1260,6 +1277,15 @@ function renderStats(){
           <div style="width:28px;text-align:right;font-size:12px">${counts[i]}</div>
         </div>`).join('')}
       <div class="hint">此數字已包含請假/管制、長期事故、補休、以及當天已排定的勤務。</div>
+    </div>
+    <div class="card">
+      <h2>人員區分（排組 × 階級）</h2>
+      ${state.personnel.length===0? `<div class="empty">尚未新增人員</div>` : renderPeopleGroups(groups.length?groups:[''])}
+    </div>
+    <div class="card">
+      <h2>${fmtDate(currentDate)} 事故/管制名單</h2>
+      ${(state.unavail[currentDate]||[]).length===0? `<div class="empty">此日無人登記</div>` :
+        (state.unavail[currentDate]||[]).map(u=>`<div class="muted">・${esc(personName(u.personId))}：${u.allDay?'全天不能':(u.start+'-'+u.end+' 不能')}</div>`).join('')}
     </div>
   `;
   document.getElementById('dateSel').onchange=(e)=>{ currentDate=e.target.value; render(); };
