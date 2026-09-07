@@ -302,6 +302,9 @@ if(!state.miscPresets){
 }
 let currentTab='people';
 let currentDate = todayStr();
+/* persists the 人員 roster's search/filter selections across re-renders
+   (e.g. saving an edit shouldn't reset what you were looking at) */
+let pplFilterState = {kw:'', group:'', license:[], medCert:[]};
 
 function todayStr(){
   const d=new Date(); const p=n=>String(n).padStart(2,'0');
@@ -806,7 +809,7 @@ function autoAssignMiscForDate(date){
 /* ---------------- rendering ---------------- */
 const app=document.getElementById('app');
 document.querySelectorAll('.tabs button').forEach(btn=>{
-  btn.addEventListener('click',()=>{ currentTab=btn.dataset.tab; render(); });
+  btn.addEventListener('click',()=>{ currentTab=btn.dataset.tab; window.scrollTo(0,0); render(); });
 });
 document.getElementById('exportBtn').addEventListener('click', openExportModal);
 function openExportModal(){
@@ -863,12 +866,14 @@ function openExportModal(){
 }
 
 function render(){
+  const scrollY = window.scrollY;
   document.querySelectorAll('.tabs button').forEach(b=>b.classList.toggle('active', b.dataset.tab===currentTab));
   if(currentTab==='people') renderPeople();
   else if(currentTab==='unavail') renderUnavail();
   else if(currentTab==='stats') renderStats();
   else if(currentTab==='schedule') renderSchedule();
   else if(currentTab==='misc') renderMisc();
+  window.scrollTo(0, scrollY);
 }
 
 /* ---- PEOPLE TAB ---- */
@@ -928,28 +933,28 @@ function renderPeople(){
     <div class="card">
       <div class="section-title"><h2 style="margin:0" id="pplCountLabel">名冊（${state.personnel.length}人）</h2><button class="ghost small" id="pplClearFilter">清除篩選</button></div>
       <div class="row wrap" style="margin-bottom:8px">
-        <div class="grow"><label>搜尋姓名</label><input type="text" id="pplSearch" placeholder="輸入姓名關鍵字"></div>
+        <div class="grow"><label>搜尋姓名</label><input type="text" id="pplSearch" placeholder="輸入姓名關鍵字" value="${esc(pplFilterState.kw)}"></div>
         <div style="width:120px"><label>排組篩選</label>
           <select id="pplGroupFilter">
-            <option value="">（全部）</option>
-            ${groups.map(g=>`<option value="${esc(g)}">${esc(g)}</option>`).join('')}
-            <option value="__none">未分組</option>
+            <option value="" ${!pplFilterState.group?'selected':''}>（全部）</option>
+            ${groups.map(g=>`<option value="${esc(g)}" ${pplFilterState.group===g?'selected':''}>${esc(g)}</option>`).join('')}
+            <option value="__none" ${pplFilterState.group==='__none'?'selected':''}>未分組</option>
           </select>
         </div>
       </div>
       <div class="row wrap" style="margin-bottom:8px">
         <div class="grow"><label>駕照篩選(可複選)</label>
           <select id="pplLicenseFilter" multiple size="4">
-            <option value="小型車">小型車</option>
-            <option value="大型車">大型車</option>
-            <option value="大客車">大客車</option>
-            <option value="__none">未登記駕照</option>
+            <option value="小型車" ${pplFilterState.license.includes('小型車')?'selected':''}>小型車</option>
+            <option value="大型車" ${pplFilterState.license.includes('大型車')?'selected':''}>大型車</option>
+            <option value="大客車" ${pplFilterState.license.includes('大客車')?'selected':''}>大客車</option>
+            <option value="__none" ${pplFilterState.license.includes('__none')?'selected':''}>未登記駕照</option>
           </select>
         </div>
         <div class="grow"><label>EMT篩選(可複選)</label>
           <select id="pplMedCertFilter" multiple size="5">
-            ${MEDCERT_OPTIONS.map(c=>`<option value="${c}">${c}</option>`).join('')}
-            <option value="__none">未登記救護證照</option>
+            ${MEDCERT_OPTIONS.map(c=>`<option value="${c}" ${pplFilterState.medCert.includes(c)?'selected':''}>${c}</option>`).join('')}
+            <option value="__none" ${pplFilterState.medCert.includes('__none')?'selected':''}>未登記救護證照</option>
           </select>
         </div>
       </div>
@@ -985,6 +990,7 @@ function renderPeople(){
     const gf=document.getElementById('pplGroupFilter').value;
     const lf=[...document.getElementById('pplLicenseFilter').selectedOptions].map(o=>o.value);
     const mf=[...document.getElementById('pplMedCertFilter').selectedOptions].map(o=>o.value);
+    pplFilterState = {kw, group:gf, license:lf, medCert:mf};
     const filterFn = p=>{
       if(kw && !p.name.includes(kw)) return false;
       if(gf==='__none' && p.group) return false;
@@ -1011,6 +1017,11 @@ function renderPeople(){
   }
   document.getElementById('pplSearch').oninput=applyPeopleFilter;
   document.getElementById('pplGroupFilter').onchange=applyPeopleFilter;
+  document.getElementById('pplLicenseFilter').onchange=applyPeopleFilter;
+  document.getElementById('pplMedCertFilter').onchange=applyPeopleFilter;
+  if(pplFilterState.kw || pplFilterState.group || pplFilterState.license.length || pplFilterState.medCert.length){
+    applyPeopleFilter();
+  }
   document.getElementById('pplClearFilter').onclick=()=>{
     document.getElementById('pplSearch').value='';
     document.getElementById('pplGroupFilter').value='';
@@ -1018,8 +1029,6 @@ function renderPeople(){
     [...document.getElementById('pplMedCertFilter').options].forEach(o=>o.selected=false);
     applyPeopleFilter();
   };
-  document.getElementById('pplLicenseFilter').onchange=applyPeopleFilter;
-  document.getElementById('pplMedCertFilter').onchange=applyPeopleFilter;
   document.getElementById('npLongTermMode').onchange=(e)=>{
     document.getElementById('npLongTermRange').style.display = e.target.value==='range'? 'flex':'none';
   };
