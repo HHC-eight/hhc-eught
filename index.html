@@ -51,7 +51,8 @@ button.primary{background:var(--accent);border-color:var(--accent);color:#1a140a
 button.ghost{background:transparent;}
 button.danger{color:var(--danger);border-color:var(--danger);background:transparent;}
 button.small{padding:5px 9px;font-size:12px;}
-button:active{opacity:.7;}
+button{transition:transform .12s ease, opacity .12s ease;}
+button:active{opacity:.65;transform:scale(.95);}
 .tabs{position:fixed;bottom:0;left:0;right:0;display:flex;background:var(--panel);border-top:1px solid var(--line);z-index:30;padding-bottom:env(safe-area-inset-bottom);}
 .tabs button{flex:1;background:transparent;border:none;border-radius:0;padding:11px 4px;font-size:12px;color:var(--dim);}
 .tabs button.active{color:var(--accent);font-weight:600;}
@@ -75,7 +76,8 @@ button:active{opacity:.7;}
 .hr-table th{color:var(--dim);font-weight:500;}
 .bar-wrap{background:var(--panel2);border-radius:3px;overflow:hidden;height:14px;position:relative;}
 .bar-fill{background:var(--accent2);height:100%;}
-.pill-btn{display:inline-block;padding:4px 9px;border-radius:14px;border:1px solid var(--line);font-size:12px;margin:2px 3px 0 0;background:var(--panel2);}
+.pill-btn{display:inline-block;padding:4px 9px;border-radius:14px;border:1px solid var(--line);font-size:12px;margin:2px 3px 0 0;background:var(--panel2);transition:transform .12s ease, opacity .12s ease;}
+.pill-btn:active{opacity:.6;transform:scale(.93);}
 .empty{color:var(--dim);font-size:13px;text-align:center;padding:20px 0;}
 .divider{height:1px;background:var(--line);margin:12px 0;}
 textarea{min-height:50px;resize:vertical;}
@@ -220,7 +222,13 @@ const MISC_PRESETS=[
   {role:'救護車',start:'06:30',end:'06:30',roles:['駕駛','車長']},
   {role:'技工',start:'06:30',end:'07:30',roles:null},
   {role:'話務',start:'06:30',end:'07:30',roles:['話務(需小型車以上駕照)']},
-  {role:'督伙',start:'04:30',end:'20:00',roles:null}
+  {role:'督伙',start:'04:30',end:'20:00',roles:null},
+  {role:'查哨 22-24',start:'22:00',end:'24:00',roles:null},
+  {role:'查哨 00-02',start:'00:00',end:'02:00',roles:null},
+  {role:'查哨 02-04',start:'02:00',end:'04:00',roles:null},
+  {role:'查哨 04-06',start:'04:00',end:'06:00',roles:null},
+  {role:'查哨 12-14',start:'12:00',end:'14:00',roles:null},
+  {role:'值班',start:'07:00',end:'07:00',roles:null,restUntil:'12:00'}
 ];
 /* driver license requirements differ per vehicle type; anything not listed
    here (採買/愛心便當/etc) just needs some license (小型車 or better). */
@@ -261,6 +269,16 @@ function validateMiscEntry(entry){
 
 let state = loadState();
 if(!state.miscCustomPresets) state.miscCustomPresets=[];
+if(!state.miscPresets){
+  // migrate the old fixed MISC_PRESETS constant + any user-added custom
+  // presets into one persisted, fully-editable list
+  state.miscPresets = MISC_PRESETS.map(p=>({role:p.role, start:p.start, end:p.end, roles:p.roles?[...p.roles]:null, fixed:false, restUntil:p.restUntil||''}));
+  state.miscCustomPresets.forEach(p=>{
+    state.miscPresets.push({role:p.role, start:p.start, end:p.end, roles:null, fixed:false});
+  });
+  state.miscCustomPresets=[];
+  saveState();
+}
 let currentTab='people';
 let currentDate = todayStr();
 
@@ -454,6 +472,8 @@ function isPersonUnavailable(personId, date, s, e, excludeCatShift){
   // avoid double-booking against 其他勤務 (misc) commitments that have a defined time window
   for(const m of (state.misc[date]||[])){
     if(m.start && m.end && (m.personIds||[]).includes(personId) && windowsOverlapOnce(s,e,toMin(m.start),toMin(m.end))) return true;
+    // a misc duty may also grant 補休 afterwards (e.g. 值班 07:00-07:00 補休至12:00)
+    if(m.restUntil && m.end && (m.personIds||[]).includes(personId) && windowsOverlapRecurring(s,e,toMin(m.end),toMin(m.restUntil))) return true;
   }
   return false;
 }
@@ -462,6 +482,40 @@ function personName(id){ const p=state.personnel.find(p=>p.id===id); return p?p.
 /* for the ad-hoc "who's free right now, and for how long" query: steps forward
    in 15-minute increments from queryMin until the person becomes unavailable
    (leave, long-term, comp-rest, or an existing assignment) or the day ends */
+/* explains WHY a person is unavailable at a given minute — used by the
+   指定時間查詢 so the result shows the actual reason, not just a count */
+function unavailabilityReasonsAt(personId, date, qMin){
+  const out=[];
+  const s=qMin, e=qMin+1;
+  const person = state.personnel.find(p=>p.id===personId);
+  if(person){
+    const lt = personLongTerm(person);
+    if(lt.mode==='allday') out.push('長期事故：全天不可排');
+    else if(lt.mode==='range' && lt.start && lt.end && windowsOverlapRecurring(s,e,toMin(lt.start),toMin(lt.end))) out.push(`長期事故：每天 ${lt.start}-${lt.end} 不可排`);
+  }
+  (state.unavail[date]||[]).filter(u=>u.personId===personId).forEach(u=>{
+    const hit = u.allDay || windowsOverlapOnce(s,e,toMin(u.start),toMin(u.end));
+    if(hit) out.push(`${u.allDay? '全天':`${u.start}-${u.end}`}${u.reason? '（'+u.reason+'）':'（未註記原因）'}`);
+  });
+  for(const w of personCompRestWindows(personId, date)){
+    if(windowsOverlapRecurring(s,e,toMin(w.start),toMin(w.end))) out.push(`補休中（${w.catName} ${w.label} 後，至 ${w.end}）`);
+  }
+  const dayAssign = state.assign[date]||{};
+  state.categories.forEach(cat=>{
+    const catAssign = dayAssign[cat.id]||{};
+    cat.shifts.forEach(sft=>{
+      if((catAssign[sft.id]||[]).includes(personId) && windowsOverlapOnce(s,e,toMin(sft.start),toMin(sft.end))){
+        out.push(`勤務中：${cat.name} ${sft.label||sft.start+'-'+sft.end}`);
+      }
+    });
+  });
+  (state.misc[date]||[]).forEach(m=>{
+    if(!(m.personIds||[]).includes(personId)) return;
+    if(m.start && m.end && windowsOverlapOnce(s,e,toMin(m.start),toMin(m.end))) out.push(`勤務中：${m.role}${m.start&&m.end?` (${m.start}-${m.end})`:''}`);
+    else if(m.restUntil && m.end && windowsOverlapRecurring(s,e,toMin(m.end),toMin(m.restUntil))) out.push(`補休中（${m.role} 後，至 ${m.restUntil}）`);
+  });
+  return out.length? out : ['不可排（原因不明）'];
+}
 function freeDurationFrom(personId, date, queryMin){
   if(isPersonUnavailable(personId, date, queryMin, queryMin+1)) return 0;
   const step=15; let t=queryMin;
@@ -643,6 +697,61 @@ function autoAssignDay(date){
         assignCount[arr[idx]]=(assignCount[arr[idx]]||0)+1;
       }
     }
+  });
+  saveState();
+}
+
+/* Handles 其他勤務 (misc) as part of "auto-assign for the day":
+   1) any preset marked 固定項目 (fixed) that has no entry yet for this date
+      gets one created automatically (e.g. 消防車/救護車 that happen every day)
+   2) every misc entry for the date with structured roles (駕駛/車長/話務) that
+      still has an empty slot gets a person filled in, using the same
+      license/rank/medCert eligibility rules as the manual dropdowns.
+   Freeform entries (no defined roles) are left alone — there's no fixed slot
+   count to know how many people they're supposed to have. */
+function autoAssignMiscForDate(date){
+  if(!state.misc[date]) state.misc[date]=[];
+  state.miscPresets.filter(p=>p.fixed).forEach(preset=>{
+    const exists = state.misc[date].some(m=>m.role===preset.role);
+    if(!exists){
+      const roles = preset.roles;
+      state.misc[date].push({
+        id:uid(), role:preset.role, start:preset.start, end:preset.end, restUntil:preset.restUntil||'',
+        roles: roles?[...roles]:undefined,
+        personIds: roles? roles.map(()=>undefined) : []
+      });
+    }
+  });
+  state.misc[date].forEach(entry=>{
+    if(!entry.roles) return; // freeform entries aren't auto-filled
+    if(!entry.personIds) entry.personIds=entry.roles.map(()=>undefined);
+    entry.roles.forEach((r,i)=>{
+      if(entry.personIds[i]) return; // already assigned
+      const needsMed = entry.role==='救護車';
+      let eligibleFn;
+      if(r==='駕駛'){
+        const required=requiredDriverLicenses(entry.role);
+        eligibleFn = p=>p.license && required.includes(p.license) && (!needsMed || p.medCert);
+      } else if(r==='車長'){
+        const driverIdx=entry.roles.indexOf('駕駛');
+        const driver = driverIdx>-1? state.personnel.find(p=>p.id===entry.personIds[driverIdx]) : null;
+        eligibleFn = p=>['士官','軍官'].includes(rankCategory(p.rank)) && (!driver || rankIndex(p.rank)<rankIndex(driver.rank)) && (!needsMed || p.medCert);
+      } else if(r.startsWith('話務')){
+        eligibleFn = p=>!!p.license;
+      } else {
+        eligibleFn = ()=>true;
+      }
+      const sMin = entry.start? toMin(entry.start) : null;
+      const eMinRaw = entry.end? toMin(entry.end) : null;
+      const candidates = state.personnel.filter(p=>
+        !entry.personIds.includes(p.id) && eligibleFn(p) &&
+        !(sMin!==null && eMinRaw!==null && isPersonUnavailable(p.id, date, sMin, eMinRaw===0?1440:eMinRaw))
+      );
+      if(candidates.length){
+        candidates.sort((a,b)=>groupIndex(a.group)-groupIndex(b.group) || rankIndex(a.rank)-rankIndex(b.rank));
+        entry.personIds[i]=candidates[0].id;
+      }
+    });
   });
   saveState();
 }
@@ -999,7 +1108,7 @@ function renderUnavail(){
           </select>
         </div>
         <div class="grow"><label>姓名</label>
-          <select id="uaPerson">${personOptions()}</select>
+          <select id="uaPerson">${personOptionsForIncident(undefined, undefined, currentDate)}</select>
         </div>
       </div>
       <div class="row wrap" style="margin-bottom:8px">
@@ -1022,6 +1131,15 @@ function renderUnavail(){
       </div>
       <div class="row wrap" id="uaReasonCustomRow" style="margin-bottom:8px;display:none">
         <div class="grow"><label>原因內容</label><input type="text" id="uaReasonCustom" placeholder="請輸入原因"></div>
+      </div>
+      <div class="row wrap" style="margin-bottom:8px">
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text)">
+          <input type="checkbox" id="uaMultiDay" style="width:auto"> 連續多日（例：9/8-9/9 都登記同一筆事故）
+        </label>
+      </div>
+      <div class="row wrap" id="uaMultiDayRow" style="margin-bottom:8px;display:none">
+        <div class="grow"><label>起始日</label><input type="date" id="uaRangeStart" value="${currentDate}"></div>
+        <div class="grow"><label>結束日</label><input type="date" id="uaRangeEnd" value="${currentDate}"></div>
       </div>
       <button class="primary" id="uaAdd" style="width:100%">新增</button>
     </div>
@@ -1123,7 +1241,7 @@ function renderUnavail(){
   `;
   document.getElementById('dateSel').onchange=(e)=>{ currentDate=e.target.value; render(); };
   document.getElementById('uaGroupFilter').onchange=(e)=>{
-    document.getElementById('uaPerson').innerHTML = personOptions(undefined, e.target.value||undefined);
+    document.getElementById('uaPerson').innerHTML = personOptionsForIncident(undefined, e.target.value||undefined, currentDate);
   };
   if(document.getElementById('clearDayBtn')){
     document.getElementById('clearDayBtn').onclick=()=>{
@@ -1177,9 +1295,21 @@ function renderUnavail(){
     const start=document.getElementById('uaStart').value, end=document.getElementById('uaEnd').value;
     const preset=document.getElementById('uaReasonPreset').value;
     const reason = preset==='__custom'? document.getElementById('uaReasonCustom').value.trim() : preset;
-    if(!state.unavail[currentDate]) state.unavail[currentDate]=[];
-    state.unavail[currentDate].push({id:uid(),personId,allDay,start,end,reason});
+    const multi=document.getElementById('uaMultiDay').checked;
+    let dates=[currentDate];
+    if(multi){
+      const rs=document.getElementById('uaRangeStart').value, re=document.getElementById('uaRangeEnd').value;
+      if(!rs||!re||rs>re){ showAlert('請確認連續多日的日期範圍正確'); return; }
+      dates=dateRangeList(rs,re);
+    }
+    dates.forEach(d=>{
+      if(!state.unavail[d]) state.unavail[d]=[];
+      state.unavail[d].push({id:uid(),personId,allDay,start,end,reason});
+    });
     saveState(); render();
+  };
+  document.getElementById('uaMultiDay').onchange=(e)=>{
+    document.getElementById('uaMultiDayRow').style.display = e.target.checked? 'flex':'none';
   };
   function updateLeavePreview(){
     const s=document.getElementById('lvStart').value, e=document.getElementById('lvEnd').value;
@@ -1228,6 +1358,7 @@ function renderUnavail(){
   };
   document.getElementById('autoAssignBtn').onclick=()=>{
     autoAssignDay(currentDate);
+    autoAssignMiscForDate(currentDate);
     currentTab='schedule';
     render();
   };
@@ -1259,6 +1390,22 @@ function personOptions(selected, groupFilter){
 /* same as personOptions, but people for whom eligibleFn(p) is true are
    sorted to the top of the list (still shown either way, just reordered) —
    used for 車長/駕駛 selects so a valid candidate is easy to find */
+/* options for the 事故登載 picker: anyone already carrying an all-day
+   incident/leave for this date is pushed to the very bottom, so the people
+   still needing registration stay at the top of the list */
+function personOptionsForIncident(selected, groupFilter, date){
+  if(!state.personnel.length) return `<option value="">（尚無人員）</option>`;
+  let list=[...state.personnel];
+  if(groupFilter) list = groupFilter==='__none'? list.filter(p=>!p.group) : list.filter(p=>p.group===groupFilter);
+  if(!list.length) return `<option value="">（此排組無人員）</option>`;
+  const hasAllDay = p => (state.unavail[date]||[]).some(u=>u.personId===p.id && u.allDay);
+  list.sort((a,b)=>{
+    const aa=hasAllDay(a)?1:0, bb=hasAllDay(b)?1:0;
+    if(aa!==bb) return aa-bb;
+    return groupIndex(a.group)-groupIndex(b.group) || rankIndex(a.rank)-rankIndex(b.rank);
+  });
+  return list.map(p=>`<option value="${p.id}" ${p.id===selected?'selected':''}>${esc(p.name)}（${p.group||'未分組'}·${p.rank}${p.license? '·🚗'+esc(p.license):''}${p.medCert? '·⛑️'+esc(p.medCert):''}${hasAllDay(p)?'　✅已登記全天':''}）</option>`).join('');
+}
 function personOptionsPrioritized(selected, eligibleFn){
   if(!state.personnel.length) return `<option value="">（尚無人員）</option>`;
   const sorted=[...state.personnel].sort((a,b)=>{
@@ -1413,6 +1560,12 @@ function renderStats(){
     const absentAll = rankBreakdown(state.personnel.filter(p=>isPersonUnavailable(p.id,currentDate,qMin,qMin+1)));
     const presentAll = {軍官:totalAll.軍官-absentAll.軍官, 士官:totalAll.士官-absentAll.士官, 士兵:totalAll.士兵-absentAll.士兵};
     const fmtRank=c=>`${c.軍官}官${c.士官}士${c.士兵}兵`;
+    // for anyone unavailable at this moment, collect WHY (leave/incident,
+    // long-term block, comp-rest, or an actual duty they're standing)
+    const busyList = state.personnel
+      .filter(p=>isPersonUnavailable(p.id,currentDate,qMin,qMin+1))
+      .map(p=>({p, reasons: unavailabilityReasonsAt(p.id,currentDate,qMin)}))
+      .sort((a,b)=>groupIndex(a.p.group)-groupIndex(b.p.group) || rankIndex(a.p.rank)-rankIndex(b.p.rank));
     resultEl.innerHTML = `
       <div class="muted" style="margin-bottom:6px">${t} 有空：${free.length} / ${state.personnel.length} 人</div>
       <table class="hr-table" style="margin-bottom:10px">
@@ -1420,7 +1573,13 @@ function renderStats(){
         ${rows.map(r=>`<tr><td style="text-align:left">${esc(r.label)}</td><td>${fmtRank(r.total)}</td><td>${fmtRank(r.absent)}</td><td>${fmtRank(r.present)}</td></tr>`).join('')}
         <tr style="font-weight:600"><td style="text-align:left">總計</td><td>${fmtRank(totalAll)}</td><td>${fmtRank(absentAll)}</td><td>${fmtRank(presentAll)}</td></tr>
       </table>
-      ${free.map(x=>`<div class="list-item"><span class="grow">${esc(x.p.name)}（${x.p.group||'未分組'}·${x.p.rank}）</span><span class="muted">空 ${Math.floor(x.dur/60)}小時${x.dur%60?x.dur%60+'分':''}</span></div>`).join('')}
+      <div class="muted" style="margin:8px 0 4px"><b>有空人員</b></div>
+      ${free.length? free.map(x=>`<div class="list-item"><span class="grow">${esc(x.p.name)}（${x.p.group||'未分組'}·${x.p.rank}）</span><span class="muted">空 ${Math.floor(x.dur/60)}小時${x.dur%60?x.dur%60+'分':''}</span></div>`).join('') : `<div class="empty">此時間無人有空</div>`}
+      <div class="muted" style="margin:12px 0 4px"><b>事故人員</b></div>
+      ${busyList.length? busyList.map(x=>`<div class="list-item" style="flex-direction:column;align-items:stretch">
+          <div class="row"><span class="grow">${esc(x.p.name)}（${x.p.group||'未分組'}·${x.p.rank}）</span></div>
+          ${x.reasons.map(r=>`<div class="muted">・${esc(r)}</div>`).join('')}
+        </div>`).join('') : `<div class="empty">此時間無人有事故</div>`}
     `;
   };
 }
@@ -1461,7 +1620,7 @@ function renderSchedule(){
     </div>
   `;
   document.getElementById('dateSel').onchange=(e)=>{ currentDate=e.target.value; render(); };
-  document.getElementById('autoAssignBtn2').onclick=()=>{ autoAssignDay(currentDate); render(); };
+  document.getElementById('autoAssignBtn2').onclick=()=>{ autoAssignDay(currentDate); autoAssignMiscForDate(currentDate); render(); };
   document.getElementById('clearAllScheduleBtn').onclick=()=>{
     showConfirm(`確定要清空「${currentDate}」當天所有已排的班表嗎？（安全士官/橋哨/指管/打飯班等所有類別都會一起清空，此動作無法復原）`, ()=>{
       state.assign[currentDate] = {};
@@ -1891,29 +2050,60 @@ function runDailyCheck(){
 
 /* ---- MISC TAB (簡易勤務，如採買/技工/查哨等免時段的項目) ---- */
 let miscSelectedRoles=null; // set by clicking a preset with structured roles (車長/駕駛 etc)
-let miscSelectedPresetRole=null; // the preset's role name (e.g. '消防車'), used to pick license requirements
-function openMiscPresetModal(){
+let miscSelectedPresetRole=null;
+let miscSelectedRestUntil=''; // 補休至 carried from the clicked preset
+function openMiscPresetModal(editIndex){
+  const editing = typeof editIndex==='number';
+  const existing = editing? state.miscPresets[editIndex] : null;
   const opts=timeOptions();
   const modal=document.createElement('div');
   modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:60;display:flex;align-items:flex-end;';
   modal.innerHTML=`
     <div style="background:var(--panel);width:100%;max-height:88vh;overflow:auto;border-radius:12px 12px 0 0;padding:14px;">
-      <div class="section-title"><h2 style="margin:0">新增常用項目</h2><button class="ghost small" id="closeMiscPresetModal">關閉</button></div>
-      <label>名稱</label><input type="text" id="mpName" placeholder="例：查哨" style="margin-bottom:8px">
+      <div class="section-title"><h2 style="margin:0">${editing? '編輯常用項目' : '新增常用項目'}</h2><button class="ghost small" id="closeMiscPresetModal">關閉</button></div>
+      <label>名稱</label><input type="text" id="mpName" value="${esc(existing? existing.role:'')}" placeholder="例：查哨" style="margin-bottom:8px">
       <div class="row wrap" style="margin-bottom:8px">
-        <div class="grow"><label>開始</label><select id="mpStart">${opts.map(t=>`<option ${t==='06:00'?'selected':''}>${t}</option>`).join('')}</select></div>
-        <div class="grow"><label>結束</label><select id="mpEnd">${opts.map(t=>`<option ${t==='07:00'?'selected':''}>${t}</option>`).join('')}</select></div>
+        <div class="grow"><label>開始</label><select id="mpStart">${opts.map(t=>`<option ${t===(existing?existing.start:'06:00')?'selected':''}>${t}</option>`).join('')}</select></div>
+        <div class="grow"><label>結束</label><select id="mpEnd">${opts.map(t=>`<option ${t===(existing?existing.end:'07:00')?'selected':''}>${t}</option>`).join('')}</select></div>
       </div>
-      <button class="primary" id="saveMiscPreset" style="width:100%">新增</button>
+      <div class="row wrap" style="margin-bottom:8px">
+        <div class="grow"><label>補休至(選填，下勤後自動排除其他勤務至此時間)</label>
+          <select id="mpRest">
+            <option value="" ${!(existing&&existing.restUntil)?'selected':''}>（無補休）</option>
+            ${opts.map(t=>`<option ${existing&&t===existing.restUntil?'selected':''}>${t}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+      <div class="row wrap" style="margin-bottom:8px">
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text)">
+          <input type="checkbox" id="mpFixed" style="width:auto" ${existing&&existing.fixed?'checked':''}> 固定項目（每天一定會有，例如消防車、救護車；勾選後自動排班時會自動建立當天項目並補人）
+        </label>
+      </div>
+      ${editing? `<button class="ghost small danger" id="deleteMiscPreset" style="width:100%;margin-bottom:8px">刪除此項目</button>`:''}
+      <button class="primary" id="saveMiscPreset" style="width:100%">${editing?'儲存':'新增'}</button>
     </div>
   `;
   document.body.appendChild(modal);
   document.getElementById('closeMiscPresetModal').onclick=()=>modal.remove();
+  if(editing){
+    document.getElementById('deleteMiscPreset').onclick=()=>{
+      showConfirm(`確定要刪除常用項目「${existing.role}」嗎？`, ()=>{
+        state.miscPresets.splice(editIndex,1);
+        saveState(); modal.remove(); render();
+      });
+    };
+  }
   document.getElementById('saveMiscPreset').onclick=()=>{
     const role=document.getElementById('mpName').value.trim();
     if(!role){ showAlert('請輸入項目名稱'); return; }
     const start=document.getElementById('mpStart').value, end=document.getElementById('mpEnd').value;
-    state.miscCustomPresets.push({role,start,end});
+    const fixed=document.getElementById('mpFixed').checked;
+    const restUntil=document.getElementById('mpRest').value;
+    if(editing){
+      existing.role=role; existing.start=start; existing.end=end; existing.fixed=fixed; existing.restUntil=restUntil;
+    } else {
+      state.miscPresets.push({role,start,end,roles:null,fixed,restUntil});
+    }
     saveState(); modal.remove(); render();
   };
 }
@@ -1927,9 +2117,9 @@ function renderMisc(){
     <div class="card">
       <h2>常用項目（點一下自動帶入名稱、時間與角色）</h2>
       <div class="row wrap">
-        ${MISC_PRESETS.map((mp,i)=>`<button class="pill-btn" data-preset="b${i}" style="cursor:pointer">${esc(mp.role)} ${mp.start}-${mp.end}</button>`).join('')}
-        ${state.miscCustomPresets.map((mp,i)=>`<button class="pill-btn" data-preset="c${i}" style="cursor:pointer">${esc(mp.role)} ${mp.start}-${mp.end} <span data-del-preset="${i}" style="color:var(--danger);margin-left:3px">✕</span></button>`).join('')}
+        ${state.miscPresets.map((mp,i)=>`<span class="pill-btn" style="cursor:pointer" data-preset="${i}">${mp.fixed?'📌':''}${esc(mp.role)} ${mp.start}-${mp.end} <span data-edit-preset="${i}" style="margin-left:4px">✎</span></span>`).join('')}
       </div>
+      <div class="hint" style="margin-bottom:8px">📌代表「固定項目」：點旁邊的 ✎ 可編輯名稱/時間/固定與否，或刪除。</div>
       <div class="divider"></div>
       <button class="ghost small" id="openAddPresetModal">＋新增常用項目</button>
     </div>
@@ -2010,7 +2200,7 @@ function renderMisc(){
   document.getElementById('mEnd').onchange=refreshPeopleFlags;
   refreshPeopleFlags();
   if(document.getElementById('mFreeform')){
-    document.getElementById('mFreeform').onclick=()=>{ miscSelectedRoles=null; miscSelectedPresetRole=null; render(); };
+    document.getElementById('mFreeform').onclick=()=>{ miscSelectedRoles=null; miscSelectedPresetRole=null; miscSelectedRestUntil=''; render(); };
   }
   if(miscSelectedRoles){
     const driverIdx=miscSelectedRoles.indexOf('駕駛');
@@ -2030,11 +2220,11 @@ function renderMisc(){
   }
   app.querySelectorAll('[data-preset]').forEach(b=>{
     b.onclick=(ev)=>{
-      if(ev.target.closest('[data-del-preset]')) return; // let the delete X handle itself
-      const key=b.dataset.preset;
-      const mp = key.startsWith('b')? MISC_PRESETS[Number(key.slice(1))] : state.miscCustomPresets[Number(key.slice(1))];
+      if(ev.target.closest('[data-edit-preset]')) return; // let the edit ✎ handle itself
+      const mp = state.miscPresets[Number(b.dataset.preset)];
       miscSelectedRoles = mp.roles||null;
       miscSelectedPresetRole = mp.role;
+      miscSelectedRestUntil = mp.restUntil||'';
       render();
       document.getElementById('mRole').value=mp.role;
       document.getElementById('mStart').value=mp.start;
@@ -2042,11 +2232,10 @@ function renderMisc(){
       refreshPeopleFlags();
     };
   });
-  app.querySelectorAll('[data-del-preset]').forEach(x=>{
+  app.querySelectorAll('[data-edit-preset]').forEach(x=>{
     x.onclick=(ev)=>{
       ev.stopPropagation();
-      state.miscCustomPresets.splice(Number(x.dataset.delPreset),1);
-      saveState(); render();
+      openMiscPresetModal(Number(x.dataset.editPreset));
     };
   });
   document.getElementById('openAddPresetModal').onclick=()=>openMiscPresetModal();
@@ -2057,13 +2246,14 @@ function renderMisc(){
     if(!state.misc[currentDate]) state.misc[currentDate]=[];
     if(miscSelectedRoles){
       const personIds=miscSelectedRoles.map((_,i)=>document.getElementById('mRoleSel'+i).value);
-      state.misc[currentDate].push({id:uid(),role,start,end,roles:miscSelectedRoles,personIds});
+      state.misc[currentDate].push({id:uid(),role,start,end,restUntil:miscSelectedRestUntil,roles:miscSelectedRoles,personIds});
     } else {
       const personIds=[...document.getElementById('mPeople').selectedOptions].map(o=>o.value);
-      state.misc[currentDate].push({id:uid(),role,start,end,personIds});
+      state.misc[currentDate].push({id:uid(),role,start,end,restUntil:miscSelectedRestUntil,personIds});
     }
     miscSelectedRoles=null;
     miscSelectedPresetRole=null;
+    miscSelectedRestUntil='';
     saveState(); render();
   };
   app.querySelectorAll('[data-del-misc]').forEach(b=>{
