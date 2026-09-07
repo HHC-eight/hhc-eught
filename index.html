@@ -931,7 +931,7 @@ function renderUnavail(){
       </div>
       <div class="row wrap" style="margin-bottom:8px">
         <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text)">
-          <input type="checkbox" id="lvHonor" style="width:auto"> 榮譽提早假（前一天提早到12:00開始，僅適用4天以內）
+          <input type="checkbox" id="lvHonor" style="width:auto"> 榮譽提早假（前一天提早到12:00開始，休假含前後緩衝需在5天以內）
         </label>
       </div>
       <div class="row wrap" style="margin-bottom:8px">
@@ -941,7 +941,7 @@ function renderUnavail(){
       </div>
       <div class="hint" id="lvPreview" style="margin-bottom:8px"></div>
       <button class="primary" id="lvAdd" style="width:100%">新增休假</button>
-      <div class="hint">一般休假：從休假第一天「前一天18:00」到休假最後一天「隔天07:30」都會標記不可排（例：休9/8-9/10，會從9/7 18:00封鎖到9/11 07:30）。「榮譽提早假」只適用4天以內的假期，前一天會提早到12:00開始（例：休9/8-9/10會從9/7 12:00封鎖到9/11 07:30）；5天以上的假期一律用一般18:00起算，除非勾選「特殊情況」允許例外套用。</div>
+      <div class="hint">一般休假：從休假第一天「前一天18:00」到休假最後一天「隔天07:30」都會標記不可排（例：休9/8-9/10，會從9/7 18:00封鎖到9/11 07:30）。「榮譽提早假」的前一天會提早到12:00開始，但套用條件是「休假天數＋前後緩衝」總共不能超過5天（例：休9/8-9/10共3天，含緩衝是9/7~9/11共5天，符合，可套用榮譽假從9/7 12:00開始；休9/7-9/11共5天，含緩衝是9/6~9/12共7天，超過5天，榮譽假不適用，改用一般18:00起算）；除非勾選「特殊情況」允許例外套用。休假天數本身也有5天上限，超過需勾選「特殊情況」才能新增。</div>
     </div>
     ${Object.keys(leaveBlocks).length? `<div class="card">
       <h2>目前登記的休假</h2>
@@ -990,11 +990,12 @@ function renderUnavail(){
     const override=document.getElementById('lvOverride').checked;
     if(!s||!e||s>e){ document.getElementById('lvPreview').textContent=''; return; }
     const days=daysBetweenInclusive(s,e);
-    const honorApplies = honor && (days<=4 || override);
+    const bufferDays=daysBetweenInclusive(prevDateStr(s), nextDateStr(e));
+    const honorApplies = honor && (bufferDays<=5 || override);
     const startTime = honorApplies? '12:00':'18:00';
-    let note = `實際封鎖範圍：${prevDateStr(s)} ${startTime} → ${nextDateStr(e)} 07:30（共${days}天）`;
-    if(honor && days>4 && !override) note += '　⚠️ 已超過4天，榮譽假不適用，改用一般18:00起算（如有特殊核准可勾選「特殊情況」）';
-    if(days>5 && !override) note += '　⚠️ 已超過5天上限，需勾選「特殊情況」才能新增';
+    let note = `實際封鎖範圍：${prevDateStr(s)} ${startTime} → ${nextDateStr(e)} 07:30（休假${days}天，含前後緩衝共${bufferDays}天）`;
+    if(honor && bufferDays>5 && !override) note += '　⚠️ 含前後緩衝已超過5天，榮譽假不適用，改用一般18:00起算（如有特殊核准可勾選「特殊情況」）';
+    if(days>5 && !override) note += '　⚠️ 休假天數已超過5天上限，需勾選「特殊情況」才能新增';
     document.getElementById('lvPreview').textContent = note;
   }
   document.getElementById('lvStart').onchange=updateLeavePreview;
@@ -1011,7 +1012,8 @@ function renderUnavail(){
     const override=document.getElementById('lvOverride').checked;
     const days=daysBetweenInclusive(s,e);
     if(days>5 && !override){ showAlert(`休假天數共${days}天，超過5天上限，如有特殊核准請勾選「特殊情況」再新增。`); return; }
-    const honorApplies = honor && (days<=4 || override);
+    const bufferDays=daysBetweenInclusive(prevDateStr(s), nextDateStr(e));
+    const honorApplies = honor && (bufferDays<=5 || override);
     const leaveId=uid();
     const firstRoster=prevDateStr(s);
     const lastRoster=nextDateStr(e);
