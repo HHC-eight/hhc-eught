@@ -869,7 +869,7 @@ function renderUnavail(){
   Object.keys(state.unavail).forEach(d=>{
     (state.unavail[d]||[]).forEach(u=>{
       if(u.leaveId){
-        if(!leaveBlocks[u.leaveId]) leaveBlocks[u.leaveId]={personId:u.personId, dates:[]};
+        if(!leaveBlocks[u.leaveId]) leaveBlocks[u.leaveId]={personId:u.personId, leaveStart:u.leaveStart, leaveEnd:u.leaveEnd, dates:[]};
         leaveBlocks[u.leaveId].dates.push(d);
       }
     });
@@ -942,9 +942,8 @@ function renderUnavail(){
     ${Object.keys(leaveBlocks).length? `<div class="card">
       <h2>目前登記的休假</h2>
       ${Object.entries(leaveBlocks).map(([lid,b])=>{
-        const sorted=[...b.dates].sort();
         return `<div class="list-item">
-          <span class="grow">${esc(personName(b.personId))}：${sorted[0]} ~ ${sorted[sorted.length-1]}（共${sorted.length}天緩衝範圍）</span>
+          <span class="grow">${esc(personName(b.personId))}：${b.leaveStart||'?'} ~ ${b.leaveEnd||'?'}（共${b.leaveStart&&b.leaveEnd?daysBetweenInclusive(b.leaveStart,b.leaveEnd):'?'}天）</span>
           <button class="ghost small danger" data-del-leave="${lid}">刪除整段</button>
         </div>`;
       }).join('')}
@@ -991,6 +990,7 @@ function renderUnavail(){
     const startTime = honorApplies? '12:00':'18:00';
     let note = `實際封鎖範圍：${prevDateStr(s)} ${startTime} → ${nextDateStr(e)} 07:30（共${days}天）`;
     if(honor && days>4 && !override) note += '　⚠️ 已超過4天，榮譽假不適用，改用一般18:00起算（如有特殊核准可勾選「特殊情況」）';
+    if(days>5 && !override) note += '　⚠️ 已超過5天上限，需勾選「特殊情況」才能新增';
     document.getElementById('lvPreview').textContent = note;
   }
   document.getElementById('lvStart').onchange=updateLeavePreview;
@@ -1006,6 +1006,7 @@ function renderUnavail(){
     const honor=document.getElementById('lvHonor').checked;
     const override=document.getElementById('lvOverride').checked;
     const days=daysBetweenInclusive(s,e);
+    if(days>5 && !override){ showAlert(`休假天數共${days}天，超過5天上限，如有特殊核准請勾選「特殊情況」再新增。`); return; }
     const honorApplies = honor && (days<=4 || override);
     const leaveId=uid();
     const firstRoster=prevDateStr(s);
@@ -1013,13 +1014,13 @@ function renderUnavail(){
     const firstStart = honorApplies? '12:00':'18:00';
     const reasonLabel = honorApplies? '榮譽假':'休假';
     if(!state.unavail[firstRoster]) state.unavail[firstRoster]=[];
-    state.unavail[firstRoster].push({id:uid(),personId,allDay:false,start:firstStart,end:'24:00',reason:reasonLabel,leaveId});
+    state.unavail[firstRoster].push({id:uid(),personId,allDay:false,start:firstStart,end:'24:00',reason:reasonLabel,leaveId,leaveStart:s,leaveEnd:e});
     dateRangeList(s,e).forEach(d=>{
       if(!state.unavail[d]) state.unavail[d]=[];
-      state.unavail[d].push({id:uid(),personId,allDay:true,start:'',end:'',reason:reasonLabel,leaveId});
+      state.unavail[d].push({id:uid(),personId,allDay:true,start:'',end:'',reason:reasonLabel,leaveId,leaveStart:s,leaveEnd:e});
     });
     if(!state.unavail[lastRoster]) state.unavail[lastRoster]=[];
-    state.unavail[lastRoster].push({id:uid(),personId,allDay:false,start:'00:00',end:'07:30',reason:reasonLabel,leaveId});
+    state.unavail[lastRoster].push({id:uid(),personId,allDay:false,start:'00:00',end:'07:30',reason:reasonLabel,leaveId,leaveStart:s,leaveEnd:e});
     saveState(); render();
   };
   document.getElementById('autoAssignBtn').onclick=()=>{
@@ -1194,7 +1195,7 @@ function renderStats(){
     const totalAll = rankBreakdown(state.personnel);
     const absentAll = rankBreakdown(state.personnel.filter(p=>isPersonUnavailable(p.id,currentDate,qMin,qMin+1)));
     const presentAll = {軍官:totalAll.軍官-absentAll.軍官, 士官:totalAll.士官-absentAll.士官, 士兵:totalAll.士兵-absentAll.士兵};
-    const fmtRank=c=>`官${c.軍官} 士${c.士官} 兵${c.士兵}`;
+    const fmtRank=c=>`${c.軍官}官${c.士官}士${c.士兵}兵`;
     resultEl.innerHTML = `
       <div class="muted" style="margin-bottom:6px">${t} 有空：${free.length} / ${state.personnel.length} 人</div>
       <table class="hr-table" style="margin-bottom:10px">
@@ -1576,6 +1577,31 @@ function runDailyCheck(){
 
 /* ---- MISC TAB (簡易勤務，如採買/技工/查哨等免時段的項目) ---- */
 let miscSelectedRoles=null; // set by clicking a preset with structured roles (車長/駕駛 etc)
+function openMiscPresetModal(){
+  const opts=timeOptions();
+  const modal=document.createElement('div');
+  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:60;display:flex;align-items:flex-end;';
+  modal.innerHTML=`
+    <div style="background:var(--panel);width:100%;max-height:88vh;overflow:auto;border-radius:12px 12px 0 0;padding:14px;">
+      <div class="section-title"><h2 style="margin:0">新增常用項目</h2><button class="ghost small" id="closeMiscPresetModal">關閉</button></div>
+      <label>名稱</label><input type="text" id="mpName" placeholder="例：查哨" style="margin-bottom:8px">
+      <div class="row wrap" style="margin-bottom:8px">
+        <div class="grow"><label>開始</label><select id="mpStart">${opts.map(t=>`<option ${t==='06:00'?'selected':''}>${t}</option>`).join('')}</select></div>
+        <div class="grow"><label>結束</label><select id="mpEnd">${opts.map(t=>`<option ${t==='07:00'?'selected':''}>${t}</option>`).join('')}</select></div>
+      </div>
+      <button class="primary" id="saveMiscPreset" style="width:100%">新增</button>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  document.getElementById('closeMiscPresetModal').onclick=()=>modal.remove();
+  document.getElementById('saveMiscPreset').onclick=()=>{
+    const role=document.getElementById('mpName').value.trim();
+    if(!role){ showAlert('請輸入項目名稱'); return; }
+    const start=document.getElementById('mpStart').value, end=document.getElementById('mpEnd').value;
+    state.miscCustomPresets.push({role,start,end});
+    saveState(); modal.remove(); render();
+  };
+}
 function renderMisc(){
   const list = state.misc[currentDate]||[];
   app.innerHTML = `
@@ -1590,15 +1616,7 @@ function renderMisc(){
         ${state.miscCustomPresets.map((mp,i)=>`<button class="pill-btn" data-preset="c${i}" style="cursor:pointer">${esc(mp.role)} ${mp.start}-${mp.end} <span data-del-preset="${i}" style="color:var(--danger);margin-left:3px">✕</span></button>`).join('')}
       </div>
       <div class="divider"></div>
-      <h3>新增常用項目</h3>
-      <div class="row wrap" style="margin-bottom:6px">
-        <div class="grow"><label>名稱</label><input type="text" id="npPresetName" placeholder="例：查哨"></div>
-      </div>
-      <div class="row wrap">
-        <div class="grow"><label>開始</label><select id="npPresetStart">${timeOptions().map(t=>`<option ${t==='06:00'?'selected':''}>${t}</option>`).join('')}</select></div>
-        <div class="grow"><label>結束</label><select id="npPresetEnd">${timeOptions().map(t=>`<option ${t==='07:00'?'selected':''}>${t}</option>`).join('')}</select></div>
-        <button class="ghost small" id="addPresetBtn">＋新增</button>
-      </div>
+      <button class="ghost small" id="openAddPresetModal">＋新增常用項目</button>
     </div>
     <div class="card">
       <h2>新增項目</h2>
@@ -1689,13 +1707,7 @@ function renderMisc(){
       saveState(); render();
     };
   });
-  document.getElementById('addPresetBtn').onclick=()=>{
-    const role=document.getElementById('npPresetName').value.trim();
-    if(!role){ showAlert('請輸入項目名稱'); return; }
-    const start=document.getElementById('npPresetStart').value, end=document.getElementById('npPresetEnd').value;
-    state.miscCustomPresets.push({role,start,end});
-    saveState(); render();
-  };
+  document.getElementById('openAddPresetModal').onclick=()=>openMiscPresetModal();
   document.getElementById('mAdd').onclick=()=>{
     const role=document.getElementById('mRole').value.trim();
     if(!role) return;
