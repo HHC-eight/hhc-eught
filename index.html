@@ -300,6 +300,10 @@ function timeOptions(){
   let opts=[]; for(let m=0;m<=1440;m+=30){ let h=Math.floor(m/60), mm=m%60; opts.push(String(h).padStart(2,'0')+':'+String(mm).padStart(2,'0')); }
   return opts;
 }
+function timeOptionsFine(step){
+  let opts=[]; for(let m=0;m<=1440;m+=step){ let h=Math.floor(m/60), mm=m%60; opts.push(String(h).padStart(2,'0')+':'+String(mm).padStart(2,'0')); }
+  return opts;
+}
 
 /* Build absolute (non-wrapping) start/end minutes for every shift in a category
    so that shifts from DIFFERENT categories land on the SAME shared timeline —
@@ -1151,7 +1155,7 @@ function renderStats(){
     <div class="card">
       <h2>指定時間查詢</h2>
       <div class="row wrap" style="margin-bottom:8px">
-        <div class="grow"><label>時間</label><select id="queryTime">${timeOptions().map(t=>`<option ${t==='08:00'?'selected':''}>${t}</option>`).join('')}</select></div>
+        <div class="grow"><label>時間</label><select id="queryTime">${timeOptionsFine(10).map(t=>`<option ${t==='08:00'?'selected':''}>${t}</option>`).join('')}</select></div>
         <button class="primary" id="queryBtn">查詢</button>
       </div>
       <div id="queryResult"></div>
