@@ -707,8 +707,8 @@ function autoAssignDay(date){
    2) every misc entry for the date with structured roles (駕駛/車長/話務) that
       still has an empty slot gets a person filled in, using the same
       license/rank/medCert eligibility rules as the manual dropdowns.
-   Freeform entries (no defined roles) are left alone — there's no fixed slot
-   count to know how many people they're supposed to have. */
+   Freeform entries (no defined roles, like 技工/督伙/查哨) get ONE generically-
+   eligible (available) person filled in if nobody has been picked yet. */
 function autoAssignMiscForDate(date){
   if(!state.misc[date]) state.misc[date]=[];
   state.miscPresets.filter(p=>p.fixed).forEach(preset=>{
@@ -723,7 +723,25 @@ function autoAssignMiscForDate(date){
     }
   });
   state.misc[date].forEach(entry=>{
-    if(!entry.roles) return; // freeform entries aren't auto-filled
+    if(!entry.roles){
+      // freeform entries (技工/督伙/查哨/etc): if nobody has been picked at
+      // all yet, fill in one generically-eligible (just available) person —
+      // there's no defined role structure to reason about beyond that
+      if(!entry.personIds) entry.personIds=[];
+      const alreadyHasSomeone = entry.personIds.some(id=>id);
+      if(!alreadyHasSomeone){
+        const sMin = entry.start? toMin(entry.start) : null;
+        const eMinRaw = entry.end? toMin(entry.end) : null;
+        const candidates = state.personnel.filter(p=>
+          !(sMin!==null && eMinRaw!==null && isPersonUnavailable(p.id, date, sMin, eMinRaw===0?1440:eMinRaw))
+        );
+        if(candidates.length){
+          candidates.sort((a,b)=>groupIndex(a.group)-groupIndex(b.group) || rankIndex(a.rank)-rankIndex(b.rank));
+          entry.personIds[0]=candidates[0].id;
+        }
+      }
+      return;
+    }
     if(!entry.personIds) entry.personIds=entry.roles.map(()=>undefined);
     entry.roles.forEach((r,i)=>{
       if(entry.personIds[i]) return; // already assigned
@@ -1507,7 +1525,14 @@ function renderStats(){
       <h2>指定時間查詢</h2>
       <div class="row wrap" style="margin-bottom:8px">
         <div class="grow"><label>時間</label><select id="queryTime">${timeOptionsFine(10).map(t=>`<option ${t==='08:00'?'selected':''}>${t}</option>`).join('')}</select></div>
-        <button class="primary" id="queryBtn">查詢</button>
+        <div style="width:120px"><label>排組篩選</label>
+          <select id="queryGroupFilter">
+            <option value="">（全部）</option>
+            ${groups.map(g=>`<option value="${esc(g)}">${esc(g)}</option>`).join('')}
+            <option value="__none">未分組</option>
+          </select>
+        </div>
+        <button class="primary" id="queryBtn" style="align-self:flex-end">查詢</button>
       </div>
       <div id="queryResult"></div>
       <div class="hint">會列出這個時間點有空的人，以及每個人從這個時間點起還能連續空多久（已排的勤務、請假、長期事故、補休都會計入）。</div>
@@ -1536,7 +1561,14 @@ function renderStats(){
   document.getElementById('queryBtn').onclick=()=>{
     const t=document.getElementById('queryTime').value;
     const qMin=toMin(t);
+    const gf=document.getElementById('queryGroupFilter').value;
+    const groupMatch = p=>{
+      if(gf==='__none') return !p.group;
+      if(gf) return p.group===gf;
+      return true;
+    };
     const free = state.personnel
+      .filter(groupMatch)
       .map(p=>({p, dur:freeDurationFrom(p.id,currentDate,qMin)}))
       .filter(x=>x.dur>0)
       .sort((a,b)=>b.dur-a.dur);
@@ -1563,11 +1595,12 @@ function renderStats(){
     // for anyone unavailable at this moment, collect WHY (leave/incident,
     // long-term block, comp-rest, or an actual duty they're standing)
     const busyList = state.personnel
+      .filter(groupMatch)
       .filter(p=>isPersonUnavailable(p.id,currentDate,qMin,qMin+1))
       .map(p=>({p, reasons: unavailabilityReasonsAt(p.id,currentDate,qMin)}))
       .sort((a,b)=>groupIndex(a.p.group)-groupIndex(b.p.group) || rankIndex(a.p.rank)-rankIndex(b.p.rank));
     resultEl.innerHTML = `
-      <div class="muted" style="margin-bottom:6px">${t} 有空：${free.length} / ${state.personnel.length} 人</div>
+      <div class="muted" style="margin-bottom:6px">${t} 有空：${free.length} / ${state.personnel.filter(groupMatch).length} 人${gf?'（已篩選排組）':''}</div>
       <table class="hr-table" style="margin-bottom:10px">
         <tr><th style="text-align:left">排組</th><th>應到</th><th>事故</th><th>實到</th></tr>
         ${rows.map(r=>`<tr><td style="text-align:left">${esc(r.label)}</td><td>${fmtRank(r.total)}</td><td>${fmtRank(r.absent)}</td><td>${fmtRank(r.present)}</td></tr>`).join('')}
