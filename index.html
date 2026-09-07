@@ -762,7 +762,7 @@ function renderPeople(){
       <button class="primary" id="npAdd" style="width:100%">新增</button>
     </div>
     <div class="card">
-      <div class="section-title"><h2 style="margin:0">名冊（${state.personnel.length}人）</h2></div>
+      <div class="section-title"><h2 style="margin:0" id="pplCountLabel">名冊（${state.personnel.length}人）</h2><button class="ghost small" id="pplClearFilter">清除篩選</button></div>
       <div class="row wrap" style="margin-bottom:8px">
         <div class="grow"><label>搜尋姓名</label><input type="text" id="pplSearch" placeholder="輸入姓名關鍵字"></div>
         <div style="width:120px"><label>排組篩選</label>
@@ -839,9 +839,21 @@ function renderPeople(){
     const html=renderPeopleGroups(groups, filterFn);
     area.innerHTML = html || `<div class="empty">找不到符合的人員</div>`;
     wirePeopleListButtons();
+    const filteredTotal = state.personnel.filter(filterFn).length;
+    const isFiltering = kw || gf || lf.length || mf.length;
+    document.getElementById('pplCountLabel').textContent = isFiltering
+      ? `名冊（篩選出 ${filteredTotal} / 共 ${state.personnel.length} 人）`
+      : `名冊（${state.personnel.length}人）`;
   }
   document.getElementById('pplSearch').oninput=applyPeopleFilter;
   document.getElementById('pplGroupFilter').onchange=applyPeopleFilter;
+  document.getElementById('pplClearFilter').onclick=()=>{
+    document.getElementById('pplSearch').value='';
+    document.getElementById('pplGroupFilter').value='';
+    [...document.getElementById('pplLicenseFilter').options].forEach(o=>o.selected=false);
+    [...document.getElementById('pplMedCertFilter').options].forEach(o=>o.selected=false);
+    applyPeopleFilter();
+  };
   document.getElementById('pplLicenseFilter').onchange=applyPeopleFilter;
   document.getElementById('pplMedCertFilter').onchange=applyPeopleFilter;
   document.getElementById('npLongTermMode').onchange=(e)=>{
