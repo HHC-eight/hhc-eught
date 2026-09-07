@@ -237,20 +237,23 @@ function orderedCategories(){
 }
 /* preset quick-add templates for 其他勤務 (misc duty) with usual times, per unit SOP */
 const MISC_PRESETS=[
-  {role:'採買',start:'05:30',end:'08:00',roles:['駕駛','車長']},
-  {role:'愛心便當',start:'16:00',end:'18:00',roles:['駕駛','車長']},
-  {role:'消防車',start:'06:00',end:'08:00',roles:['駕駛','車長']},
-  {role:'救護車',start:'06:30',end:'06:30',roles:['駕駛','車長']},
-  {role:'技工',start:'06:30',end:'07:30',roles:null},
-  {role:'話務',start:'06:30',end:'07:30',roles:['話務(需小型車以上駕照)']},
-  {role:'督伙',start:'04:30',end:'20:00',roles:null},
-  {role:'查哨 22-24',start:'22:00',end:'24:00',roles:null},
-  {role:'查哨 00-02',start:'00:00',end:'02:00',roles:null},
-  {role:'查哨 02-04',start:'02:00',end:'04:00',roles:null},
-  {role:'查哨 04-06',start:'04:00',end:'06:00',roles:null},
-  {role:'查哨 12-14',start:'12:00',end:'14:00',roles:null},
-  {role:'值班',start:'07:00',end:'07:00',roles:null,restUntil:'12:00'}
+  {role:'採買',times:[{start:'05:30',end:'08:00'}],roles:['駕駛','車長']},
+  {role:'愛心便當',times:[{start:'16:00',end:'18:00'}],roles:['駕駛','車長']},
+  {role:'消防車',times:[{start:'06:00',end:'08:00'}],roles:['駕駛','車長']},
+  {role:'救護車',times:[{start:'06:30',end:'06:30'}],roles:['駕駛','車長']},
+  {role:'技工',times:[{start:'06:30',end:'07:30'}],roles:null},
+  {role:'話務',times:[{start:'06:30',end:'07:30'}],roles:['話務(需小型車以上駕照)']},
+  {role:'督伙',times:[{start:'04:30',end:'20:00'}],roles:null},
+  {role:'查哨',times:[{start:'22:00',end:'24:00'},{start:'00:00',end:'02:00'},{start:'02:00',end:'04:00'},{start:'04:00',end:'06:00'},{start:'12:00',end:'14:00'}],roles:null},
+  {role:'值班',times:[{start:'07:00',end:'07:00'}],roles:null,restUntil:'12:00'}
 ];
+/* a preset may carry multiple time slots under one name (e.g. 查哨 at five
+   different times a day) — always read them through this so both the old
+   single start/end shape and the newer times[] shape work the same way */
+function presetTimes(preset){
+  if(preset.times && preset.times.length) return preset.times;
+  return [{start:preset.start||'06:00', end:preset.end||'07:00'}];
+}
 /* driver license requirements differ per vehicle type; anything not listed
    here (採買/愛心便當/etc) just needs some license (小型車 or better). */
 function requiredDriverLicenses(roleName){
@@ -293,7 +296,7 @@ if(!state.miscCustomPresets) state.miscCustomPresets=[];
 if(!state.miscPresets){
   // migrate the old fixed MISC_PRESETS constant + any user-added custom
   // presets into one persisted, fully-editable list
-  state.miscPresets = MISC_PRESETS.map(p=>({role:p.role, start:p.start, end:p.end, roles:p.roles?[...p.roles]:null, fixed:false, restUntil:p.restUntil||''}));
+  state.miscPresets = MISC_PRESETS.map(p=>({role:p.role, times:presetTimes(p).map(t=>({...t})), roles:p.roles?[...p.roles]:null, fixed:false, restUntil:p.restUntil||''}));
   state.miscCustomPresets.forEach(p=>{
     state.miscPresets.push({role:p.role, start:p.start, end:p.end, roles:null, fixed:false});
   });
@@ -734,18 +737,23 @@ function autoAssignDay(date){
       license/rank/medCert eligibility rules as the manual dropdowns.
    Freeform entries (no defined roles, like 技工/督伙/查哨) get ONE generically-
    eligible (available) person filled in if nobody has been picked yet. */
+/* 採買 and 愛心便當 are usually the same vehicle run — when auto-assigning,
+   reuse the same 駕駛/車長 pair across both if they're still eligible & free */
+const MISC_SIBLING_ROLE={'採買':'愛心便當','愛心便當':'採買'};
 function autoAssignMiscForDate(date){
   if(!state.misc[date]) state.misc[date]=[];
   state.miscPresets.filter(p=>p.fixed).forEach(preset=>{
-    const exists = state.misc[date].some(m=>m.role===preset.role);
-    if(!exists){
-      const roles = preset.roles;
-      state.misc[date].push({
-        id:uid(), role:preset.role, start:preset.start, end:preset.end, restUntil:preset.restUntil||'',
-        roles: roles?[...roles]:undefined,
-        personIds: roles? roles.map(()=>undefined) : []
-      });
-    }
+    const roles = preset.roles;
+    presetTimes(preset).forEach(t=>{
+      const exists = state.misc[date].some(m=>m.role===preset.role && m.start===t.start && m.end===t.end);
+      if(!exists){
+        state.misc[date].push({
+          id:uid(), role:preset.role, start:t.start, end:t.end, restUntil:preset.restUntil||'',
+          roles: roles?[...roles]:undefined,
+          personIds: roles? roles.map(()=>undefined) : []
+        });
+      }
+    });
   });
   state.misc[date].forEach(entry=>{
     if(!entry.roles){
@@ -799,7 +807,19 @@ function autoAssignMiscForDate(date){
       );
       if(candidates.length){
         candidates.sort((a,b)=>groupIndex(a.group)-groupIndex(b.group) || rankIndex(a.rank)-rankIndex(b.rank));
-        entry.personIds[i]=candidates[0].id;
+        // 採買 and 愛心便當 are treated as the same run — if the paired duty
+        // already has someone in this exact role and they're still a valid
+        // candidate here too, reuse them instead of picking someone new
+        let chosen = candidates[0];
+        const siblingRole = MISC_SIBLING_ROLE[entry.role];
+        if(siblingRole){
+          const sibling = state.misc[date].find(m=>m.role===siblingRole && m.roles);
+          const siblingIdx = sibling? sibling.roles.indexOf(r) : -1;
+          const siblingPersonId = siblingIdx>-1? sibling.personIds[siblingIdx] : null;
+          const match = siblingPersonId && candidates.find(c=>c.id===siblingPersonId);
+          if(match) chosen = match;
+        }
+        entry.personIds[i]=chosen.id;
       }
     });
   });
@@ -2140,16 +2160,16 @@ function openMiscPresetModal(editIndex){
   const editing = typeof editIndex==='number';
   const existing = editing? state.miscPresets[editIndex] : null;
   const opts=timeOptions();
+  let timesDraft = existing? presetTimes(existing).map(t=>({...t})) : [{start:'06:00',end:'07:00'}];
   const modal=document.createElement('div');
   modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:60;display:flex;align-items:flex-end;';
   modal.innerHTML=`
     <div style="background:var(--panel);width:100%;max-height:88vh;overflow:auto;border-radius:12px 12px 0 0;padding:14px;">
       <div class="section-title"><h2 style="margin:0">${editing? '編輯常用項目' : '新增常用項目'}</h2><button class="ghost small" id="closeMiscPresetModal">關閉</button></div>
       <label>名稱</label><input type="text" id="mpName" value="${esc(existing? existing.role:'')}" placeholder="例：查哨" style="margin-bottom:8px">
-      <div class="row wrap" style="margin-bottom:8px">
-        <div class="grow"><label>開始</label><select id="mpStart">${opts.map(t=>`<option ${t===(existing?existing.start:'06:00')?'selected':''}>${t}</option>`).join('')}</select></div>
-        <div class="grow"><label>結束</label><select id="mpEnd">${opts.map(t=>`<option ${t===(existing?existing.end:'07:00')?'selected':''}>${t}</option>`).join('')}</select></div>
-      </div>
+      <label>時段（同一個項目可以有多個時段，例如查哨一天分好幾節）</label>
+      <div id="mpTimesList"></div>
+      <button class="ghost small" id="mpAddTime" style="margin-bottom:8px">＋新增時段</button>
       <div class="row wrap" style="margin-bottom:8px">
         <div class="grow"><label>補休至(選填，下勤後自動排除其他勤務至此時間)</label>
           <select id="mpRest">
@@ -2160,7 +2180,7 @@ function openMiscPresetModal(editIndex){
       </div>
       <div class="row wrap" style="margin-bottom:8px">
         <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text)">
-          <input type="checkbox" id="mpFixed" style="width:auto" ${existing&&existing.fixed?'checked':''}> 固定項目（每天一定會有，例如消防車、救護車；勾選後自動排班時會自動建立當天項目並補人）
+          <input type="checkbox" id="mpFixed" style="width:auto" ${existing&&existing.fixed?'checked':''}> 固定項目（每天一定會有，例如消防車、救護車；勾選後自動排班時會自動建立當天項目並補人，會列在最上面）
         </label>
       </div>
       ${editing? `<button class="ghost small danger" id="deleteMiscPreset" style="width:100%;margin-bottom:8px">刪除此項目</button>`:''}
@@ -2168,6 +2188,32 @@ function openMiscPresetModal(editIndex){
     </div>
   `;
   document.body.appendChild(modal);
+  function renderTimesList(){
+    document.getElementById('mpTimesList').innerHTML = timesDraft.map((t,i)=>`
+      <div class="row wrap" style="margin-bottom:6px">
+        <div class="grow"><label>開始</label><select data-time-start="${i}">${opts.map(o=>`<option ${o===t.start?'selected':''}>${o}</option>`).join('')}</select></div>
+        <div class="grow"><label>結束</label><select data-time-end="${i}">${opts.map(o=>`<option ${o===t.end?'selected':''}>${o}</option>`).join('')}</select></div>
+        <button class="ghost small danger" data-time-del="${i}" ${timesDraft.length<=1?'disabled':''}>刪除</button>
+      </div>`).join('');
+    document.querySelectorAll('[data-time-start]').forEach(sel=>{
+      sel.onchange=()=>{ timesDraft[Number(sel.dataset.timeStart)].start=sel.value; };
+    });
+    document.querySelectorAll('[data-time-end]').forEach(sel=>{
+      sel.onchange=()=>{ timesDraft[Number(sel.dataset.timeEnd)].end=sel.value; };
+    });
+    document.querySelectorAll('[data-time-del]').forEach(b=>{
+      b.onclick=()=>{
+        if(timesDraft.length<=1) return;
+        timesDraft.splice(Number(b.dataset.timeDel),1);
+        renderTimesList();
+      };
+    });
+  }
+  renderTimesList();
+  document.getElementById('mpAddTime').onclick=()=>{
+    timesDraft.push({start:'06:00',end:'07:00'});
+    renderTimesList();
+  };
   document.getElementById('closeMiscPresetModal').onclick=()=>modal.remove();
   if(editing){
     document.getElementById('deleteMiscPreset').onclick=()=>{
@@ -2180,13 +2226,13 @@ function openMiscPresetModal(editIndex){
   document.getElementById('saveMiscPreset').onclick=()=>{
     const role=document.getElementById('mpName').value.trim();
     if(!role){ showAlert('請輸入項目名稱'); return; }
-    const start=document.getElementById('mpStart').value, end=document.getElementById('mpEnd').value;
     const fixed=document.getElementById('mpFixed').checked;
     const restUntil=document.getElementById('mpRest').value;
     if(editing){
-      existing.role=role; existing.start=start; existing.end=end; existing.fixed=fixed; existing.restUntil=restUntil;
+      existing.role=role; existing.times=timesDraft.map(t=>({...t})); existing.fixed=fixed; existing.restUntil=restUntil;
+      delete existing.start; delete existing.end;
     } else {
-      state.miscPresets.push({role,start,end,roles:null,fixed,restUntil});
+      state.miscPresets.push({role,times:timesDraft.map(t=>({...t})),roles:null,fixed,restUntil});
     }
     saveState(); modal.remove(); render();
   };
@@ -2201,7 +2247,7 @@ function renderMisc(){
     <div class="card">
       <h2>常用項目（點一下自動帶入名稱、時間與角色）</h2>
       <div class="row wrap">
-        ${state.miscPresets.map((mp,i)=>`<span class="pill-btn" style="cursor:pointer" data-preset="${i}">${mp.fixed?'📌':''}${esc(mp.role)} ${mp.start}-${mp.end} <span data-edit-preset="${i}" style="margin-left:4px">✎</span></span>`).join('')}
+        ${state.miscPresets.map((mp,i)=>({mp,i})).sort((a,b)=>(b.mp.fixed?1:0)-(a.mp.fixed?1:0)).map(({mp,i})=>`<span class="pill-btn" style="cursor:pointer" data-preset="${i}">${mp.fixed?'📌':''}${esc(mp.role)} ${presetTimes(mp).map(t=>t.start+'-'+t.end).join('、')} <span data-edit-preset="${i}" style="margin-left:4px">✎</span></span>`).join('')}
       </div>
       <div class="hint" style="margin-bottom:8px">📌代表「固定項目」：點旁邊的 ✎ 可編輯名稱/時間/固定與否，或刪除。</div>
       <div class="divider"></div>
@@ -2306,13 +2352,30 @@ function renderMisc(){
     b.onclick=(ev)=>{
       if(ev.target.closest('[data-edit-preset]')) return; // let the edit ✎ handle itself
       const mp = state.miscPresets[Number(b.dataset.preset)];
+      const times = presetTimes(mp);
+      if(times.length>1){
+        // multi-time preset (e.g. 查哨 at five different times) — create one
+        // entry per time slot directly instead of trying to populate a
+        // single start/end form that couldn't represent all of them
+        showConfirm(`要一次建立「${mp.role}」的全部 ${times.length} 個時段嗎？（${times.map(t=>t.start+'-'+t.end).join('、')}）`, ()=>{
+          if(!state.misc[currentDate]) state.misc[currentDate]=[];
+          times.forEach(t=>{
+            const already = state.misc[currentDate].some(m=>m.role===mp.role && m.start===t.start && m.end===t.end);
+            if(!already){
+              state.misc[currentDate].push({id:uid(), role:mp.role, start:t.start, end:t.end, restUntil:mp.restUntil||'', roles:mp.roles?[...mp.roles]:undefined, personIds: mp.roles? mp.roles.map(()=>undefined):[]});
+            }
+          });
+          saveState(); render();
+        });
+        return;
+      }
       miscSelectedRoles = mp.roles||null;
       miscSelectedPresetRole = mp.role;
       miscSelectedRestUntil = mp.restUntil||'';
       render();
       document.getElementById('mRole').value=mp.role;
-      document.getElementById('mStart').value=mp.start;
-      document.getElementById('mEnd').value=mp.end;
+      document.getElementById('mStart').value=times[0].start;
+      document.getElementById('mEnd').value=times[0].end;
       refreshPeopleFlags();
     };
   });
