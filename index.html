@@ -1027,7 +1027,18 @@ function renderUnavail(){
       }).join('')}
     </div>`:''}
     <div class="card">
-      <div class="section-title"><h2 style="margin:0">${fmtDate(currentDate)} 名單（${list.length}）</h2>${list.length? `<button class="ghost small danger" id="clearDayBtn">一鍵清空當日</button>`:''}</div>
+      <div class="section-title"><h2 style="margin:0">${fmtDate(currentDate)} 名單（${list.length}）</h2></div>
+      ${list.length? `
+      <div class="row wrap" style="margin-bottom:8px">
+        <div class="grow"><label>清空類別</label>
+          <select id="clearReasonFilter">
+            <option value="__all">全部</option>
+            ${[...new Set(list.map(u=>u.reason).filter(Boolean))].map(r=>`<option value="${esc(r)}">${esc(r)}</option>`).join('')}
+            ${list.some(u=>!u.reason)? `<option value="__none">（無註記原因）</option>`:''}
+          </select>
+        </div>
+        <button class="ghost small danger" id="clearDayBtn" style="align-self:flex-end">清空此類別</button>
+      </div>`:''}
       ${list.length===0? `<div class="empty">此日尚無登記</div>` : list.map(u=>`
         <div class="list-item">
           <span class="grow">${esc(personName(u.personId))}：${u.allDay? '全天不能' : (u.start+'-'+u.end+' 不能')}${u.reason? `（${esc(u.reason)}）`:''}${u.leaveId?'　🏖️休假':''}</span>
@@ -1046,8 +1057,12 @@ function renderUnavail(){
   };
   if(document.getElementById('clearDayBtn')){
     document.getElementById('clearDayBtn').onclick=()=>{
-      showConfirm(`確定要清空「${currentDate}」當天登記的所有事故/管制紀錄嗎？（此操作也會清掉落在這天的休假緩衝紀錄，多日休假的其他天不受影響）`, ()=>{
-        state.unavail[currentDate]=[];
+      const rf=document.getElementById('clearReasonFilter').value;
+      const matches = u => rf==='__all' ? true : (rf==='__none' ? !u.reason : u.reason===rf);
+      const targetCount = list.filter(matches).length;
+      const label = rf==='__all'? '全部' : (rf==='__none'? '無註記原因的' : `「${rf}」`);
+      showConfirm(`確定要清空「${currentDate}」當天${label}登記紀錄（共${targetCount}筆）嗎？（若清空對象含休假緩衝紀錄，只會清掉這天的部分，多日休假的其他天不受影響）`, ()=>{
+        state.unavail[currentDate] = state.unavail[currentDate].filter(u=>!matches(u));
         saveState(); render();
       });
     };
