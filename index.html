@@ -100,7 +100,7 @@ textarea{min-height:50px;resize:vertical;}
     <div class="row" style="gap:6px;align-items:center">
       <button class="ghost small" id="undoBtn" title="復原上一步" style="display:none">↩️</button>
       <button class="ghost small" id="redoBtn" title="取消復原（重做）" style="display:none">↪️</button>
-      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v27</span></h1>
+      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v28</span></h1>
     </div>
     <div class="row" style="gap:6px;align-items:center">
       <select id="timeStepSelect" style="font-size:11px;padding:3px 6px;width:auto">
@@ -903,12 +903,21 @@ function autoAssignDay(date){
   allSlots.forEach(({cat,s})=>{
     const arr=state.assign[date][cat.id][s.id];
     const sMin=toMin(s.start), eMin=wrapEndMin(sMin, toMin(s.end));
+    // "最少需要幾位士官(含)以上" is a HARD floor: while it's still unmet,
+    // only 士官/軍官 candidates are considered for the remaining empty
+    // slots, so auto-assign leaves a slot empty rather than quietly
+    // filling it with a non-NCO just to hit the headcount. Once the floor
+    // is met (or every empty slot has been tried), the rest fill normally.
+    let ncoStillNeeded = Math.max(0, (s.minNCO||0) - arr.filter(pid=>pid && ['士官','軍官'].includes(rankCategory(personRank(pid)))).length);
     for(let idx=0; idx<s.count; idx++){
       if(!arr[idx]){
-        const rawCandidates = state.personnel.filter(p=>
+        const rawCandidatesAll = state.personnel.filter(p=>
           !arr.includes(p.id) && !rankExcludedFromCategory(p.rank,cat) &&
           !isPersonUnavailable(p.id, date, sMin, eMin, {catId:cat.id, shiftId:s.id})
         );
+        const rawCandidates = ncoStillNeeded>0
+          ? rawCandidatesAll.filter(p=>['士官','軍官'].includes(rankCategory(p.rank)))
+          : rawCandidatesAll;
         const candidates = cat.enforceRest
           ? rawCandidates.filter(p=>restIssues(p.id,date,cat.id,s).length===0 && !assignedSameShiftYesterday(p.id,date,cat.id,s.id) && !wouldRestWindowConflict(p.id,date,s,{catId:cat.id,shiftId:s.id}) && !prepGapConflict(p.id,date,cat,s))
           : rawCandidates;
@@ -925,6 +934,7 @@ function autoAssignDay(date){
         const chosen=candidates[0];
         arr[idx]=chosen.id;
         assignCount[chosen.id]=(assignCount[chosen.id]||0)+1;
+        if(['士官','軍官'].includes(rankCategory(chosen.rank))) ncoStillNeeded=Math.max(0,ncoStillNeeded-1);
         }
       } else {
         assignCount[arr[idx]]=(assignCount[arr[idx]]||0)+1;
@@ -2964,6 +2974,23 @@ function renderMiscDutyCard(role, entries, preset, dragIdx){
   }).join('');
   return `<div data-misc-card="${esc(role)}" data-drag-idx="${dragIdx}">${collapsibleCardHTML('misccard-'+role, title, inner, extraButtons)}</div>`;
 }
+/* explains WHY a shift is still short of its "最少需要幾位士官" requirement —
+   distinguishes "nobody at all is available for the empty slots" from
+   "people are available but none of them are 士官以上", since those call
+   for different action (wait/reassign elsewhere vs. can't be filled at all
+   without pulling someone from another duty) */
+function minNCOStatusHTML(cat, s, date, assigned, ncoCount){
+  if(ncoCount>=s.minNCO) return `<div class="hint" style="margin-bottom:6px">此班需至少 ${s.minNCO} 位士官(含)以上，目前 ${ncoCount} 位</div>`;
+  const sMin=toMin(s.start), eMin=wrapEndMin(sMin, toMin(s.end));
+  const stillEligible = p => !assigned.includes(p.id) && !rankExcludedFromCategory(p.rank,cat) && !isPersonUnavailable(p.id, date, sMin, eMin, {catId:cat.id, shiftId:s.id});
+  const anyAvailable = state.personnel.some(stillEligible);
+  const ncoAvailable = state.personnel.some(p=>['士官','軍官'].includes(rankCategory(p.rank)) && stillEligible(p));
+  let note;
+  if(!anyAvailable) note='目前完全沒有人有空可排這一班';
+  else if(!ncoAvailable) note='有人有空，但沒有士官以上人員有空，需人工確認調整（自動排班不會硬塞士兵充當帶隊）';
+  else note='有士官有空，尚未指派';
+  return `<div class="badge-issue" style="margin-bottom:6px">⚠️ 此班需至少 ${s.minNCO} 位士官(含)以上，目前 ${ncoCount} 位（${note}）</div>`;
+}
 function renderCategoryCard(cat, dragIdx){
   const dayAssign = (state.assign[currentDate]||{})[cat.id] || {};
   const shifts = effectiveShifts(cat, currentDate);
@@ -2987,7 +3014,7 @@ function renderCategoryCard(cat, dragIdx){
       const ncoCount = assigned.filter(pid=>pid && ['士官','軍官'].includes(rankCategory(personRank(pid)))).length;
       return `<div class="shift-row" data-shift="${s.id}">
         <div class="shift-head"><span class="shift-time">${esc(timeLabel)}</span><span class="muted">需 ${s.count} 人${s.restUntil? '・補休至'+s.restUntil:''}</span></div>
-        ${s.minNCO? `<div class="${ncoCount<s.minNCO?'badge-issue':'hint'}" style="margin-bottom:6px">${ncoCount<s.minNCO?'⚠️ ':''}此班需至少 ${s.minNCO} 位士官(含)以上，目前 ${ncoCount} 位</div>`:''}
+        ${s.minNCO? minNCOStatusHTML(cat, s, currentDate, assigned, ncoCount) : ''}
         ${Array.from({length:s.count}).map((_,idx)=>{
           const pid = assigned[idx]||'';
           const issues = pid? restIssues(pid, currentDate, cat.id, s).filter(x=>true) : [];
