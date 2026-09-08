@@ -1845,10 +1845,32 @@ function showPrompt(message, defaultValue, onSubmit){
 
 /* ---- STATS TAB (stage 1) ---- */
 let queryFilterState={time:'08:00',group:'',rank:''}; // persists across re-renders until explicitly cleared
+let hourlyBarsExpanded=false; // collapsed by default — 24 rows is a lot of scrolling
+let statsPeopleFilterState={search:'',group:''}; // 人員區分 only shows results once you search/filter
+function renderStatsPeopleArea(groups){
+  if(!state.personnel.length) return `<div class="empty">尚未新增人員</div>`;
+  const {search:kw, group:gf} = statsPeopleFilterState;
+  if(!kw && !gf) return `<div class="hint">輸入姓名或選擇排組後會顯示人員清單。</div>`;
+  const filterFn = p=>{
+    if(kw && !p.name.includes(kw)) return false;
+    if(gf==='__none' && p.group) return false;
+    if(gf && gf!=='__none' && p.group!==gf) return false;
+    return true;
+  };
+  const html = renderPeopleGroups(groups.length?groups:[''], filterFn);
+  return html || `<div class="empty">找不到符合的人員</div>`;
+}
 function renderStats(){
   const groups = [...new Set(state.personnel.map(p=>p.group).filter(Boolean))].sort((a,b)=>groupIndex(a)-groupIndex(b));
-  // hourly availability (00-23)
+  // hourly availability (00-23), plus a per-hour rank breakdown for the bar annotation
   const hours=[...Array(24).keys()];
+  function hourBreakdown(h){
+    const s=h*60, e=(h+1)*60;
+    const avail = state.personnel.filter(p=>!isPersonUnavailable(p.id,currentDate,s,e));
+    const c={軍官:0,士官:0,士兵:0};
+    avail.forEach(p=>{ const k=rankCategory(p.rank); if(k) c[k]++; });
+    return c;
+  }
   const counts = hours.map(h=>{
     const s=h*60, e=(h+1)*60;
     return state.personnel.filter(p=>!isPersonUnavailable(p.id,currentDate,s,e)).length;
@@ -1889,18 +1911,36 @@ function renderStats(){
       <div class="hint">會列出這個時間點有空的人，以及每個人從這個時間點起還能連續空多久（已排的勤務、請假、長期事故、補休都會計入）。</div>
     </div>
     <div class="card">
-      <h2>每時段空閒人數（總員 ${state.personnel.length} 人）</h2>
-      ${hours.map((h,i)=>`
+      <div class="section-title"><h2 style="margin:0">每時段空閒人數（總員 ${state.personnel.length} 人）</h2><button class="ghost small" id="hourlyToggle">${hourlyBarsExpanded?'▲ 收合':'▼ 展開'}</button></div>
+      ${hourlyBarsExpanded? `
+      ${hours.map((h,i)=>{
+        const bd=hourBreakdown(h);
+        return `
         <div class="row" style="margin-bottom:4px">
           <div style="width:44px;font-size:11px;color:var(--dim)">${String(h).padStart(2,'0')}時</div>
-          <div class="grow bar-wrap"><div class="bar-fill" style="width:${(counts[i]/maxCount*100)}%"></div></div>
+          <div class="grow bar-wrap" style="position:relative">
+            <div class="bar-fill" style="width:${(counts[i]/maxCount*100)}%"></div>
+            <div style="position:absolute;inset:0;display:flex;align-items:center;padding-left:6px;font-size:10px;color:var(--text);white-space:nowrap">${bd.軍官}官${bd.士官}士${bd.士兵}兵</div>
+          </div>
           <div style="width:28px;text-align:right;font-size:12px">${counts[i]}</div>
-        </div>`).join('')}
-      <div class="hint">此數字已包含請假/管制、長期事故、補休、以及當天已排定的勤務。</div>
+        </div>`;
+      }).join('')}
+      <div class="hint">此數字已包含請假/管制、長期事故、補休、以及當天已排定的勤務。長條內的文字是該時段有空人員的官/士/兵人數。</div>
+      ` : `<div class="hint">點「展開」查看每小時空閒人數長條圖（含官/士/兵細分）。</div>`}
     </div>
     <div class="card">
       <h2>人員區分（排組 × 階級）</h2>
-      ${state.personnel.length===0? `<div class="empty">尚未新增人員</div>` : renderPeopleGroups(groups.length?groups:[''])}
+      <div class="row wrap" style="margin-bottom:8px">
+        <div class="grow"><label>搜尋姓名</label><input type="text" id="statsSearch" placeholder="輸入姓名關鍵字" value="${esc(statsPeopleFilterState.search)}"></div>
+        <div style="width:120px"><label>排組篩選</label>
+          <select id="statsGroupFilter">
+            <option value="" ${!statsPeopleFilterState.group?'selected':''}>（全部）</option>
+            ${groups.map(g=>`<option value="${esc(g)}" ${statsPeopleFilterState.group===g?'selected':''}>${esc(g)}</option>`).join('')}
+            <option value="__none" ${statsPeopleFilterState.group==='__none'?'selected':''}>未分組</option>
+          </select>
+        </div>
+      </div>
+      <div id="statsPeopleArea">${renderStatsPeopleArea(groups)}</div>
     </div>
     <div class="card">
       <h2>${fmtDate(currentDate)} 事故/管制名單</h2>
@@ -1913,6 +1953,18 @@ function renderStats(){
     queryFilterState={time:'08:00',group:'',rank:''};
     document.getElementById('queryResult').innerHTML='';
     render();
+  };
+  document.getElementById('hourlyToggle').onclick=()=>{
+    hourlyBarsExpanded=!hourlyBarsExpanded;
+    render();
+  };
+  document.getElementById('statsSearch').oninput=(e)=>{
+    statsPeopleFilterState.search=e.target.value.trim();
+    document.getElementById('statsPeopleArea').innerHTML = renderStatsPeopleArea([...new Set(state.personnel.map(p=>p.group).filter(Boolean))].sort((a,b)=>groupIndex(a)-groupIndex(b)));
+  };
+  document.getElementById('statsGroupFilter').onchange=(e)=>{
+    statsPeopleFilterState.group=e.target.value;
+    document.getElementById('statsPeopleArea').innerHTML = renderStatsPeopleArea([...new Set(state.personnel.map(p=>p.group).filter(Boolean))].sort((a,b)=>groupIndex(a)-groupIndex(b)));
   };
   document.getElementById('queryBtn').onclick=()=>{
     const t=document.getElementById('queryTime').value;
