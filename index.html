@@ -100,7 +100,7 @@ textarea{min-height:50px;resize:vertical;}
     <div class="row" style="gap:6px;align-items:center">
       <button class="ghost small" id="undoBtn" title="復原上一步" style="display:none">↩️</button>
       <button class="ghost small" id="redoBtn" title="取消復原（重做）" style="display:none">↪️</button>
-      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v20</span></h1>
+      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v21</span></h1>
     </div>
     <div class="row" style="gap:6px;align-items:center">
       <select id="timeStepSelect" style="font-size:11px;padding:3px 6px;width:auto">
@@ -2701,6 +2701,7 @@ function renderSchedule(){
   `;
   document.getElementById('autoAssignBtn2').onclick=()=>{ autoAssignDay(currentDate); autoAssignMiscForDate(currentDate); render(); };
   wireScheduleCardsDrag();
+  wireMiscCardEvents();
   document.getElementById('clearTargetSelectAll').onclick=()=>{
     document.querySelectorAll('.clear-target-cb').forEach(cb=>cb.checked=true);
   };
@@ -2894,6 +2895,7 @@ function renderMiscDutyCard(role, entries, preset, dragIdx){
   const title = `<span data-drag-handle style="cursor:grab;padding-right:6px;color:var(--dim)">⠿</span>🗂 ${esc(role)}`;
   const extraButtons = preset? `<label style="display:flex;align-items:center;gap:3px;font-size:11px"><input type="checkbox" class="card-exclude-cb" data-exclude-kind="misc" data-exclude-id="${esc(role)}" style="width:auto" ${preset.excludeFromExport?'checked':''}>不匯出</label>` : '';
   const inner = entries.map(m=>{
+    if(m.id===miscInlineEditId) return miscEntryEditorHTML(m);
     const issues = validateMiscEntry(m);
     const peopleLabel = m.roles
       ? m.roles.map((r,i)=>`${r}：${m.personIds[i]? esc(personName(m.personIds[i])) : ((m.lockedSlots&&m.lockedSlots[i])? '🔒保留空白':'（未指派）')}`).join('　')
@@ -3423,6 +3425,109 @@ function openMiscPresetModal(editIndex){
     saveState(); modal.remove(); render();
   };
 }
+/* Inline editing for an existing 其他勤務 entry — edits happen directly in
+   the row/card where the entry is shown (both in the 其他勤務 tab's list and
+   in the 排班 tab's per-role misc card), instead of jumping up to the
+   "新增項目" form at the top. Only one entry can be inline-edited at a time. */
+let miscInlineEditId=null;
+function miscEntryEditorHTML(m){
+  const preset = presetForEntry(m);
+  let rolesHtml;
+  if(m.roles){
+    rolesHtml = m.roles.map((r,i)=>{
+      let eligibleFn = ()=>true;
+      const needsMed = preset? preset.requiredMedCert : false;
+      if(r==='駕駛') eligibleFn = p=>driverQualificationIssues(p, preset).length===0;
+      else if(r==='車長') eligibleFn = p=>['士官','軍官'].includes(rankCategory(p.rank)) && (!needsMed || p.medCert);
+      else if(r.startsWith('話務')) eligibleFn = p=>!!p.license;
+      return `<div class="row wrap" style="margin-bottom:6px">
+        <div class="grow"><label>${esc(r)}</label>
+          <select data-inline-role-sel="${i}"><option value="">（未指派）</option>${personOptionsPrioritized(m.personIds[i], eligibleFn)}</select>
+        </div>
+        <label style="display:flex;align-items:center;gap:4px;font-size:12px;align-self:flex-end;padding-bottom:8px">
+          <input type="checkbox" data-inline-lock="${i}" style="width:auto" ${(m.lockedSlots&&m.lockedSlots[i])?'checked':''}> 🔒暫不排
+        </label>
+      </div>`;
+    }).join('');
+  } else {
+    rolesHtml = `
+      <div class="hint" style="margin-bottom:4px">人員（可複選）</div>
+      <div style="max-height:220px;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:8px;margin-bottom:8px">
+        ${state.personnel.map(p=>`
+          <label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0">
+            <input type="checkbox" class="inline-misc-person-cb" value="${p.id}" style="width:auto" ${(m.personIds||[]).includes(p.id)?'checked':''}>
+            ${esc(p.name)}（${p.group||'未分組'}·${p.rank}${personBadges(p)}）
+          </label>`).join('')}
+      </div>
+      <label style="display:flex;align-items:center;gap:6px;font-size:13px;margin-bottom:8px">
+        <input type="checkbox" id="inlineSkipAutoFill-${m.id}" style="width:auto" ${m.skipAutoFill?'checked':''}> 🔒此項目本次不自動排人
+      </label>
+    `;
+  }
+  return `<div class="card" style="border-color:var(--accent)">
+    <div class="row wrap" style="margin-bottom:8px">
+      <div class="grow"><label>項目名稱</label><input type="text" id="inlineRole-${m.id}" value="${esc(m.role)}"></div>
+    </div>
+    <div class="row wrap" style="margin-bottom:8px">
+      <div class="grow"><label>開始</label><select id="inlineStart-${m.id}"><option value="">（不指定）</option>${timeOptions().map(t=>`<option ${t===m.start?'selected':''}>${t}</option>`).join('')}</select></div>
+      <div class="grow"><label>結束</label><select id="inlineEnd-${m.id}"><option value="">（不指定）</option>${timeOptions().map(t=>`<option ${t===m.end?'selected':''}>${t}</option>`).join('')}</select></div>
+    </div>
+    ${rolesHtml}
+    <div class="row wrap">
+      <button class="primary grow" data-inline-save="${m.id}">儲存</button>
+      <button class="ghost grow" data-inline-cancel="${m.id}">取消</button>
+    </div>
+  </div>`;
+}
+function wireMiscInlineEditors(){
+  document.querySelectorAll('[data-inline-save]').forEach(btn=>{
+    btn.onclick=()=>{
+      const id = btn.dataset.inlineSave;
+      const m = (state.misc[currentDate]||[]).find(mm=>mm.id===id);
+      if(!m) return;
+      const roleInput = document.getElementById('inlineRole-'+id);
+      if(roleInput) m.role = roleInput.value.trim()||m.role;
+      const startSel = document.getElementById('inlineStart-'+id), endSel = document.getElementById('inlineEnd-'+id);
+      if(startSel) m.start = startSel.value;
+      if(endSel) m.end = endSel.value;
+      if(m.roles){
+        m.personIds = m.roles.map((_,i)=>{
+          const sel=document.querySelector(`[data-inline-role-sel="${i}"]`);
+          return sel? sel.value : m.personIds[i];
+        });
+        m.lockedSlots = m.roles.map((_,i)=>{
+          const cb=document.querySelector(`[data-inline-lock="${i}"]`);
+          return cb? cb.checked : false;
+        });
+      } else {
+        m.personIds = [...document.querySelectorAll('.inline-misc-person-cb:checked')].map(cb=>cb.value);
+        const skipCb=document.getElementById('inlineSkipAutoFill-'+id);
+        m.skipAutoFill = skipCb? skipCb.checked : false;
+      }
+      miscInlineEditId=null;
+      saveState(); render();
+    };
+  });
+  document.querySelectorAll('[data-inline-cancel]').forEach(btn=>{
+    btn.onclick=()=>{ miscInlineEditId=null; render(); };
+  });
+}
+/* wires the 編輯/刪除 buttons on 其他勤務 entry cards — shared between the
+   其他勤務 tab's own list and the 排班 tab's per-role misc cards, since both
+   render the same entries and both need the same inline-edit behavior */
+function wireMiscCardEvents(){
+  app.querySelectorAll('[data-edit-misc]').forEach(b=>{
+    b.onclick=()=>{ miscInlineEditId = b.dataset.editMisc; render(); };
+  });
+  app.querySelectorAll('[data-del-misc]').forEach(b=>{
+    b.onclick=()=>{
+      state.misc[currentDate]=(state.misc[currentDate]||[]).filter(m=>m.id!==b.dataset.delMisc);
+      if(miscInlineEditId===b.dataset.delMisc) miscInlineEditId=null;
+      saveState(); render();
+    };
+  });
+  wireMiscInlineEditors();
+}
 function renderMisc(){
   const list = state.misc[currentDate]||[];
   app.innerHTML = `
@@ -3509,6 +3614,7 @@ function renderMisc(){
         const pa=state.miscPresets.find(p=>p.role===a.role), pb=state.miscPresets.find(p=>p.role===b.role);
         return (pa?(pa.sortOrder??999):999) - (pb?(pb.sortOrder??999):999);
       }).map(m=>{
+        if(m.id===miscInlineEditId) return miscEntryEditorHTML(m);
         const issues = validateMiscEntry(m);
         const peopleLabel = m.roles
           ? m.roles.map((r,i)=>`${r}：${m.personIds[i]? esc(personName(m.personIds[i])) : ((m.lockedSlots&&m.lockedSlots[i])? '🔒保留空白':'（未指派）')}`).join('　')
@@ -3778,47 +3884,7 @@ function renderMisc(){
       render();
     };
   }
-  app.querySelectorAll('[data-edit-misc]').forEach(b=>{
-    b.onclick=()=>{
-      const m = state.misc[currentDate].find(mm=>mm.id===b.dataset.editMisc);
-      if(!m) return;
-      miscEditingId = m.id;
-      collapseState['miscAddForm']=true;
-      if(m.roles){
-        miscSelectedRoles=[...m.roles];
-        miscSelectedPresetRole=m.role;
-        miscSelectedRestUntil=m.restUntil||'';
-      } else {
-        miscSelectedRoles=null;
-        miscSelectedPresetRole=null;
-        miscSelectedRestUntil=m.restUntil||'';
-        miscFreeformCheckedIds=new Set(m.personIds||[]);
-      }
-      render();
-      document.getElementById('mRole').value=m.role;
-      document.getElementById('mStart').value=m.start||'';
-      document.getElementById('mEnd').value=m.end||'';
-      if(m.roles){
-        m.roles.forEach((r,i)=>{
-          const sel=document.getElementById('mRoleSel'+i);
-          if(sel) sel.value = m.personIds[i]||'';
-          const lockCb=document.querySelector(`.mp-lock-slot[data-lock-idx="${i}"]`);
-          if(lockCb) lockCb.checked = !!(m.lockedSlots && m.lockedSlots[i]);
-        });
-      } else if(document.getElementById('mSkipAutoFill')){
-        document.getElementById('mSkipAutoFill').checked = !!m.skipAutoFill;
-      }
-      refreshPeopleFlags();
-      updateNextDayHint();
-      window.scrollTo(0,0);
-    };
-  });
-  app.querySelectorAll('[data-del-misc]').forEach(b=>{
-    b.onclick=()=>{
-      state.misc[currentDate]=state.misc[currentDate].filter(m=>m.id!==b.dataset.delMisc);
-      saveState(); render();
-    };
-  });
+  wireMiscCardEvents();
 }
 
 /* ---------------- init ---------------- */
