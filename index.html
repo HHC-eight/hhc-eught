@@ -247,15 +247,15 @@ function orderedCategories(){
 }
 /* preset quick-add templates for 其他勤務 (misc duty) with usual times, per unit SOP */
 const MISC_PRESETS=[
-  {role:'採買',times:[{start:'05:30',end:'08:00'}],roles:['駕駛','車長']},
-  {role:'愛心便當',times:[{start:'16:00',end:'18:00'}],roles:['駕駛','車長']},
-  {role:'消防車',times:[{start:'06:00',end:'08:00'}],roles:['駕駛','車長']},
-  {role:'救護車',times:[{start:'06:30',end:'06:30'}],roles:['駕駛','車長']},
-  {role:'技工',times:[{start:'06:30',end:'07:30'}],roles:null},
-  {role:'話務',times:[{start:'06:30',end:'07:30'}],roles:['話務(需小型車以上駕照)']},
-  {role:'督伙',times:[{start:'04:30',end:'20:00'}],roles:null},
-  {role:'查哨',times:[{start:'22:00',end:'24:00'},{start:'00:00',end:'02:00'},{start:'02:00',end:'04:00'},{start:'04:00',end:'06:00'},{start:'12:00',end:'14:00'}],roles:null},
-  {role:'值班',times:[{start:'07:00',end:'07:00'}],roles:null,restUntil:'12:00'}
+  {role:'採買',times:[{start:'05:30',end:'08:00'}],roles:['駕駛','車長'],requiredLicenses:[],requiredMedCert:false,requiredSkills:[]},
+  {role:'愛心便當',times:[{start:'16:00',end:'18:00'}],roles:['駕駛','車長'],requiredLicenses:[],requiredMedCert:false,requiredSkills:[]},
+  {role:'消防車',times:[{start:'06:00',end:'08:00'}],roles:['駕駛','車長'],requiredLicenses:['大型車','大客車'],requiredMedCert:false,requiredSkills:[]},
+  {role:'救護車',times:[{start:'06:30',end:'06:30'}],roles:['駕駛','車長'],requiredLicenses:[],requiredMedCert:true,requiredSkills:[]},
+  {role:'技工',times:[{start:'06:30',end:'07:30'}],roles:null,requiredLicenses:[],requiredMedCert:false,requiredSkills:[]},
+  {role:'話務',times:[{start:'06:30',end:'07:30'}],roles:['話務(需小型車以上駕照)'],requiredLicenses:[],requiredMedCert:false,requiredSkills:[]},
+  {role:'督伙',times:[{start:'04:30',end:'20:00'}],roles:null,requiredLicenses:[],requiredMedCert:false,requiredSkills:[]},
+  {role:'查哨',times:[{start:'22:00',end:'24:00'},{start:'00:00',end:'02:00'},{start:'02:00',end:'04:00'},{start:'04:00',end:'06:00'},{start:'12:00',end:'14:00'}],roles:null,requiredLicenses:[],requiredMedCert:false,requiredSkills:[]},
+  {role:'值班',times:[{start:'07:00',end:'07:00'}],roles:null,restUntil:'12:00',requiredLicenses:[],requiredMedCert:false,requiredSkills:[]}
 ];
 /* a preset may carry multiple time slots under one name (e.g. 查哨 at five
    different times a day) — always read them through this so both the old
@@ -264,33 +264,44 @@ function presetTimes(preset){
   if(preset.times && preset.times.length) return preset.times;
   return [{start:preset.start||'06:00', end:preset.end||'07:00'}];
 }
-/* driver license requirements differ per vehicle type; anything not listed
-   here (採買/愛心便當/etc) just needs some license (小型車 or better). */
-function requiredDriverLicenses(roleName){
-  if(roleName==='消防車') return ['大型車','大客車'];
-  if(roleName==='救護車') return ['小型車','大型車','大客車'];
-  return ['小型車','大型車','大客車'];
+/* find the preset a misc entry was created from, by role name — used to
+   read its configured requirements (license/cert/skill). Returns null for
+   entries whose preset was since deleted/renamed (no requirements applied). */
+function presetForEntry(entry){
+  return state.miscPresets.find(p=>p.role===entry.role) || null;
+}
+/* driver requirement checks, data-driven from the preset's configured
+   requiredLicenses/requiredMedCert/requiredSkills — returns a list of
+   human-readable reasons the given person fails to qualify (empty = OK) */
+function driverQualificationIssues(person, preset){
+  if(!preset) return [];
+  const issues=[];
+  const reqLic=preset.requiredLicenses||[];
+  if(reqLic.length && (!person.license || !reqLic.includes(person.license))) issues.push(`需持有${reqLic.join('或')}駕照`);
+  if(preset.requiredMedCert && !person.medCert) issues.push('需具備EMT或醫生證書');
+  (preset.requiredSkills||[]).forEach(sk=>{
+    if(!(person.skills||[]).includes(sk)) issues.push(`需具備${sk}專長`);
+  });
+  return issues;
 }
 /* validation for structured misc entries (entry.roles present): 車長/駕駛 pairs
-   need the driver to hold the right license for that vehicle type and the
+   need the driver to meet the preset's configured requirements and the
    chief to be an NCO+ outranking the driver; anything tagged 話務 just needs
    a license. */
 function validateMiscEntry(entry){
   if(!entry.roles) return [];
   const issues=[];
+  const preset=presetForEntry(entry);
   const chiefIdx=entry.roles.indexOf('車長');
   const driverIdx=entry.roles.indexOf('駕駛');
   if(chiefIdx>-1 && driverIdx>-1){
     const chief=state.personnel.find(p=>p.id===entry.personIds[chiefIdx]);
     const driver=state.personnel.find(p=>p.id===entry.personIds[driverIdx]);
-    const required=requiredDriverLicenses(entry.role);
-    if(driver && (!driver.license || !required.includes(driver.license))) issues.push(`駕駛 ${driver.name}：需持有${required.join('或')}駕照`);
+    if(driver){
+      driverQualificationIssues(driver, preset).forEach(msg=>issues.push(`駕駛 ${driver.name}：${msg}`));
+    }
     if(chief && !['士官','軍官'].includes(rankCategory(chief.rank))) issues.push(`車長 ${chief.name}：需為士官以上`);
     if(chief && driver && rankIndex(chief.rank)>=rankIndex(driver.rank)) issues.push(`車長 ${chief.name} 階級須高於駕駛 ${driver.name}`);
-    if(entry.role==='救護車'){
-      if(driver && !driver.medCert) issues.push(`駕駛 ${driver.name}：救護車駕駛需具備EMT或醫生證書`);
-      if(chief && !chief.medCert) issues.push(`車長 ${chief.name}：救護車車長需具備EMT或醫生證書`);
-    }
   }
   entry.roles.forEach((r,i)=>{
     if(r.startsWith('話務')){
@@ -306,13 +317,21 @@ if(!state.miscCustomPresets) state.miscCustomPresets=[];
 if(!state.miscPresets){
   // migrate the old fixed MISC_PRESETS constant + any user-added custom
   // presets into one persisted, fully-editable list
-  state.miscPresets = MISC_PRESETS.map(p=>({role:p.role, times:presetTimes(p).map(t=>({...t})), roles:p.roles?[...p.roles]:null, fixed:false, restUntil:p.restUntil||''}));
+  state.miscPresets = MISC_PRESETS.map(p=>({role:p.role, times:presetTimes(p).map(t=>({...t})), roles:p.roles?[...p.roles]:null, fixed:false, restUntil:p.restUntil||'', requiredLicenses:p.requiredLicenses?[...p.requiredLicenses]:[], requiredMedCert:!!p.requiredMedCert, requiredSkills:p.requiredSkills?[...p.requiredSkills]:[]}));
   state.miscCustomPresets.forEach(p=>{
     state.miscPresets.push({role:p.role, start:p.start, end:p.end, roles:null, fixed:false});
   });
   state.miscCustomPresets=[];
   saveState();
 }
+// backfill new requirement fields onto presets saved before this feature
+// existed — 消防車/救護車 keep their previous hardcoded behaviour by default,
+// everything else defaults to "no extra requirement" (editable afterwards)
+state.miscPresets.forEach(p=>{
+  if(p.requiredLicenses===undefined) p.requiredLicenses = p.role==='消防車'? ['大型車','大客車'] : [];
+  if(p.requiredMedCert===undefined) p.requiredMedCert = p.role==='救護車';
+  if(p.requiredSkills===undefined) p.requiredSkills = [];
+});
 let currentTab='people';
 let currentDate = todayStr();
 /* persists the 人員 roster's search/filter selections across re-renders
@@ -797,13 +816,13 @@ function autoAssignMiscForDate(date){
       return;
     }
     if(!entry.personIds) entry.personIds=entry.roles.map(()=>undefined);
+    const preset=presetForEntry(entry);
     entry.roles.forEach((r,i)=>{
       if(entry.personIds[i]) return; // already assigned
-      const needsMed = entry.role==='救護車';
+      const needsMed = preset? preset.requiredMedCert : false;
       let eligibleFn;
       if(r==='駕駛'){
-        const required=requiredDriverLicenses(entry.role);
-        eligibleFn = p=>p.license && required.includes(p.license) && (!needsMed || p.medCert);
+        eligibleFn = p=>driverQualificationIssues(p, preset).length===0;
       } else if(r==='車長'){
         const driverIdx=entry.roles.indexOf('駕駛');
         const driver = driverIdx>-1? state.personnel.find(p=>p.id===entry.personIds[driverIdx]) : null;
@@ -2577,6 +2596,25 @@ function openMiscPresetModal(editIndex){
           <input type="checkbox" id="mpFixed" style="width:auto" ${existing&&existing.fixed?'checked':''}> 固定項目（每天一定會有，例如消防車、救護車；勾選後自動排班時會自動建立當天項目並補人，會列在最上面）
         </label>
       </div>
+      <div class="divider"></div>
+      <h3>資格要求（若項目分「駕駛/車長」，以下套用在駕駛；若為單一人員項目，套用在該人員）</h3>
+      <label>需持有駕照(可複選，不選代表不限)</label>
+      <div style="margin-bottom:8px">
+        ${['小型車','大型車','大客車'].map(l=>`
+          <label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0">
+            <input type="checkbox" class="mp-req-license" value="${l}" style="width:auto" ${existing&&(existing.requiredLicenses||[]).includes(l)?'checked':''}> ${l}
+          </label>`).join('')}
+      </div>
+      <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text);margin-bottom:8px">
+        <input type="checkbox" id="mpReqMedCert" style="width:auto" ${existing&&existing.requiredMedCert?'checked':''}> 需具備救護證照(EMT或醫生證書)
+      </label>
+      <label>需具備特殊專長(可複選，不選代表不限)</label>
+      <div style="margin-bottom:8px">
+        ${state.skillOptions.map(s=>`
+          <label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0">
+            <input type="checkbox" class="mp-req-skill" value="${esc(s)}" style="width:auto" ${existing&&(existing.requiredSkills||[]).includes(s)?'checked':''}> ${esc(s)}
+          </label>`).join('')}
+      </div>
       ${editing? `<button class="ghost small danger" id="deleteMiscPreset" style="width:100%;margin-bottom:8px">刪除此項目</button>`:''}
       <button class="primary" id="saveMiscPreset" style="width:100%">${editing?'儲存':'新增'}</button>
     </div>
@@ -2622,11 +2660,15 @@ function openMiscPresetModal(editIndex){
     if(!role){ showAlert('請輸入項目名稱'); return; }
     const fixed=document.getElementById('mpFixed').checked;
     const restUntil=document.getElementById('mpRest').value;
+    const requiredLicenses=[...document.querySelectorAll('.mp-req-license:checked')].map(cb=>cb.value);
+    const requiredMedCert=document.getElementById('mpReqMedCert').checked;
+    const requiredSkills=[...document.querySelectorAll('.mp-req-skill:checked')].map(cb=>cb.value);
     if(editing){
       existing.role=role; existing.times=timesDraft.map(t=>({...t})); existing.fixed=fixed; existing.restUntil=restUntil;
+      existing.requiredLicenses=requiredLicenses; existing.requiredMedCert=requiredMedCert; existing.requiredSkills=requiredSkills;
       delete existing.start; delete existing.end;
     } else {
-      state.miscPresets.push({role,times:timesDraft.map(t=>({...t})),roles:null,fixed,restUntil});
+      state.miscPresets.push({role,times:timesDraft.map(t=>({...t})),roles:null,fixed,restUntil,requiredLicenses,requiredMedCert,requiredSkills});
     }
     saveState(); modal.remove(); render();
   };
@@ -2660,10 +2702,10 @@ function renderMisc(){
         <div class="hint" style="margin-bottom:6px">此項目需分別指定：${miscSelectedRoles.join('、')}</div>
         ${miscSelectedRoles.map((r,i)=>{
           let eligibleFn = ()=>false;
-          const needsMed = miscSelectedPresetRole==='救護車';
+          const presetForForm = state.miscPresets.find(p=>p.role===miscSelectedPresetRole);
+          const needsMed = presetForForm? presetForForm.requiredMedCert : false;
           if(r==='駕駛'){
-            const required=requiredDriverLicenses(miscSelectedPresetRole);
-            eligibleFn = p=>p.license && required.includes(p.license) && (!needsMed || p.medCert);
+            eligibleFn = p=>driverQualificationIssues(p, presetForForm).length===0;
           } else if(r==='車長'){
             eligibleFn = p=>['士官','軍官'].includes(rankCategory(p.rank)) && (!needsMed || p.medCert);
           }
@@ -2705,21 +2747,50 @@ function renderMisc(){
   `;
   document.getElementById('dateSel').onchange=(e)=>{ currentDate=e.target.value; render(); };
   function refreshPeopleFlags(){
-    const start=document.getElementById('mStart').value, end=document.getElementById('mEnd').value;
-    if(!start||!end) return;
-    const s=toMin(start), e0=toMin(end);
+    const startVal=document.getElementById('mStart').value, endVal=document.getElementById('mEnd').value;
+    const hasTime = !!(startVal && endVal);
+    const s = hasTime? toMin(startVal) : null;
+    const e0 = hasTime? toMin(endVal) : null;
+    const presetForForm = state.miscPresets.find(p=>p.role===miscSelectedPresetRole);
     const selects = miscSelectedRoles
       ? miscSelectedRoles.map((_,i)=>document.getElementById('mRoleSel'+i))
       : [document.getElementById('mPeople')];
-    selects.forEach(sel=>{
+    selects.forEach((sel,idx)=>{
+      if(!sel) return;
+      const r = miscSelectedRoles? miscSelectedRoles[idx] : null;
+      let driver=null;
+      if(r==='車長' && miscSelectedRoles){
+        const driverIdx=miscSelectedRoles.indexOf('駕駛');
+        if(driverIdx>-1){
+          const driverSel=document.getElementById('mRoleSel'+driverIdx);
+          driver = driverSel? state.personnel.find(p=>p.id===driverSel.value) : null;
+        }
+      }
       const currentVal = sel.value;
       const opts=[...sel.options];
       const placeholder = opts.find(o=>!o.value);
       const real = opts.filter(o=>o.value);
       const withBusy = real.map(o=>{
-        const busy = isPersonUnavailable(o.value, currentDate, s, e0===0?1440:e0);
-        const baseText = o.textContent.replace(/\s*🚫不可排$/,'');
-        return {value:o.value, text: baseText + (busy? ' 🚫不可排':''), busy, selected:o.value===currentVal};
+        const person = state.personnel.find(p=>p.id===o.value);
+        const reasons=[];
+        if(hasTime && isPersonUnavailable(o.value, currentDate, s, e0===0?1440:e0)) reasons.push('時段衝突');
+        if(person){
+          if(r==='駕駛'){
+            driverQualificationIssues(person, presetForForm).forEach(m=>reasons.push(m));
+          } else if(r==='車長'){
+            if(!['士官','軍官'].includes(rankCategory(person.rank))) reasons.push('需士官以上');
+            if(driver && rankIndex(person.rank)>=rankIndex(driver.rank)) reasons.push('階級須高於駕駛');
+            if(presetForForm && presetForForm.requiredMedCert && !person.medCert) reasons.push('需具備EMT或醫生證書');
+          } else if(r && r.startsWith('話務')){
+            if(!person.license) reasons.push('需至少小型車駕照');
+          } else if(!r && presetForForm){
+            driverQualificationIssues(person, presetForForm).forEach(m=>reasons.push(m));
+          }
+        }
+        const busy = reasons.length>0;
+        const baseText = o.textContent.replace(/\s*🚫不可排(（[^）]*）)?$/,'');
+        const text = baseText + (busy? ` 🚫不可排（${reasons.join('・')}）`:'');
+        return {value:o.value, text, busy, selected:o.value===currentVal};
       });
       // move anyone flagged 🚫不可排 to the bottom — sort is stable, so the
       // license/rank priority order already established is kept within
@@ -2745,7 +2816,8 @@ function renderMisc(){
         const driver=state.personnel.find(p=>p.id===driverSel.value);
         const chiefSel=document.getElementById('mRoleSel'+chiefIdx);
         const curVal=chiefSel.value;
-        const needsMed = miscSelectedPresetRole==='救護車';
+        const presetForForm = state.miscPresets.find(p=>p.role===miscSelectedPresetRole);
+        const needsMed = presetForForm? presetForForm.requiredMedCert : false;
         const eligibleFn = p=>['士官','軍官'].includes(rankCategory(p.rank)) && (!driver || rankIndex(p.rank)<rankIndex(driver.rank)) && (!needsMed || p.medCert);
         chiefSel.innerHTML = `<option value="">（未指派）</option>` + personOptionsPrioritized(curVal, eligibleFn);
         refreshPeopleFlags();
