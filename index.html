@@ -95,7 +95,7 @@ textarea{min-height:50px;resize:vertical;}
     <span class="unit-banner-text">陸軍第八軍團 本部連</span>
   </div>
   <div class="topbar-main">
-    <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v4</span></h1>
+    <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v6</span></h1>
     <div class="row" style="gap:6px;align-items:center">
       <select id="timeStepSelect" style="font-size:11px;padding:3px 6px;width:auto">
         <option value="5">5分間隔</option>
@@ -382,11 +382,19 @@ function daysBetweenInclusive(startStr, endStr){
   const ds=new Date(startStr+'T00:00:00'), de=new Date(endStr+'T00:00:00');
   return Math.round((de-ds)/86400000)+1;
 }
-const UNAVAIL_REASON_PRESETS=['出車','體檢','體測','開會','帶廠商','留守'];
+const UNAVAIL_REASON_PRESETS=['休假','出車','體檢','體測','開會','帶廠商','留守'];
 const MEDCERT_OPTIONS=['EMT-1','EMT-2','EMT-P','醫生證書'];
 const SKILL_OPTIONS=['技工','車勤'];
 if(!state.skillOptions) state.skillOptions=[...SKILL_OPTIONS];
 if(!state.timeStepMinutes) state.timeStepMinutes=10;
+/* 外散宿 (off-base overnight) eligibility settings — anyone WITHOUT one of
+   these disqualifying duties that day can leave base 18:00→次日07:30.
+   outingExcludeOvernightSentry covers any 22:00-06:00-ish sentry shift;
+   outingExcludedMiscRoles is a list of 其他勤務 preset role names (e.g.
+   消防車/救護車/話務) whose assignees are disqualified regardless of role
+   (駕駛/車長/etc within that item) — both are user-editable afterwards. */
+if(state.outingExcludeOvernightSentry===undefined) state.outingExcludeOvernightSentry=true;
+if(!state.outingExcludedMiscRoles) state.outingExcludedMiscRoles=['消防車','救護車','話務'];
 /* 事故/請假 (uses a preset reason list or a custom typed one) */
 /* 衛哨 (安全士官/橋哨/指管) rule: the same person should not stand the same
    time-slot two days running — check whether they held this exact shift
@@ -1430,28 +1438,68 @@ function computeDayListFiltered(){
    entry to show in a plain list; the actual all-day leave record (and every
    non-leave reason) still shows normally */
 function dayListBaseEntries(){
-  return (state.unavail[currentDate]||[]).filter(u=> !(u.leaveId && !u.allDay));
+  return (state.unavail[currentDate]||[]).filter(u=> !isLeaveBufferEntry(u));
 }
-/* everyone who is NOT on a formal multi-day 休假 that day (i.e. no
-   leaveId-tagged all-day entry covering the date) — being on a single-day
-   incident like 出車 doesn't exclude someone from this list, since they may
-   still be standing a shift around it */
+/* someone counts as "on leave" (休假) specifically when their reason is
+   休假-related — an all-day 不可排 entry for another reason (e.g. a mission,
+   sick leave for the day, hospital, whatever text was typed) does NOT mean
+   they're on leave, it just means they're occupied with something else, so
+   they still belong in 在勤人員 (they're on-base, just not free) */
+function isLeaveReason(reason){ return !!reason && reason.includes('假'); }
+/* a leave-buffer entry (day-before 18:00/12:00, day-after 07:30 partial-day
+   block) is identified primarily by its TIME SHAPE, not by leaveId or exact
+   reason text, so it's still caught for older records or ones created a
+   different way than the current leave form */
+function isLeaveBufferEntry(u){
+  if(u.allDay) return false;
+  return (u.start==='18:00' && u.end==='24:00') || (u.start==='12:00' && u.end==='24:00') || (u.start==='00:00' && u.end==='07:30');
+}
 function onDutyList(date){
-  const onLeaveIds = new Set((state.unavail[date]||[]).filter(u=>u.leaveId && u.allDay).map(u=>u.personId));
+  const onLeaveIds = new Set((state.unavail[date]||[]).filter(u=>u.allDay && isLeaveReason(u.reason)).map(u=>u.personId));
   return state.personnel.filter(p=>!onLeaveIds.has(p.id))
     .sort((a,b)=>groupIndex(a.group)-groupIndex(b.group) || rankIndex(a.rank)-rankIndex(b.rank));
 }
 /* what a given person is doing that day — 衛哨/勤務類別 shifts plus 其他勤務
    duties, in a short readable line; empty if nothing assigned */
+/* 外散宿 (off-base overnight) eligibility for one person on one date —
+   disqualified if they're assigned any 22:00-06:00-ish sentry shift (when
+   state.outingExcludeOvernightSentry is on) or any role within a 其他勤務
+   entry whose preset name is in state.outingExcludedMiscRoles */
+function isEligibleForOuting(personId, date){
+  if(state.outingExcludeOvernightSentry){
+    const dayAssign = state.assign[date]||{};
+    for(const cat of state.categories){
+      const catAssign = dayAssign[cat.id]||{};
+      for(const sft of cat.shifts){
+        if(!(catAssign[sft.id]||[]).includes(personId)) continue;
+        const sMin=toMin(sft.start);
+        // shift starts sometime in the 22:00-06:00 window (covers the
+        // standard 2hr overnight sentry blocks: 22-24,00-02,02-04,04-06)
+        if(sMin>=22*60 || sMin<6*60) return false;
+      }
+    }
+  }
+  const excluded = state.outingExcludedMiscRoles||[];
+  for(const m of (state.misc[date]||[])){
+    if(!excluded.includes(m.role)) continue;
+    if((m.personIds||[]).includes(personId)) return false;
+  }
+  return true;
+}
+function outingEligibleList(date){
+  const onLeaveIds = new Set((state.unavail[date]||[]).filter(u=>u.allDay).map(u=>u.personId));
+  return state.personnel.filter(p=>!onLeaveIds.has(p.id) && isEligibleForOuting(p.id, date))
+    .sort((a,b)=>groupIndex(a.group)-groupIndex(b.group) || rankIndex(a.rank)-rankIndex(b.rank));
+}
 function personDutySummary(personId, date){
   const parts=[];
   // leave-buffer notes: this person isn't formally "on leave" for the whole
   // day, but they do have a partial-day leave window today (going on leave
   // this evening, or just back from leave this morning) — surface that here
   // instead of it disappearing along with the buffer entries the day list
-  // now hides
-  (state.unavail[date]||[]).filter(u=>u.personId===personId && u.leaveId && !u.allDay).forEach(u=>{
-    if(u.end==='24:00') parts.push(`今日${u.start}休假${u.reason==='榮譽假'?'（榮譽假）':''}`);
+  // now hides. Matched by time shape so this doesn't miss older records.
+  (state.unavail[date]||[]).filter(u=>u.personId===personId && isLeaveBufferEntry(u)).forEach(u=>{
+    if(u.end==='24:00') parts.push(`今日${u.start}休假${u.start==='12:00'?'（榮譽假）':''}`);
     else if(u.start==='00:00' && u.end==='07:30') parts.push(`今日${u.end}收假`);
   });
   const dayAssign = (state.assign[date]||{});
@@ -1647,6 +1695,22 @@ function renderUnavail(){
       }).join('')}
     `) : ''}
     ${collapsibleCardHTML('onDuty', `${minguoLabel(currentDate)} 在勤人員（非休假，含當日勤務）（${onDutyList(currentDate).length}人）`, renderOnDutyList(currentDate))}
+    ${collapsibleCardHTML('outing', `${minguoLabel(currentDate)} 可外散宿人員（18:00→次日07:30）（${outingEligibleList(currentDate).length}人）`, `
+      <div class="hint" style="margin-bottom:8px">已排當天22:00-06:00衛哨，或已排下方勾選項目（任一角色）的人不列入；已休假的人也不列入（不需要外散宿）。</div>
+      <div class="row wrap" style="margin-bottom:8px">
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px">
+          <input type="checkbox" id="outingOvernightCb" style="width:auto" ${state.outingExcludeOvernightSentry?'checked':''}> 22:00-06:00衛哨排除外散宿
+        </label>
+      </div>
+      <div class="row wrap" style="gap:10px;margin-bottom:8px">
+        ${state.miscPresets.map(mp=>`
+          <label style="display:flex;align-items:center;gap:6px;font-size:13px">
+            <input type="checkbox" class="outing-role-cb" value="${esc(mp.role)}" style="width:auto" ${(state.outingExcludedMiscRoles||[]).includes(mp.role)?'checked':''}> ${esc(mp.role)}
+          </label>`).join('')}
+      </div>
+      <div class="divider"></div>
+      ${outingEligibleList(currentDate).length? outingEligibleList(currentDate).map(p=>`<div class="muted">・${esc(p.name)}（${p.group||'未分組'}·${p.rank}）</div>`).join('') : `<div class="empty">今天沒有人符合外散宿資格</div>`}
+    `)}
     ${collapsibleCardHTML('dayList', `<span id="dayListHeader">${minguoLabel(currentDate)} 休假名單（篩選出 ${filteredList.length} / 共 ${list.length}）</span>`, `
       ${list.length? `
       <div class="row wrap" style="margin-bottom:8px">
@@ -1710,6 +1774,18 @@ function renderUnavail(){
   document.getElementById('uaClearAll').onclick=()=>{
     document.querySelectorAll('.ua-person-cb').forEach(cb=>{ cb.checked=false; uaCheckedIds.delete(cb.value); });
   };
+  if(document.getElementById('outingOvernightCb')){
+    document.getElementById('outingOvernightCb').onchange=(e)=>{
+      state.outingExcludeOvernightSentry=e.target.checked;
+      saveState(); render();
+    };
+    document.querySelectorAll('.outing-role-cb').forEach(cb=>{
+      cb.onchange=()=>{
+        state.outingExcludedMiscRoles=[...document.querySelectorAll('.outing-role-cb:checked')].map(x=>x.value);
+        saveState(); render();
+      };
+    });
+  }
   function refreshDayList(){
     document.getElementById('dayListItems').innerHTML = renderDayListItemsHTML();
     const list=dayListBaseEntries();
