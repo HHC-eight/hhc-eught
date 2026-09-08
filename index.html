@@ -25,17 +25,15 @@ html,body{margin:0;padding:0;background:var(--bg);color:var(--text);font-family:
 body{padding-bottom:78px;}
 h1,h2,h3{font-weight:600;margin:0 0 10px;}
 h1{font-size:17px;letter-spacing:.5px;}
-h2{font-size:15px;color:var(--accent);}
+h2{font-size:14px;color:var(--accent);}
 h3{font-size:13px;color:var(--dim);font-weight:500;}
 .topbar{position:sticky;top:0;z-index:20;background:var(--bg);border-bottom:1px solid var(--line);padding-top:env(safe-area-inset-top);}
 .unit-banner{display:flex;align-items:center;justify-content:center;gap:8px;padding:7px 14px 6px;background:linear-gradient(180deg,#1a2117,var(--bg));border-bottom:1px solid rgba(125,154,95,.35);}
 .unit-banner-badge{width:18px;height:18px;border-radius:50%;background:var(--accent2);color:#0d130a;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;flex-shrink:0;}
 .unit-banner-text{font-size:12px;letter-spacing:2.5px;color:var(--accent2);font-weight:600;}
-.time-step-btn{padding:4px 9px;font-size:11px;}
-.time-step-btn.active{background:var(--accent);border-color:var(--accent);color:#1a140a;font-weight:600;}
 .topbar-main{padding:12px 14px;display:flex;align-items:center;justify-content:space-between;}
 .container{padding:12px 12px 24px;max-width:640px;margin:0 auto;}
-.card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px;margin-bottom:12px;}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:8px;}
 .row{display:flex;gap:8px;align-items:center;}
 .row.wrap{flex-wrap:wrap;}
 .grow{flex:1;min-width:0;}
@@ -74,7 +72,8 @@ button.pressed,.pill-btn.pressed{opacity:.6;transform:scale(.94);}
 .shift-time{font-size:13px;font-weight:600;}
 .slot-select{margin-bottom:4px;}
 .badge-issue{display:inline-block;font-size:11px;color:var(--danger);margin-top:2px;}
-.section-title{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;}
+.section-title{display:flex;justify-content:space-between;align-items:center;margin-bottom:0;min-height:22px;}
+.section-title h2{margin:0;}
 .hr-table{width:100%;border-collapse:collapse;font-size:11px;}
 .hr-table td,.hr-table th{padding:3px 2px;text-align:center;border-bottom:1px solid var(--line);}
 .hr-table th{color:var(--dim);font-weight:500;}
@@ -96,14 +95,15 @@ textarea{min-height:50px;resize:vertical;}
     <span class="unit-banner-text">陸軍第八軍團 本部連</span>
   </div>
   <div class="topbar-main">
-    <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v1</span></h1>
-    <button class="ghost small" id="exportBtn">匯出</button>
-  </div>
-  <div class="row wrap" id="timeStepRow" style="padding:0 14px 8px;gap:6px;align-items:center">
-    <span class="muted" style="font-size:11px">全站時間選單間隔：</span>
-    <button class="ghost small time-step-btn" data-step="5">5分</button>
-    <button class="ghost small time-step-btn" data-step="10">10分</button>
-    <button class="ghost small time-step-btn" data-step="30">30分</button>
+    <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v2</span></h1>
+    <div class="row" style="gap:6px;align-items:center">
+      <select id="timeStepSelect" style="font-size:11px;padding:3px 6px;width:auto">
+        <option value="5">5分間隔</option>
+        <option value="10">10分間隔</option>
+        <option value="30">30分間隔</option>
+      </select>
+      <button class="ghost small" id="exportBtn">匯出</button>
+    </div>
   </div>
   <div class="row wrap" style="padding:0 14px 8px;gap:6px;align-items:center">
     <span class="muted" style="font-size:11px">日期：</span>
@@ -899,17 +899,12 @@ document.querySelectorAll('.tabs button').forEach(btn=>{
   btn.addEventListener('click',()=>{ currentTab=btn.dataset.tab; window.scrollTo(0,0); render(); });
 });
 function refreshTimeStepButtons(){
-  document.querySelectorAll('.time-step-btn').forEach(b=>{
-    b.classList.toggle('active', Number(b.dataset.step)===state.timeStepMinutes);
-  });
+  document.getElementById('timeStepSelect').value = String(state.timeStepMinutes);
 }
-document.querySelectorAll('.time-step-btn').forEach(b=>{
-  b.addEventListener('click', ()=>{
-    state.timeStepMinutes = Number(b.dataset.step);
-    saveState();
-    refreshTimeStepButtons();
-    render();
-  });
+document.getElementById('timeStepSelect').addEventListener('change', (e)=>{
+  state.timeStepMinutes = Number(e.target.value);
+  saveState();
+  render();
 });
 refreshTimeStepButtons();
 function refreshGlobalDate(){
@@ -2134,7 +2129,7 @@ function collapsibleCardHTML(key, title, innerHtml, extraButtons){
   const expanded = isExpanded(key);
   return `<div class="card">
     <div class="section-title"><h2 style="margin:0">${title}</h2><div class="row" style="gap:4px">${extraButtons||''}<button class="ghost small" data-collapse-toggle="${esc(key)}">${expanded?'▲ 收合':'▼ 展開'}</button></div></div>
-    <div style="display:${expanded?'block':'none'}">${innerHtml}</div>
+    <div style="display:${expanded?'block':'none'};margin-top:8px">${innerHtml}</div>
   </div>`;
 }
 document.addEventListener('click', (e)=>{
