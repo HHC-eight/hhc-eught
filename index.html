@@ -100,7 +100,7 @@ textarea{min-height:50px;resize:vertical;}
     <div class="row" style="gap:6px;align-items:center">
       <button class="ghost small" id="undoBtn" title="復原上一步" style="display:none">↩️</button>
       <button class="ghost small" id="redoBtn" title="取消復原（重做）" style="display:none">↪️</button>
-      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v15</span></h1>
+      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v19</span></h1>
     </div>
     <div class="row" style="gap:6px;align-items:center">
       <select id="timeStepSelect" style="font-size:11px;padding:3px 6px;width:auto">
@@ -288,9 +288,32 @@ function sh(start,end,count,label,restUntil){ return {id:uid(),start,end,count:c
 const CATEGORY_ORDER=['safety','bridge','control','meal'];
 function orderedCategories(){
   return [...state.categories].sort((a,b)=>{
+    if(a.sortOrder!==undefined && b.sortOrder!==undefined) return a.sortOrder-b.sortOrder;
     const ai=CATEGORY_ORDER.indexOf(a.id), bi=CATEGORY_ORDER.indexOf(b.id);
     return (ai<0?CATEGORY_ORDER.length:ai) - (bi<0?CATEGORY_ORDER.length:bi);
   });
+}
+function orderedMiscPresets(){
+  return [...state.miscPresets].sort((a,b)=>(a.sortOrder??999)-(b.sortOrder??999));
+}
+/* the combined 排班類別 + 其他勤務常用項目 list used for the drag-reorder UI —
+   a flat array of {kind:'cat'|'misc', ref} sorted by the shared sortOrder
+   field, so both kinds of item can be freely interleaved by dragging */
+/* where a brand-new category/misc-preset should land by default: right
+   after whatever's currently last in the combined order (normally 打飯班,
+   unless things have been dragged around), so newly-added items keep
+   stacking incrementally in one place instead of always jumping to some
+   fixed spot regardless of how the list has been rearranged */
+function nextSortOrder(){
+  const all = [...state.categories, ...state.miscPresets].map(x=>x.sortOrder??0);
+  return (all.length? Math.max(...all) : 0) + 10;
+}
+function combinedOrderList(){
+  const items = [
+    ...state.categories.map(c=>({kind:'cat', ref:c})),
+    ...state.miscPresets.map(p=>({kind:'misc', ref:p})),
+  ];
+  return items.sort((a,b)=>(a.ref.sortOrder??999)-(b.ref.sortOrder??999));
 }
 /* preset quick-add templates for 其他勤務 (misc duty) with usual times, per unit SOP */
 const MISC_PRESETS=[
@@ -387,6 +410,19 @@ state.miscPresets.forEach(p=>{
   if(p.requiredMedCert===undefined) p.requiredMedCert = p.role==='救護車';
   if(p.requiredSkills===undefined) p.requiredSkills = [];
   if(p.rankPriority===undefined) p.rankPriority = null; // null = default rank order (RANK_DEFS)
+});
+/* unified display/export order shared across 排班類別 AND 其他勤務常用項目 —
+   categories start at 0,10,20... (existing default order) so misc presets
+   (which default to the back, at 1000+) can be freely interleaved via drag
+   without renumbering everything; excludeFromExport just skips that item in
+   the text export while leaving it fully visible/editable on screen */
+if(state.categories.some(c=>c.sortOrder===undefined)){
+  orderedCategories().forEach((c,i)=>{ if(c.sortOrder===undefined) c.sortOrder=i*10; });
+}
+state.categories.forEach(c=>{ if(c.excludeFromExport===undefined) c.excludeFromExport=false; });
+state.miscPresets.forEach((p,i)=>{
+  if(p.sortOrder===undefined) p.sortOrder = 1000+i*10;
+  if(p.excludeFromExport===undefined) p.excludeFromExport=false;
 });
 let currentTab='people';
 let currentDate = todayStr();
@@ -2478,15 +2514,21 @@ function isExpanded(key){ return !!collapseState[key]; }
    containerId's rows must each have data-drag-idx="{i}" and a child with
    data-drag-handle. onReorder is called after each swap and on release,
    so the caller can re-render the list with the new order. */
-/* touch-based drag-to-reorder for priority lists — native HTML5 drag/drop
-   doesn't work reliably on mobile Safari, so this tracks touch position
-   directly. IMPORTANT: the dragged row's own DOM node is never replaced
-   mid-gesture (only its CSS transform changes) — re-rendering the list on
-   every step, as an earlier version did, destroys the element the touch is
-   targeting and breaks the continuous touchmove stream, which is exactly
-   what made dragging feel like it only moved one row at a time. Instead,
-   rows are visually shifted with transforms while dragging, and the real
-   array + a single clean re-render only happen once, on release.
+/* touch-based drag-to-reorder for priority lists AND full variable-height
+   cards alike — native HTML5 drag/drop doesn't work reliably on mobile
+   Safari, so this tracks touch position directly. IMPORTANT: the dragged
+   row's own DOM node is never replaced mid-gesture (only its CSS transform
+   changes) — re-rendering the list on every step, as an earlier version
+   did, destroys the element the touch is targeting and breaks the
+   continuous touchmove stream, which is exactly what made dragging feel
+   like it only moved one row at a time. Instead, rows are visually shifted
+   with transforms while dragging, and the real array + a single clean
+   re-render only happen once, on release.
+   Rows can be different heights (e.g. a 9-slot category card next to a
+   1-line misc card) — this measures each row's own height/position up
+   front and uses the dragged row's ORIGINAL top+height plus its live
+   displacement to figure out which row it's currently over, rather than
+   assuming every row is the same size.
    containerId's rows must each have data-drag-idx="{i}" (0-based, matching
    arr's order at the moment this is called) and a child with
    data-drag-handle. onReorder is called once, after the drop, so the caller
@@ -2496,13 +2538,14 @@ function wireDragReorder(containerId, arr, onReorder){
   if(!container) return;
   const rows = [...container.querySelectorAll('[data-drag-idx]')];
   if(!rows.length) return;
-  const rowHeight = rows[0].getBoundingClientRect().height;
+  const rects = rows.map(r=>r.getBoundingClientRect());
+  const heights = rects.map(r=>r.height);
+  const tops = rects.map(r=>r.top);
   rows.forEach((row, originalIdx)=>{
     const handle = row.querySelector('[data-drag-handle]');
     if(!handle) return;
     handle.style.touchAction='none';
     let startY=0, dragging=false, currentSlot=originalIdx;
-    const shiftRow = (r, slots)=>{ r.style.transform = slots? `translateY(${slots*rowHeight}px)` : ''; };
     handle.addEventListener('touchstart', (e)=>{
       dragging=true;
       startY = e.touches[0].clientY;
@@ -2511,7 +2554,7 @@ function wireDragReorder(containerId, arr, onReorder){
       row.style.zIndex='5';
       row.style.position='relative';
       row.style.boxShadow='0 4px 10px rgba(0,0,0,.5)';
-      rows.forEach(r=>{ if(r!==row) r.style.transition='transform .12s ease'; });
+      rows.forEach(r=>{ if(r!==row) r.style.transition='transform .15s ease'; });
       e.preventDefault();
     }, {passive:false});
     handle.addEventListener('touchmove', (e)=>{
@@ -2519,18 +2562,22 @@ function wireDragReorder(containerId, arr, onReorder){
       e.preventDefault();
       const deltaY = e.touches[0].clientY - startY;
       row.style.transform = `translateY(${deltaY}px)`;
-      const rawSlot = originalIdx + Math.round(deltaY / rowHeight);
-      const targetSlot = Math.max(0, Math.min(rows.length-1, rawSlot));
-      if(targetSlot !== currentSlot){
+      // dragged row's current visual center, in original-layout coordinates
+      const draggedCenter = tops[originalIdx] + heights[originalIdx]/2 + deltaY;
+      let target = 0;
+      for(let i=0;i<rows.length;i++){
+        if(draggedCenter > tops[i] + heights[i]/2) target = i;
+      }
+      if(target !== currentSlot){
         rows.forEach((r,i)=>{
           if(r===row) return;
-          if(targetSlot > currentSlot){
-            shiftRow(r, (i > currentSlot && i <= targetSlot) ? -1 : 0);
+          if(target > currentSlot){
+            r.style.transform = (i > currentSlot && i <= target) ? `translateY(${-heights[originalIdx]}px)` : '';
           } else {
-            shiftRow(r, (i >= targetSlot && i < currentSlot) ? 1 : 0);
+            r.style.transform = (i >= target && i < currentSlot) ? `translateY(${heights[originalIdx]}px)` : '';
           }
         });
-        currentSlot = targetSlot;
+        currentSlot = target;
       }
     }, {passive:false});
     const finish = ()=>{
@@ -2786,7 +2833,7 @@ function renderSchedule(){
       </div>
       <button class="ghost danger" id="clearSelectedBtn" style="width:100%">🗑️ 清空所選項目</button>
     `)}
-    ${orderedCategories().map(cat=>renderCategoryCard(cat)).join('')}
+    <div id="scheduleCardsContainer">${renderScheduleCards()}</div>
     <div class="card">
       <button class="primary" id="exportText" style="width:100%">📋 轉出文字班表</button>
     </div>
@@ -2796,6 +2843,7 @@ function renderSchedule(){
     </div>
   `;
   document.getElementById('autoAssignBtn2').onclick=()=>{ autoAssignDay(currentDate); autoAssignMiscForDate(currentDate); render(); };
+  wireScheduleCardsDrag();
   document.getElementById('clearTargetSelectAll').onclick=()=>{
     document.querySelectorAll('.clear-target-cb').forEach(cb=>cb.checked=true);
   };
@@ -2845,7 +2893,7 @@ function generateScheduleText(date){
   const lines=[];
   lines.push('🌟衛哨勤務🌟');
   lines.push(dutyDateRangeLabel(date));
-  orderedCategories().filter(c=>c.enforceRest).forEach(cat=>{
+  orderedCategories().filter(c=>c.enforceRest && !c.excludeFromExport).forEach(cat=>{
     lines.push('🔶'+cat.name);
     const dayAssign=(state.assign[date]||{})[cat.id]||{};
     cat.shifts.forEach(s=>{
@@ -2856,20 +2904,35 @@ function generateScheduleText(date){
     });
   });
   lines.push('———勤務———');
-  orderedCategories().filter(c=>!c.enforceRest).forEach(cat=>{
-    lines.push('♦️'+cat.name+'：');
-    const dayAssign=(state.assign[date]||{})[cat.id]||{};
-    cat.shifts.forEach(s=>{
-      const assigned=dayAssign[s.id]||[];
-      const names=Array.from({length:s.count}).map((_,i)=>assigned[i]?personName(assigned[i]):'').filter(Boolean);
-      const label=s.label||(s.start+'-'+s.end);
-      lines.push(`${label}：${names.join('、')}`);
-    });
+  // non-衛哨 categories (like 打飯班) and today's 其他勤務 entries share one
+  // unified export order — matched to their preset's sortOrder so dragging
+  // the combined list in 排班分頁 controls exactly where each one lands here
+  const nonRestCats = orderedCategories().filter(c=>!c.enforceRest && !c.excludeFromExport)
+    .map(c=>({kind:'cat', ref:c, sortOrder:c.sortOrder??999}));
+  const miscEntries = (state.misc[date]||[]).filter(m=>{
+    const preset = state.miscPresets.find(p=>p.role===m.role);
+    return !preset || !preset.excludeFromExport; // no matching preset (one-off/custom) always included
+  }).map(m=>{
+    const preset = state.miscPresets.find(p=>p.role===m.role);
+    return {kind:'misc', ref:m, sortOrder: preset? (preset.sortOrder??999) : 999};
   });
-  (state.misc[date]||[]).forEach(m=>{
-    const people=m.personIds.map(pid=>personName(pid)).join('、');
-    const timePart = m.start&&m.end? `（${m.start}-${m.end}）`:'';
-    lines.push(`♦️${m.role}${timePart}：${people}`);
+  [...nonRestCats, ...miscEntries].sort((a,b)=>a.sortOrder-b.sortOrder).forEach(item=>{
+    if(item.kind==='cat'){
+      const cat=item.ref;
+      lines.push('♦️'+cat.name+'：');
+      const dayAssign=(state.assign[date]||{})[cat.id]||{};
+      cat.shifts.forEach(s=>{
+        const assigned=dayAssign[s.id]||[];
+        const names=Array.from({length:s.count}).map((_,i)=>assigned[i]?personName(assigned[i]):'').filter(Boolean);
+        const label=s.label||(s.start+'-'+s.end);
+        lines.push(`${label}：${names.join('、')}`);
+      });
+    } else {
+      const m=item.ref;
+      const people=m.personIds.map(pid=>personName(pid)).join('、');
+      const timePart = m.start&&m.end? `（${m.start}-${m.end}）`:'';
+      lines.push(`♦️${m.role}${timePart}：${people}`);
+    }
   });
   return lines.join('\n');
 }
@@ -2937,18 +3000,92 @@ function categoryPriorityLabel(cat){
   }
   return `優先順序：${(cat.customPriority || RANK_DEFS.map(r=>r.rank)).join('→')}`;
 }
-function renderCategoryCard(cat){
+/* the combined, sortOrder-driven list of everything that renders as a card
+   in the 排班 tab: every category plus one group per distinct role present
+   in today's 其他勤務 entries (grouped so 查哨's five time-slots, say, stay
+   together as one draggable card rather than five). Built as its own
+   function — not just reading combinedOrderList() — because it needs
+   TODAY's actual misc entries, not just the presets, and skips misc roles
+   with nothing scheduled today. */
+function buildScheduleCardItems(){
+  const dayMisc = state.misc[currentDate]||[];
+  const miscByRole = {};
+  dayMisc.forEach(m=>{
+    if(!miscByRole[m.role]) miscByRole[m.role]=[];
+    miscByRole[m.role].push(m);
+  });
+  const miscGroups = Object.keys(miscByRole).map(role=>{
+    const preset = state.miscPresets.find(p=>p.role===role);
+    return {kind:'misc', role, entries:miscByRole[role], preset, sortOrder: preset?(preset.sortOrder??999):999};
+  });
+  const catItems = orderedCategories().map(cat=>({kind:'cat', cat, sortOrder:cat.sortOrder??999}));
+  return [...catItems, ...miscGroups].sort((a,b)=>a.sortOrder-b.sortOrder);
+}
+function renderScheduleCards(){
+  return buildScheduleCardItems().map((item,i)=>
+    item.kind==='cat'? renderCategoryCard(item.cat, i) : renderMiscDutyCard(item.role, item.entries, item.preset, i)
+  ).join('');
+}
+function wireScheduleCardsDrag(){
+  const items = buildScheduleCardItems();
+  wireDragReorder('scheduleCardsContainer', items, ()=>{
+    items.forEach((item,i)=>{
+      const ref = item.kind==='cat'? item.cat : item.preset;
+      if(ref) ref.sortOrder = i*10;
+    });
+    saveState();
+    render();
+  });
+  document.querySelectorAll('.card-exclude-cb').forEach(cb=>{
+    cb.onchange=()=>{
+      const kind=cb.dataset.excludeKind, id=cb.dataset.excludeId;
+      if(kind==='cat'){
+        const cat=state.categories.find(c=>c.id===id);
+        if(cat) cat.excludeFromExport=cb.checked;
+      } else {
+        const preset=state.miscPresets.find(p=>p.role===id);
+        if(preset) preset.excludeFromExport=cb.checked;
+      }
+      saveState();
+    };
+  });
+}
+/* a misc-duty card for the 排班 tab — one card per distinct role with
+   entries today (e.g. all five 查哨 time-slots share one card), styled and
+   wired the same way as 其他勤務 分頁's own list (edit/delete per entry) so
+   this doesn't diverge into a second implementation to maintain */
+function renderMiscDutyCard(role, entries, preset, dragIdx){
+  const title = `<span data-drag-handle style="cursor:grab;padding-right:6px;color:var(--dim)">⠿</span>🗂 ${esc(role)}`;
+  const extraButtons = preset? `<label style="display:flex;align-items:center;gap:3px;font-size:11px"><input type="checkbox" class="card-exclude-cb" data-exclude-kind="misc" data-exclude-id="${esc(role)}" style="width:auto" ${preset.excludeFromExport?'checked':''}>不匯出</label>` : '';
+  const inner = entries.map(m=>{
+    const issues = validateMiscEntry(m);
+    const peopleLabel = m.roles
+      ? m.roles.map((r,i)=>`${r}：${m.personIds[i]? esc(personName(m.personIds[i])) : ((m.lockedSlots&&m.lockedSlots[i])? '🔒保留空白':'（未指派）')}`).join('　')
+      : (m.personIds.map(pid=>esc(personName(pid))).join('、')||'（未指派）');
+    return `
+      <div class="list-item" style="flex-direction:column;align-items:stretch">
+        <div class="row">
+          <span class="grow">${m.start&&m.end? `<b>${m.start}-${m.end}</b>　`:''}${peopleLabel}</span>
+          <button class="ghost small" data-edit-misc="${m.id}">編輯</button>
+          <button class="ghost small danger" data-del-misc="${m.id}">刪除</button>
+        </div>
+        ${issues.map(i=>`<div class="badge-issue">⚠️ ${esc(i)}</div>`).join('')}
+      </div>`;
+  }).join('');
+  return `<div data-misc-card="${esc(role)}" data-drag-idx="${dragIdx}">${collapsibleCardHTML('misccard-'+role, title, inner, extraButtons)}</div>`;
+}
+function renderCategoryCard(cat, dragIdx){
   const dayAssign = (state.assign[currentDate]||{})[cat.id] || {};
   const filledCount = cat.shifts.reduce((sum,s)=>sum+(dayAssign[s.id]||[]).filter(Boolean).length,0);
   const totalCount = cat.shifts.reduce((sum,s)=>sum+s.count,0);
-  const title = `${esc(cat.name)}
+  const title = `<span data-drag-handle style="cursor:grab;padding-right:6px;color:var(--dim)">⠿</span>${esc(cat.name)}
         ${cat.enforceRest?'<span class="tag" style="margin-left:6px">6hr規則</span>':''}
         ${cat.preferLowRank?'<span class="tag" style="margin-left:4px">建議低階</span>':''}
         ${cat.needsNCO?'<span class="tag" style="margin-left:4px">需士官帶隊</span>':''}
         ${(cat.excludeRanks||[]).length?`<span class="tag" style="margin-left:4px">${esc((cat.excludeRanks||[]).join('、'))}不可排</span>`:''}
         ${(cat.avoidRanks||[]).length?`<span class="tag" style="margin-left:4px">盡量避免${esc((cat.avoidRanks||[]).join('、'))}</span>`:''}
         <span class="muted" style="margin-left:6px">已排 ${filledCount}/${totalCount}</span>`;
-  const extraButtons = `<button class="ghost small" data-edit-cat="${cat.id}">編輯</button><button class="ghost small danger" data-clear-cat="${cat.id}">清空排班</button>`;
+  const extraButtons = `<label style="display:flex;align-items:center;gap:3px;font-size:11px"><input type="checkbox" class="card-exclude-cb" data-exclude-kind="cat" data-exclude-id="${cat.id}" style="width:auto" ${cat.excludeFromExport?'checked':''}>不匯出</label><button class="ghost small" data-edit-cat="${cat.id}">編輯</button><button class="ghost small danger" data-clear-cat="${cat.id}">清空排班</button>`;
   const inner = `
     <div class="hint" style="margin-bottom:8px">${esc(categoryPriorityLabel(cat))}</div>
     ${cat.shifts.map(s=>{
@@ -2978,7 +3115,7 @@ function renderCategoryCard(cat){
       </div>`;
     }).join('')}
   `;
-  return `<div data-cat="${cat.id}">${collapsibleCardHTML('cat-'+cat.id, title, inner, extraButtons)}</div>`;
+  return `<div data-cat="${cat.id}" data-drag-idx="${dragIdx}">${collapsibleCardHTML('cat-'+cat.id, title, inner, extraButtons)}</div>`;
 }
 
 function assignableOptions(cat, shift, selectedId, slotIdx){
@@ -3457,7 +3594,7 @@ function openMiscPresetModal(editIndex){
       existing.rankPriority=rankPriority;
       delete existing.start; delete existing.end;
     } else {
-      state.miscPresets.push({role,times:timesDraft.map(t=>({...t})),roles:null,fixed,restUntil,requiredLicenses,requiredMedCert,requiredSkills,rankPriority});
+      state.miscPresets.push({role,times:timesDraft.map(t=>({...t})),roles:null,fixed,restUntil,requiredLicenses,requiredMedCert,requiredSkills,rankPriority,sortOrder:nextSortOrder(),excludeFromExport:false});
     }
     saveState(); modal.remove(); render();
   };
@@ -3544,7 +3681,10 @@ function renderMisc(){
       ${miscEditingId? `<button class="ghost small" id="mCancelEdit" style="width:100%;margin-top:6px">取消編輯</button>`:''}
     `)}
     ${collapsibleCardHTML('miscToday', `${fmtDate(currentDate)} 其他勤務（${list.length}筆・共${new Set(list.flatMap(m=>(m.personIds||[]).filter(Boolean))).size}人）`, `
-      ${list.length===0? `<div class="empty">尚未新增</div>` : list.map(m=>{
+      ${list.length===0? `<div class="empty">尚未新增</div>` : [...list].sort((a,b)=>{
+        const pa=state.miscPresets.find(p=>p.role===a.role), pb=state.miscPresets.find(p=>p.role===b.role);
+        return (pa?(pa.sortOrder??999):999) - (pb?(pb.sortOrder??999):999);
+      }).map(m=>{
         const issues = validateMiscEntry(m);
         const peopleLabel = m.roles
           ? m.roles.map((r,i)=>`${r}：${m.personIds[i]? esc(personName(m.personIds[i])) : ((m.lockedSlots&&m.lockedSlots[i])? '🔒保留空白':'（未指派）')}`).join('　')
@@ -3732,7 +3872,11 @@ function renderMisc(){
           });
           collapseState['miscToday']=true; // auto-expand so the newly created entries are visible
           autoAssignMiscForDate(currentDate); // fill them in right away instead of leaving them blank
+          currentTab='schedule'; // jump over so you can immediately drag the new item(s) into place
+          collapseState['displayOrder']=true;
           saveState(); render();
+          const el=document.getElementById('displayOrderList');
+          if(el) el.scrollIntoView({block:'center'});
         });
         return;
       }
@@ -3797,8 +3941,16 @@ function renderMisc(){
     miscSelectedPresetRole=null;
     miscSelectedRestUntil='';
     miscEditingId=null;
-    if(wasNewEntry) autoAssignMiscForDate(currentDate); // fill the slots the user didn't pick, right away
+    if(wasNewEntry){
+      autoAssignMiscForDate(currentDate); // fill the slots the user didn't pick, right away
+      currentTab='schedule'; // jump over so you can immediately drag the new item into place
+      collapseState['displayOrder']=true;
+    }
     saveState(); render();
+    if(wasNewEntry){
+      const el=document.getElementById('displayOrderList');
+      if(el) el.scrollIntoView({block:'center'});
+    }
   };
   if(document.getElementById('mCancelEdit')){
     document.getElementById('mCancelEdit').onclick=()=>{
