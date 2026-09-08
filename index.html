@@ -100,7 +100,7 @@ textarea{min-height:50px;resize:vertical;}
     <div class="row" style="gap:6px;align-items:center">
       <button class="ghost small" id="undoBtn" title="復原上一步" style="display:none">↩️</button>
       <button class="ghost small" id="redoBtn" title="取消復原（重做）" style="display:none">↪️</button>
-      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v14</span></h1>
+      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v15</span></h1>
     </div>
     <div class="row" style="gap:6px;align-items:center">
       <select id="timeStepSelect" style="font-size:11px;padding:3px 6px;width:auto">
@@ -125,8 +125,8 @@ textarea{min-height:50px;resize:vertical;}
   <button data-tab="people">👤 人員</button>
   <button data-tab="unavail">🚫 休假/事故</button>
   <button data-tab="stats">📊 統計</button>
-  <button data-tab="schedule">📋 排班</button>
   <button data-tab="misc">🗂 其他勤務</button>
+  <button data-tab="schedule">📋 排班</button>
 </div>
 
 <input type="file" id="importFile" accept="application/json" style="display:none">
@@ -3256,6 +3256,55 @@ let miscSelectedRoles=null; // set by clicking a preset with structured roles (�
 let miscFreeformFilterState={search:'',group:''}; // for the freeform 人員 checkbox list
 let miscFreeformCheckedIds=new Set();
 let miscEditingId=null; // set while editing an existing 其他勤務 entry instead of creating a new one
+let adhocQueryState={time:'10:00',officer:0,nco:0,enlisted:0,hasRun:false,results:null};
+/* ad-hoc "I need N officers / M NCO / K enlisted starting at this time"
+   query — for each rank category, lists who's free at that moment sorted
+   by how long they'd stay free, and separately flags anyone whose free
+   window is cut short by an upcoming commitment (so you know who needs to
+   be released early) */
+function runAdhocQuery(){
+  const {time, officer, nco, enlisted} = adhocQueryState;
+  const qMin = toMin(time);
+  const wanted = {軍官:Number(officer)||0, 士官:Number(nco)||0, 士兵:Number(enlisted)||0};
+  const byCategory = {軍官:[], 士官:[], 士兵:[]};
+  state.personnel.forEach(p=>{
+    const cat = rankCategory(p.rank);
+    if(!cat) return;
+    if(isPersonUnavailable(p.id, currentDate, qMin, qMin+1)) return; // not free at the requested moment at all
+    const freeMin = freeDurationFrom(p.id, currentDate, qMin);
+    const freeUntilMin = qMin+freeMin;
+    // what's the next thing they're committed to right after this free window ends (if the day continues)?
+    let nextCommitment = null;
+    if(freeUntilMin < 1440){
+      const reasons = unavailabilityReasonsInRange(p.id, currentDate, freeUntilMin, Math.min(freeUntilMin+1,1440));
+      if(reasons.length && reasons[0]!=='不可排（原因不明）') nextCommitment = reasons[0];
+    }
+    byCategory[cat].push({p, freeMin, freeUntilMin, nextCommitment});
+  });
+  Object.keys(byCategory).forEach(cat=>{
+    byCategory[cat].sort((a,b)=>b.freeMin-a.freeMin); // longest available first
+  });
+  adhocQueryState.results = {wanted, byCategory};
+  adhocQueryState.hasRun = true;
+}
+function renderAdhocQueryResult(){
+  if(!adhocQueryState.results) return '';
+  const {wanted, byCategory} = adhocQueryState.results;
+  const p2=n=>String(n).padStart(2,'0');
+  const fmtMin=m=>`${p2(Math.floor(m/60)%24)}:${p2(m%60)}`;
+  return ['軍官','士官','士兵'].map(cat=>{
+    if(!wanted[cat]) return '';
+    const candidates = byCategory[cat];
+    const enough = candidates.length >= wanted[cat];
+    const shown = candidates.slice(0, Math.max(wanted[cat]*2, wanted[cat])); // show a few extra as backup options
+    return `<div style="margin-bottom:10px">
+      <div class="${enough?'hint':'badge-issue'}" style="margin-bottom:4px">${enough?'':'⚠️ '}需要${cat} ${wanted[cat]} 人，目前有空的共 ${candidates.length} 人</div>
+      ${shown.length? shown.map(({p,freeMin,freeUntilMin,nextCommitment})=>`
+        <div class="muted">・${esc(p.name)}（${p.group||'未分組'}·${p.rank}）：可用到 ${fmtMin(freeUntilMin)}（共${Math.floor(freeMin/60)}時${freeMin%60}分）${nextCommitment? ` → 之後：${esc(nextCommitment)}`:''}</div>
+      `).join('') : `<div class="empty">此時段沒有${cat}有空</div>`}
+    </div>`;
+  }).join('');
+}
 function miscPeopleCheckboxesHTML(groupFilter, searchFilter){
   if(!state.personnel.length) return `<div class="empty">尚無人員</div>`;
   let list=[...state.personnel];
@@ -3416,6 +3465,18 @@ function openMiscPresetModal(editIndex){
 function renderMisc(){
   const list = state.misc[currentDate]||[];
   app.innerHTML = `
+    ${collapsibleCardHTML('adhocQuery', `臨時任務查詢（指定時間+需要幾官幾士幾兵，列出可用人選）`, `
+      <div class="row wrap" style="margin-bottom:8px">
+        <div class="grow"><label>需要開始的時間</label><select id="ahTime">${timeOptions().map(t=>`<option ${t===(adhocQueryState.time||'10:00')?'selected':''}>${t}</option>`).join('')}</select></div>
+      </div>
+      <div class="row wrap" style="margin-bottom:8px">
+        <div class="grow"><label>需要軍官人數</label><input type="text" id="ahOfficer" value="${adhocQueryState.officer||0}"></div>
+        <div class="grow"><label>需要士官人數</label><input type="text" id="ahNCO" value="${adhocQueryState.nco||0}"></div>
+        <div class="grow"><label>需要士兵人數</label><input type="text" id="ahEnlisted" value="${adhocQueryState.enlisted||0}"></div>
+      </div>
+      <button class="primary" id="ahQueryBtn" style="width:100%;margin-bottom:8px">查詢可用人選</button>
+      <div id="ahResult">${adhocQueryState.hasRun? renderAdhocQueryResult():''}</div>
+    `)}
     ${collapsibleCardHTML('miscPresets', '常用項目（點一下自動帶入名稱、時間與角色）', `
       <div class="row wrap">
         ${state.miscPresets.map((mp,i)=>({mp,i})).sort((a,b)=>(b.mp.fixed?1:0)-(a.mp.fixed?1:0)).map(({mp,i})=>`<span class="pill-btn" style="cursor:pointer" data-preset="${i}">${mp.fixed?'📌':''}${esc(mp.role)} ${presetTimes(mp).map(t=>t.start+'-'+t.end).join('、')} <span data-edit-preset="${i}" style="margin-left:4px">✎</span></span>`).join('')}
@@ -3693,6 +3754,14 @@ function renderMisc(){
       openMiscPresetModal(Number(x.dataset.editPreset));
     };
   });
+  document.getElementById('ahQueryBtn').onclick=()=>{
+    adhocQueryState.time=document.getElementById('ahTime').value;
+    adhocQueryState.officer=Number(document.getElementById('ahOfficer').value)||0;
+    adhocQueryState.nco=Number(document.getElementById('ahNCO').value)||0;
+    adhocQueryState.enlisted=Number(document.getElementById('ahEnlisted').value)||0;
+    runAdhocQuery();
+    document.getElementById('ahResult').innerHTML = renderAdhocQueryResult();
+  };
   document.getElementById('openAddPresetModal').onclick=()=>openMiscPresetModal();
   document.getElementById('mAdd').onclick=()=>{
     const role=document.getElementById('mRole').value.trim();
