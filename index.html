@@ -97,7 +97,7 @@ textarea{min-height:50px;resize:vertical;}
   <div class="topbar-main">
     <div class="row" style="gap:6px;align-items:center">
       <button class="ghost small" id="undoBtn" title="復原上一步" style="display:none">↩️</button>
-      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v10</span></h1>
+      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v11</span></h1>
     </div>
     <div class="row" style="gap:6px;align-items:center">
       <select id="timeStepSelect" style="font-size:11px;padding:3px 6px;width:auto">
@@ -320,7 +320,12 @@ function driverQualificationIssues(person, preset){
    chief to be an NCO+ outranking the driver; anything tagged 話務 just needs
    a license. */
 function validateMiscEntry(entry){
-  if(!entry.roles) return [];
+  if(!entry.roles){
+    if(!(entry.personIds&&entry.personIds.length) && !entry.skipAutoFill){
+      return [`目前未指派（自動排班找不到符合資格且有空的人，可能都在忙其他勤務或休假，可手動指定或稍後再試）`];
+    }
+    return [];
+  }
   const issues=[];
   const preset=presetForEntry(entry);
   const chiefIdx=entry.roles.indexOf('車長');
@@ -338,6 +343,9 @@ function validateMiscEntry(entry){
     if(r.startsWith('話務')){
       const p=state.personnel.find(pp=>pp.id===entry.personIds[i]);
       if(p && !p.license) issues.push(`${p.name}：話務需至少小型車駕照`);
+    }
+    if(!entry.personIds[i] && !(entry.lockedSlots && entry.lockedSlots[i])){
+      issues.push(`${r}：目前未指派（自動排班找不到符合資格且有空的人，可能都在忙其他勤務或休假，可手動指定或稍後再試）`);
     }
   });
   return issues;
