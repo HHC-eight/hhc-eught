@@ -100,7 +100,7 @@ textarea{min-height:50px;resize:vertical;}
     <div class="row" style="gap:6px;align-items:center">
       <button class="ghost small" id="undoBtn" title="復原上一步" style="display:none">↩️</button>
       <button class="ghost small" id="redoBtn" title="取消復原（重做）" style="display:none">↪️</button>
-      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v28</span></h1>
+      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v29</span></h1>
     </div>
     <div class="row" style="gap:6px;align-items:center">
       <select id="timeStepSelect" style="font-size:11px;padding:3px 6px;width:auto">
@@ -599,6 +599,18 @@ function timeOptions(){
    nominal shift times only. */
 const PREP_MINUTES = 30;
 const DAY_START_MIN = 22*60; // 22:00 — the roster day's reference hour
+/* a 衛哨 (enforceRest) shift's assignee is effectively occupied starting
+   PREP_MINUTES before its listed start time — used everywhere a general
+   "is this person busy" check considers an upcoming category assignment,
+   not just the one-off prepGapConflict check that runs when someone is
+   being assigned INTO the sentry shift itself. Without this, free-time
+   queries (指定時間查詢/臨時任務查詢) and availability dropdowns would show
+   someone as free right up until the shift's clock start, ignoring the
+   prep window the rest of the app already enforces. */
+function shiftBusyStartMin(cat, sft){
+  const startMin = toMin(sft.start);
+  return cat.enforceRest ? ((startMin-PREP_MINUTES)%1440+1440)%1440 : startMin;
+}
 /* the shifts actually in effect for a category on a given date: a
    per-day override if one has been saved for that (date, category) pair,
    otherwise the category's own (all-dates) shift template. Every place that
@@ -708,7 +720,7 @@ function isPersonUnavailable(personId, date, s, e, excludeCatShift){
     const catAssign = dayAssign[cat.id]||{};
     for(const sft of effectiveShifts(cat, date)){
       if(excludeCatShift && excludeCatShift.catId===cat.id && excludeCatShift.shiftId===sft.id) continue;
-      if((catAssign[sft.id]||[]).includes(personId) && windowsOverlapOnce(s,e,toMin(sft.start),toMin(sft.end))) return true;
+      if((catAssign[sft.id]||[]).includes(personId) && windowsOverlapOnce(s,e,shiftBusyStartMin(cat,sft),toMin(sft.end))) return true;
     }
   }
   // avoid double-booking against 其他勤務 (misc) commitments that have a defined time window
@@ -751,8 +763,8 @@ function unavailabilityReasonsInRange(personId, date, s, e){
   state.categories.forEach(cat=>{
     const catAssign = dayAssign[cat.id]||{};
     effectiveShifts(cat, date).forEach(sft=>{
-      if((catAssign[sft.id]||[]).includes(personId) && windowsOverlapOnce(s,e,toMin(sft.start),toMin(sft.end))){
-        out.push(`勤務中：${cat.name} ${sft.label||sft.start+'-'+sft.end}`);
+      if((catAssign[sft.id]||[]).includes(personId) && windowsOverlapOnce(s,e,shiftBusyStartMin(cat,sft),toMin(sft.end))){
+        out.push(`勤務中：${cat.name} ${sft.label||sft.start+'-'+sft.end}${cat.enforceRest?'（含準備時間）':''}`);
       }
     });
   });
@@ -3394,7 +3406,7 @@ function runAdhocQuery(){
     let nextCommitment = null;
     if(freeUntilMin < 1440){
       const reasons = unavailabilityReasonsInRange(p.id, currentDate, freeUntilMin, Math.min(freeUntilMin+1,1440));
-      if(reasons.length && reasons[0]!=='不可排（原因不明）') nextCommitment = reasons[0];
+      if(reasons.length) nextCommitment = reasons[0];
     }
     byCategory[cat].push({p, freeMin, freeUntilMin, nextCommitment});
   });
@@ -3413,7 +3425,7 @@ function renderAdhocQueryResult(){
     if(!wanted[cat]) return '';
     const candidates = byCategory[cat];
     const enough = candidates.length >= wanted[cat];
-    const shown = candidates.slice(0, Math.max(wanted[cat]*2, wanted[cat]));
+    const shown = candidates;
     return `<div style="margin-bottom:10px">
       <div class="${enough?'hint':'badge-issue'}" style="margin-bottom:4px">${enough?'':'⚠️ '}需要${cat} ${wanted[cat]} 人，目前有空的共 ${candidates.length} 人</div>
       ${shown.length? shown.map(({p,freeMin,freeUntilMin,nextCommitment})=>`
@@ -3606,7 +3618,7 @@ function isPersonBusyForMiscEdit(personId, date, s, eRaw, excludeEntryId){
   for(const cat of state.categories){
     const catAssign = dayAssign[cat.id]||{};
     for(const sft of effectiveShifts(cat, date)){
-      if((catAssign[sft.id]||[]).includes(personId) && windowsOverlapOnce(s,e,toMin(sft.start),toMin(sft.end))) return true;
+      if((catAssign[sft.id]||[]).includes(personId) && windowsOverlapOnce(s,e,shiftBusyStartMin(cat,sft),toMin(sft.end))) return true;
     }
   }
   for(const mm of (state.misc[date]||[])){
@@ -3636,8 +3648,8 @@ function miscEditBusyReasons(personId, date, s, eRaw, excludeEntryId){
   state.categories.forEach(cat=>{
     const catAssign = dayAssign[cat.id]||{};
     effectiveShifts(cat, date).forEach(sft=>{
-      if((catAssign[sft.id]||[]).includes(personId) && windowsOverlapOnce(s,e,toMin(sft.start),toMin(sft.end))){
-        out.push(`勤務中：${cat.name} ${sft.label||sft.start+'-'+sft.end}`);
+      if((catAssign[sft.id]||[]).includes(personId) && windowsOverlapOnce(s,e,shiftBusyStartMin(cat,sft),toMin(sft.end))){
+        out.push(`勤務中：${cat.name} ${sft.label||sft.start+'-'+sft.end}${cat.enforceRest?'（含準備時間）':''}`);
       }
     });
   });
