@@ -31,6 +31,8 @@ h3{font-size:13px;color:var(--dim);font-weight:500;}
 .unit-banner{display:flex;align-items:center;justify-content:center;gap:8px;padding:7px 14px 6px;background:linear-gradient(180deg,#1a2117,var(--bg));border-bottom:1px solid rgba(125,154,95,.35);}
 .unit-banner-badge{width:18px;height:18px;border-radius:50%;background:var(--accent2);color:#0d130a;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;flex-shrink:0;}
 .unit-banner-text{font-size:12px;letter-spacing:2.5px;color:var(--accent2);font-weight:600;}
+.time-step-btn{padding:4px 9px;font-size:11px;}
+.time-step-btn.active{background:var(--accent);border-color:var(--accent);color:#1a140a;font-weight:600;}
 .topbar-main{padding:12px 14px;display:flex;align-items:center;justify-content:space-between;}
 .container{padding:12px 12px 24px;max-width:640px;margin:0 auto;}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px;margin-bottom:12px;}
@@ -95,6 +97,13 @@ textarea{min-height:50px;resize:vertical;}
   <div class="topbar-main">
     <h1 id="pageTitle">🌟 衛哨排班系統</h1>
     <button class="ghost small" id="exportBtn">匯出</button>
+  </div>
+  <div class="row wrap" id="timeStepRow" style="padding:0 14px 8px;gap:6px;align-items:center">
+    <span class="muted" style="font-size:11px">全站時間選單間隔：</span>
+    <button class="ghost small time-step-btn" data-step="5">5分</button>
+    <button class="ghost small time-step-btn" data-step="10">10分</button>
+    <button class="ghost small time-step-btn" data-step="15">15分</button>
+    <button class="ghost small time-step-btn" data-step="30">30分</button>
   </div>
 </div>
 
@@ -345,6 +354,7 @@ const UNAVAIL_REASON_PRESETS=['出車','體檢','體測','開會','帶廠商','�
 const MEDCERT_OPTIONS=['EMT-1','EMT-2','EMT-P','醫生證書'];
 const SKILL_OPTIONS=['技工','車勤'];
 if(!state.skillOptions) state.skillOptions=[...SKILL_OPTIONS];
+if(!state.timeStepMinutes) state.timeStepMinutes=10;
 /* 事故/請假 (uses a preset reason list or a custom typed one) */
 /* 衛哨 (安全士官/橋哨/指管) rule: the same person should not stand the same
    time-slot two days running — check whether they held this exact shift
@@ -359,13 +369,15 @@ function assignedSameShiftYesterday(personId, date, catId, shiftId){
 function toMin(t){ const [h,m]=t.split(':').map(Number); return h*60+m; }
 function fmtMin(m){ m=((m%1440)+1440)%1440; const h=Math.floor(m/60), mm=m%60; return String(h).padStart(2,'0')+':'+String(mm).padStart(2,'0'); }
 function shiftDuration(s){ let a=toMin(s.start), b=toMin(s.end); if(b<=a) b+=1440; return b-a; }
-function timeOptions(){
-  let opts=[]; for(let m=0;m<=1440;m+=30){ let h=Math.floor(m/60), mm=m%60; opts.push(String(h).padStart(2,'0')+':'+String(mm).padStart(2,'0')); }
-  return opts;
-}
 function timeOptionsFine(step){
   let opts=[]; for(let m=0;m<=1440;m+=step){ let h=Math.floor(m/60), mm=m%60; opts.push(String(h).padStart(2,'0')+':'+String(mm).padStart(2,'0')); }
   return opts;
+}
+/* time-select granularity is a global, adjustable setting (default 10 min) —
+   every time picker in the app goes through this so changing it applies
+   everywhere at once */
+function timeOptions(){
+  return timeOptionsFine(state.timeStepMinutes||10);
 }
 
 /* Build absolute (non-wrapping) start/end minutes for every shift in a category
@@ -832,6 +844,20 @@ const app=document.getElementById('app');
 document.querySelectorAll('.tabs button').forEach(btn=>{
   btn.addEventListener('click',()=>{ currentTab=btn.dataset.tab; window.scrollTo(0,0); render(); });
 });
+function refreshTimeStepButtons(){
+  document.querySelectorAll('.time-step-btn').forEach(b=>{
+    b.classList.toggle('active', Number(b.dataset.step)===state.timeStepMinutes);
+  });
+}
+document.querySelectorAll('.time-step-btn').forEach(b=>{
+  b.addEventListener('click', ()=>{
+    state.timeStepMinutes = Number(b.dataset.step);
+    saveState();
+    refreshTimeStepButtons();
+    render();
+  });
+});
+refreshTimeStepButtons();
 document.getElementById('exportBtn').addEventListener('click', openExportModal);
 function openExportModal(){
   const dataStr = JSON.stringify(state, null, 2);
@@ -1203,8 +1229,38 @@ document.getElementById('importFile').addEventListener('change', (e)=>{
 });
 
 /* ---- UNAVAIL TAB ---- */
+let reverseFilterState={search:'',group:''}; // persists across re-renders until explicitly cleared
+let reverseCheckedIds=new Set(); // survives filter changes — checking someone, then filtering them out of view, keeps them checked
+let dayListFilterState={search:'',group:''}; // for the day's incident/leave list
+let uaFilterState={group:''}; // for the single-entry 人員事故登載 form's group filter
+function renderReverseCheckboxes(){
+  if(!state.personnel.length) return `<div class="empty">尚未新增人員</div>`;
+  const {search:kw, group:gf} = reverseFilterState;
+  let list=[...state.personnel];
+  if(kw) list=list.filter(p=>p.name.includes(kw));
+  if(gf==='__none') list=list.filter(p=>!p.group);
+  else if(gf) list=list.filter(p=>p.group===gf);
+  if(!list.length) return `<div class="empty">找不到符合的人員</div>`;
+  const rGroups=[...new Set(list.map(p=>p.group).filter(Boolean))].sort((a,b)=>groupIndex(a)-groupIndex(b));
+  const rList = rGroups.length? rGroups : [''];
+  return rList.map(g=>{
+    const members=list.filter(p=>p.group===g).sort((a,b)=>rankIndex(a.rank)-rankIndex(b.rank));
+    if(!members.length) return '';
+    return `<h3>${g?esc(g):'未分組'}</h3>` + members.map(p=>`
+      <label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0">
+        <input type="checkbox" data-reverse-check="${p.id}" style="width:auto" ${reverseCheckedIds.has(p.id)?'checked':''}> ${esc(p.name)}（${p.rank}）
+      </label>`).join('');
+  }).join('');
+}
 function renderUnavail(){
   const list = (state.unavail[currentDate]||[]);
+  const filteredList = list.filter(u=>{
+    const p = state.personnel.find(pp=>pp.id===u.personId);
+    if(dayListFilterState.search && !(p && p.name.includes(dayListFilterState.search))) return false;
+    if(dayListFilterState.group==='__none' && p && p.group) return false;
+    if(dayListFilterState.group && dayListFilterState.group!=='__none' && !(p && p.group===dayListFilterState.group)) return false;
+    return true;
+  });
   const longTerm = state.personnel.filter(p=>personLongTerm(p).mode!=='off');
   // active multi-day leave blocks, gathered across all dates by leaveId
   const leaveBlocks={};
@@ -1231,17 +1287,18 @@ function renderUnavail(){
       <div class="row wrap" style="margin-bottom:8px">
         <div class="grow"><label>排組篩選</label>
           <select id="uaGroupFilter">
-            <option value="">（全部）</option>
-            ${[...new Set(state.personnel.map(p=>p.group).filter(Boolean))].sort((a,b)=>groupIndex(a)-groupIndex(b)).map(g=>`<option value="${esc(g)}">${esc(g)}</option>`).join('')}
-            <option value="__none">未分組</option>
+            <option value="" ${!uaFilterState.group?'selected':''}>（全部）</option>
+            ${[...new Set(state.personnel.map(p=>p.group).filter(Boolean))].sort((a,b)=>groupIndex(a)-groupIndex(b)).map(g=>`<option value="${esc(g)}" ${uaFilterState.group===g?'selected':''}>${esc(g)}</option>`).join('')}
+            <option value="__none" ${uaFilterState.group==='__none'?'selected':''}>未分組</option>
           </select>
         </div>
+        <button class="ghost small" id="uaClearFilter" style="align-self:flex-end">清除篩選</button>
       </div>
       <div class="row wrap" style="margin-bottom:6px">
         <button class="ghost small" id="uaSelectAll">全選</button>
         <button class="ghost small" id="uaClearAll">清空</button>
       </div>
-      <div id="uaPeopleList" style="max-height:220px;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:8px;margin-bottom:8px">${uaPeopleCheckboxesHTML(undefined, currentDate)}</div>
+      <div id="uaPeopleList" style="max-height:220px;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:8px;margin-bottom:8px">${uaPeopleCheckboxesHTML(uaFilterState.group||undefined, currentDate)}</div>
       <div class="row wrap" style="margin-bottom:8px">
         <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text)">
           <input type="checkbox" id="uaAllDay" style="width:auto"> 全天不能排
@@ -1278,24 +1335,21 @@ function renderUnavail(){
       <h2>反向登記（僅勾選人員可排，其餘視為休假）</h2>
       <div class="hint" style="margin-bottom:8px">適用於留守或其他大部分人員都不在的情況：勾選當天「有在、可以排班」的人，其餘全部人員會自動標記為當天全天休假。</div>
       <div class="row wrap" style="margin-bottom:8px">
-        <button class="ghost small" id="reverseSelectAll">全選</button>
-        <button class="ghost small" id="reverseClearAll">清空</button>
+        <div class="grow"><label>搜尋姓名</label><input type="text" id="reverseSearch" placeholder="輸入姓名關鍵字" value="${esc(reverseFilterState.search)}"></div>
+        <div style="width:120px"><label>排組篩選</label>
+          <select id="reverseGroupFilter">
+            <option value="" ${!reverseFilterState.group?'selected':''}>（全部）</option>
+            ${[...new Set(state.personnel.map(p=>p.group).filter(Boolean))].sort((a,b)=>groupIndex(a)-groupIndex(b)).map(g=>`<option value="${esc(g)}" ${reverseFilterState.group===g?'selected':''}>${esc(g)}</option>`).join('')}
+            <option value="__none" ${reverseFilterState.group==='__none'?'selected':''}>未分組</option>
+          </select>
+        </div>
       </div>
-      <div id="reverseCheckArea" style="max-height:260px;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:8px;margin-bottom:8px">
-        ${(()=>{
-          const rGroups=[...new Set(state.personnel.map(p=>p.group).filter(Boolean))].sort((a,b)=>groupIndex(a)-groupIndex(b));
-          const rList = rGroups.length? rGroups : (state.personnel.length? [''] : []);
-          if(!state.personnel.length) return `<div class="empty">尚未新增人員</div>`;
-          return rList.map(g=>{
-            const members=state.personnel.filter(p=>p.group===g).sort((a,b)=>rankIndex(a.rank)-rankIndex(b.rank));
-            if(!members.length) return '';
-            return `<h3>${g?esc(g):'未分組'}</h3>` + members.map(p=>`
-              <label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0">
-                <input type="checkbox" data-reverse-check="${p.id}" style="width:auto"> ${esc(p.name)}（${p.rank}）
-              </label>`).join('');
-          }).join('');
-        })()}
+      <div class="row wrap" style="margin-bottom:8px">
+        <button class="ghost small" id="reverseSelectAll">全選(篩選範圍)</button>
+        <button class="ghost small" id="reverseClearAll">清空(篩選範圍)</button>
+        <button class="ghost small" id="reverseClearFilter">清除篩選</button>
       </div>
+      <div id="reverseCheckArea" style="max-height:260px;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:8px;margin-bottom:8px">${renderReverseCheckboxes()}</div>
       <div class="row wrap" style="margin-bottom:8px">
         <div class="grow"><label>未勾選人員的事故原因(選填)</label>
           <select id="reverseReasonPreset">
@@ -1346,8 +1400,18 @@ function renderUnavail(){
       }).join('')}
     </div>`:''}
     <div class="card">
-      <div class="section-title"><h2 style="margin:0">${fmtDate(currentDate)} 名單（${list.length}）</h2></div>
+      <div class="section-title"><h2 style="margin:0">${fmtDate(currentDate)} 名單（篩選出 ${filteredList.length} / 共 ${list.length}）</h2><button class="ghost small" id="dayListClearFilter">清除篩選</button></div>
       ${list.length? `
+      <div class="row wrap" style="margin-bottom:8px">
+        <div class="grow"><label>搜尋姓名</label><input type="text" id="dayListSearch" placeholder="輸入姓名關鍵字" value="${esc(dayListFilterState.search)}"></div>
+        <div style="width:120px"><label>排組篩選</label>
+          <select id="dayListGroupFilter">
+            <option value="" ${!dayListFilterState.group?'selected':''}>（全部）</option>
+            ${[...new Set(state.personnel.map(p=>p.group).filter(Boolean))].sort((a,b)=>groupIndex(a)-groupIndex(b)).map(g=>`<option value="${esc(g)}" ${dayListFilterState.group===g?'selected':''}>${esc(g)}</option>`).join('')}
+            <option value="__none" ${dayListFilterState.group==='__none'?'selected':''}>未分組</option>
+          </select>
+        </div>
+      </div>
       <div class="row wrap" style="margin-bottom:8px">
         <div class="grow"><label>清空類別</label>
           <select id="clearReasonFilter">
@@ -1358,7 +1422,7 @@ function renderUnavail(){
         </div>
         <button class="ghost small danger" id="clearDayBtn" style="align-self:flex-end">清空此類別</button>
       </div>`:''}
-      ${list.length===0? `<div class="empty">此日尚無登記</div>` : list.map(u=>`
+      ${filteredList.length===0? `<div class="empty">${list.length? '找不到符合的紀錄':'此日尚無登記'}</div>` : filteredList.map(u=>`
         <div class="list-item">
           <span class="grow">${esc(personName(u.personId))}：${u.allDay? '全天不能' : (u.start+'-'+u.end+' 不能')}${u.reason? `（${esc(u.reason)}）`:''}${u.leaveId?'　🏖️休假':''}</span>
           <button class="ghost small danger" data-del-ua="${u.id}">刪除</button>
@@ -1372,13 +1436,27 @@ function renderUnavail(){
   `;
   document.getElementById('dateSel').onchange=(e)=>{ currentDate=e.target.value; render(); };
   document.getElementById('uaGroupFilter').onchange=(e)=>{
+    uaFilterState.group=e.target.value;
     document.getElementById('uaPeopleList').innerHTML = uaPeopleCheckboxesHTML(e.target.value||undefined, currentDate);
+  };
+  document.getElementById('uaClearFilter').onclick=()=>{
+    uaFilterState={group:''};
+    document.getElementById('uaGroupFilter').value='';
+    document.getElementById('uaPeopleList').innerHTML = uaPeopleCheckboxesHTML(undefined, currentDate);
   };
   document.getElementById('uaSelectAll').onclick=()=>{
     document.querySelectorAll('.ua-person-cb').forEach(cb=>cb.checked=true);
   };
   document.getElementById('uaClearAll').onclick=()=>{
     document.querySelectorAll('.ua-person-cb').forEach(cb=>cb.checked=false);
+  };
+  if(document.getElementById('dayListSearch')){
+    document.getElementById('dayListSearch').oninput=(e)=>{ dayListFilterState.search=e.target.value.trim(); render(); };
+    document.getElementById('dayListGroupFilter').onchange=(e)=>{ dayListFilterState.group=e.target.value; render(); };
+  }
+  document.getElementById('dayListClearFilter').onclick=()=>{
+    dayListFilterState={search:'',group:''};
+    render();
   };
   if(document.getElementById('clearDayBtn')){
     document.getElementById('clearDayBtn').onclick=()=>{
@@ -1398,18 +1476,45 @@ function renderUnavail(){
   document.getElementById('uaReasonPreset').onchange=(e)=>{
     document.getElementById('uaReasonCustomRow').style.display = e.target.value==='__custom'? 'flex':'none';
   };
+  function refreshReverseCheckboxes(){
+    document.getElementById('reverseCheckArea').innerHTML = renderReverseCheckboxes();
+    wireReverseCheckboxes();
+  }
+  function wireReverseCheckboxes(){
+    document.querySelectorAll('[data-reverse-check]').forEach(cb=>{
+      cb.onchange=()=>{
+        if(cb.checked) reverseCheckedIds.add(cb.dataset.reverseCheck);
+        else reverseCheckedIds.delete(cb.dataset.reverseCheck);
+      };
+    });
+  }
+  wireReverseCheckboxes();
+  document.getElementById('reverseSearch').oninput=(e)=>{
+    reverseFilterState.search=e.target.value.trim();
+    refreshReverseCheckboxes();
+  };
+  document.getElementById('reverseGroupFilter').onchange=(e)=>{
+    reverseFilterState.group=e.target.value;
+    refreshReverseCheckboxes();
+  };
+  document.getElementById('reverseClearFilter').onclick=()=>{
+    reverseFilterState={search:'',group:''};
+    document.getElementById('reverseSearch').value='';
+    document.getElementById('reverseGroupFilter').value='';
+    refreshReverseCheckboxes();
+  };
   document.getElementById('reverseSelectAll').onclick=()=>{
-    document.querySelectorAll('[data-reverse-check]').forEach(cb=>cb.checked=true);
+    document.querySelectorAll('[data-reverse-check]').forEach(cb=>{ cb.checked=true; reverseCheckedIds.add(cb.dataset.reverseCheck); });
   };
   document.getElementById('reverseClearAll').onclick=()=>{
-    document.querySelectorAll('[data-reverse-check]').forEach(cb=>cb.checked=false);
+    document.querySelectorAll('[data-reverse-check]').forEach(cb=>{ cb.checked=false; reverseCheckedIds.delete(cb.dataset.reverseCheck); });
   };
   document.getElementById('reverseReasonPreset').onchange=(e)=>{
     document.getElementById('reverseReasonCustomRow').style.display = e.target.value==='__custom'? 'flex':'none';
   };
   document.getElementById('reverseApply').onclick=()=>{
     if(!state.personnel.length) return;
-    const checkedIds = [...document.querySelectorAll('[data-reverse-check]:checked')].map(cb=>cb.dataset.reverseCheck);
+    const checkedIds = [...reverseCheckedIds];
     if(!checkedIds.length){ showAlert('請至少勾選一位可以排班的人員'); return; }
     const others = state.personnel.filter(p=>!checkedIds.includes(p.id));
     const preset=document.getElementById('reverseReasonPreset').value;
@@ -1422,6 +1527,7 @@ function renderUnavail(){
           state.unavail[currentDate].push({id:uid(),personId:p.id,allDay:true,start:'',end:'',reason});
         }
       });
+      reverseCheckedIds.clear();
       saveState(); render();
     });
   };
@@ -1649,6 +1755,7 @@ function showPrompt(message, defaultValue, onSubmit){
 }
 
 /* ---- STATS TAB (stage 1) ---- */
+let queryFilterState={time:'08:00',group:'',rank:''}; // persists across re-renders until explicitly cleared
 function renderStats(){
   const groups = [...new Set(state.personnel.map(p=>p.group).filter(Boolean))].sort((a,b)=>groupIndex(a)-groupIndex(b));
   // hourly availability (00-23)
@@ -1666,15 +1773,28 @@ function renderStats(){
     <div class="card">
       <h2>指定時間查詢</h2>
       <div class="row wrap" style="margin-bottom:8px">
-        <div class="grow"><label>時間</label><select id="queryTime">${timeOptionsFine(10).map(t=>`<option ${t==='08:00'?'selected':''}>${t}</option>`).join('')}</select></div>
-        <div style="width:120px"><label>排組篩選</label>
+        <div class="grow"><label>時間</label><select id="queryTime">${timeOptions().map(t=>`<option ${t===queryFilterState.time?'selected':''}>${t}</option>`).join('')}</select></div>
+      </div>
+      <div class="row wrap" style="margin-bottom:8px">
+        <div class="grow"><label>排組篩選</label>
           <select id="queryGroupFilter">
-            <option value="">（全部）</option>
-            ${groups.map(g=>`<option value="${esc(g)}">${esc(g)}</option>`).join('')}
-            <option value="__none">未分組</option>
+            <option value="" ${!queryFilterState.group?'selected':''}>（全部）</option>
+            ${groups.map(g=>`<option value="${esc(g)}" ${queryFilterState.group===g?'selected':''}>${esc(g)}</option>`).join('')}
+            <option value="__none" ${queryFilterState.group==='__none'?'selected':''}>未分組</option>
           </select>
         </div>
-        <button class="primary" id="queryBtn" style="align-self:flex-end">查詢</button>
+        <div class="grow"><label>階級篩選</label>
+          <select id="queryRankFilter">
+            <option value="" ${!queryFilterState.rank?'selected':''}>（全部）</option>
+            <option value="軍官" ${queryFilterState.rank==='軍官'?'selected':''}>軍官</option>
+            <option value="士官" ${queryFilterState.rank==='士官'?'selected':''}>士官</option>
+            <option value="士兵" ${queryFilterState.rank==='士兵'?'selected':''}>士兵</option>
+          </select>
+        </div>
+      </div>
+      <div class="row wrap" style="margin-bottom:8px">
+        <button class="primary" id="queryBtn">查詢</button>
+        <button class="ghost" id="queryClearFilter">清除篩選</button>
       </div>
       <div id="queryResult"></div>
       <div class="hint">會列出這個時間點有空的人，以及每個人從這個時間點起還能連續空多久（已排的勤務、請假、長期事故、補休都會計入）。</div>
@@ -1700,13 +1820,21 @@ function renderStats(){
     </div>
   `;
   document.getElementById('dateSel').onchange=(e)=>{ currentDate=e.target.value; render(); };
+  document.getElementById('queryClearFilter').onclick=()=>{
+    queryFilterState={time:'08:00',group:'',rank:''};
+    document.getElementById('queryResult').innerHTML='';
+    render();
+  };
   document.getElementById('queryBtn').onclick=()=>{
     const t=document.getElementById('queryTime').value;
     const qMin=toMin(t);
     const gf=document.getElementById('queryGroupFilter').value;
+    const rkf=document.getElementById('queryRankFilter').value;
+    queryFilterState={time:t, group:gf, rank:rkf};
     const groupMatch = p=>{
-      if(gf==='__none') return !p.group;
-      if(gf) return p.group===gf;
+      if(gf==='__none' && p.group) return false;
+      if(gf && gf!=='__none' && p.group!==gf) return false;
+      if(rkf && rankCategory(p.rank)!==rkf) return false;
       return true;
     };
     const free = state.personnel
