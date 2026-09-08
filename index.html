@@ -331,6 +331,7 @@ state.miscPresets.forEach(p=>{
   if(p.requiredLicenses===undefined) p.requiredLicenses = p.role==='消防車'? ['大型車','大客車'] : [];
   if(p.requiredMedCert===undefined) p.requiredMedCert = p.role==='救護車';
   if(p.requiredSkills===undefined) p.requiredSkills = [];
+  if(p.rankPriority===undefined) p.rankPriority = null; // null = default rank order (RANK_DEFS)
 });
 let currentTab='people';
 let currentDate = todayStr();
@@ -387,6 +388,22 @@ function assignedSameShiftYesterday(personId, date, catId, shiftId){
 
 /* ---------------- time utils ---------------- */
 function toMin(t){ const [h,m]=t.split(':').map(Number); return h*60+m; }
+/* an end time that's not later than the start time means the duty wraps past
+   midnight into the next day (e.g. 07:00→07:00 is a full 24h shift) — used
+   everywhere an availability check needs the "real" end minute, not the
+   raw clock time. Only special-casing literal 00:00 (as some older code did)
+   misses every other wrap case, like 07:00→07:00 or 06:30→06:30. */
+function wrapEndMin(startMin, endMin){
+  return endMin<=startMin ? endMin+1440 : endMin;
+}
+/* rank sort index that respects a preset's custom priority order (if set),
+   falling back to the normal rank hierarchy otherwise */
+function rankPriorityIndex(rank, preset){
+  const order = preset && preset.rankPriority;
+  if(!order) return rankIndex(rank);
+  const i = order.indexOf(rank);
+  return i<0? order.length : i;
+}
 function fmtMin(m){ m=((m%1440)+1440)%1440; const h=Math.floor(m/60), mm=m%60; return String(h).padStart(2,'0')+':'+String(mm).padStart(2,'0'); }
 function shiftDuration(s){ let a=toMin(s.start), b=toMin(s.end); if(b<=a) b+=1440; return b-a; }
 function timeOptionsFine(step){
@@ -719,7 +736,7 @@ function autoAssignDay(date){
   allSlots.sort((a,b)=>a.absStart-b.absStart);
   allSlots.forEach(({cat,s})=>{
     const arr=state.assign[date][cat.id][s.id];
-    const sMin=toMin(s.start), eMin=toMin(s.end)===0?1440:toMin(s.end);
+    const sMin=toMin(s.start), eMin=wrapEndMin(sMin, toMin(s.end));
     for(let idx=0; idx<s.count; idx++){
       if(!arr[idx]){
         const rawCandidates = state.personnel.filter(p=>
@@ -798,7 +815,7 @@ function autoAssignMiscForDate(date){
         const sMin = entry.start? toMin(entry.start) : null;
         const eMinRaw = entry.end? toMin(entry.end) : null;
         const candidates = state.personnel.filter(p=>
-          !(sMin!==null && eMinRaw!==null && isPersonUnavailable(p.id, date, sMin, eMinRaw===0?1440:eMinRaw))
+          !(sMin!==null && eMinRaw!==null && isPersonUnavailable(p.id, date, sMin, wrapEndMin(sMin, eMinRaw)))
         );
         if(candidates.length){
           candidates.sort((a,b)=>{
@@ -807,7 +824,8 @@ function autoAssignMiscForDate(date){
             const skillMatch = p=> (p.skills||[]).includes(entry.role) ? 0 : 1;
             const sa=skillMatch(a), sb=skillMatch(b);
             if(sa!==sb) return sa-sb;
-            return groupIndex(a.group)-groupIndex(b.group) || rankIndex(a.rank)-rankIndex(b.rank);
+            const presetForSort = presetForEntry(entry);
+            return rankPriorityIndex(a.rank,presetForSort)-rankPriorityIndex(b.rank,presetForSort) || groupIndex(a.group)-groupIndex(b.group);
           });
           entry.personIds[0]=candidates[0].id;
         }
@@ -835,10 +853,10 @@ function autoAssignMiscForDate(date){
       const eMinRaw = entry.end? toMin(entry.end) : null;
       const candidates = state.personnel.filter(p=>
         !entry.personIds.includes(p.id) && eligibleFn(p) &&
-        !(sMin!==null && eMinRaw!==null && isPersonUnavailable(p.id, date, sMin, eMinRaw===0?1440:eMinRaw))
+        !(sMin!==null && eMinRaw!==null && isPersonUnavailable(p.id, date, sMin, wrapEndMin(sMin, eMinRaw)))
       );
       if(candidates.length){
-        candidates.sort((a,b)=>groupIndex(a.group)-groupIndex(b.group) || rankIndex(a.rank)-rankIndex(b.rank));
+        candidates.sort((a,b)=>rankPriorityIndex(a.rank,preset)-rankPriorityIndex(b.rank,preset) || groupIndex(a.group)-groupIndex(b.group));
         // 採買 and 愛心便當 are treated as the same run — if the paired duty
         // already has someone in this exact role and they're still a valid
         // candidate here too, reuse them instead of picking someone new
@@ -2148,6 +2166,9 @@ function renderSchedule(){
       <label>日期</label>
       <input type="date" id="dateSel" value="${currentDate}">
       <div class="hint">此日期代表勤務「結束日」：實際勤務時段是 ${dutyDateRangeLabel(currentDate)}（前一天22:00開始，到選定日期22:00結束）。</div>    </div>
+    <div class="card">
+      <button class="primary" id="autoAssignBtn2" style="width:100%">🪄 自動補空缺（不覆蓋已排的）</button>
+    </div>
     ${missingDefaults.length? collapsibleCardHTML('missingDefaults', `⚠️ 少了預設類別（${missingDefaults.length}）`, `
       <div class="muted" style="margin-bottom:8px">偵測到以下類別目前不在清單中（可能是被刪除了），可一鍵還原班別設定（該類別過去已排的內容無法救回，只能還原空白班表結構）：</div>
       <div class="row wrap">
@@ -2159,7 +2180,6 @@ function renderSchedule(){
         <h2 style="margin:0">勤務類別</h2>
         <button class="ghost small" id="addCat">＋新增類別</button>
       </div>
-      <button class="primary" id="autoAssignBtn2" style="width:100%;margin-bottom:8px">🪄 自動補空缺（不覆蓋已排的）</button>
       <button class="ghost danger" id="clearAllScheduleBtn" style="width:100%;margin-bottom:8px">🗑️ 一鍵清空當日所有排班</button>
       <div class="hint">安全士官／橋哨／指管：前後兩班（衛哨對衛哨）需間隔≥6小時、單日累計上限6小時（系統自動檢查，違反會標紅；此規則不含準備時間，純粹以衛哨排定時間計算）。每班衛哨開始前需空30分鐘準備：若前一段時間還在忙其他勤務（如採買、打飯班），系統會擋下並標紅，避免像「採買到08:00、緊接著08:00-12:00衛哨」這種沒時間準備的排法。橋哨／指管優先排下士，其次其他士兵/士官。打飯班早/午/晚每班2人＝1位帶隊士官（優先下士→中士→上士）＋1位士兵，盡量避免安排軍官；整天固定2人優先排訓練役，沒有訓練役才依二兵→一兵→上兵遞補。下拉選單已依此優先順序排序，越上面越優先。有設定「補休至」的班別（例：22:00-06:00 各節衛哨補休至08:00、06-08衛哨與早餐打飯班補休至08:30、午餐打飯班補休至15:30），下班後系統會自動把該員在補休時段內標示為不可排，也會檢查補休時段有沒有跟已排的其他勤務衝突，可到各類別「編輯」調整補休時間。</div>
       <div class="hint">下拉選單中的 🚫不可排 已同時涵蓋：休假/事故、長期事故、補休、以及當天其他勤務的重複指派。</div>
@@ -2347,7 +2367,7 @@ function assignableOptions(cat, shift, selectedId, slotIdx){
   return sorted.map(p=>{
     const s=toMin(shift.start), e0=toMin(shift.end);
     const excluded = rankExcludedFromCategory(p.rank, cat);
-    const unavailable = excluded || isPersonUnavailable(p.id, currentDate, s, e0===0?1440:e0, {catId:cat.id, shiftId:shift.id});
+    const unavailable = excluded || isPersonUnavailable(p.id, currentDate, s, wrapEndMin(s, e0), {catId:cat.id, shiftId:shift.id});
     let flag='';
     if(excluded) flag=' 🚫階級不可排此類別';
     else if(unavailable) flag=' 🚫不可排';
@@ -2586,7 +2606,7 @@ function runDailyCheck(){
     cat.shifts.forEach(s=>{
       (dayAssign[s.id]||[]).forEach(pid=>{
         if(!pid) return;
-        const busy = isPersonUnavailable(pid, currentDate, toMin(s.start), toMin(s.end)===0?1440:toMin(s.end), {catId:cat.id, shiftId:s.id});
+        const busy = isPersonUnavailable(pid, currentDate, toMin(s.start), wrapEndMin(toMin(s.start), toMin(s.end)), {catId:cat.id, shiftId:s.id});
         if(busy){
           const key='busy|'+pid+'|'+cat.id+'|'+s.id; if(seen.has(key)) return; seen.add(key);
           out.push(`⚠️ ${personName(pid)}（${cat.name} ${s.label||s.start+'-'+s.end}）：此時段該員請假/長期事故/補休中或已排其他勤務`);
@@ -2652,6 +2672,10 @@ function openMiscPresetModal(editIndex){
         </label>
       </div>
       <div class="divider"></div>
+      <h3>優先階級順序（適用於自由選人的項目，自動排班時越上面越優先）</h3>
+      <div id="mpRankPriorityList"></div>
+      <button class="ghost small" id="mpRankPriorityReset" style="margin-bottom:8px">還原成預設順序</button>
+      <div class="divider"></div>
       <h3>資格要求（若項目分「駕駛/車長」，以下套用在駕駛；若為單一人員項目，套用在該人員）</h3>
       <label>需持有駕照(可複選，不選代表不限)</label>
       <div style="margin-bottom:8px">
@@ -2675,6 +2699,34 @@ function openMiscPresetModal(editIndex){
     </div>
   `;
   document.body.appendChild(modal);
+  let rankPriorityDraft = normalizePriorityArray(existing&&existing.rankPriority? existing.rankPriority : RANK_DEFS.map(r=>r.rank));
+  function renderRankPriorityList(){
+    document.getElementById('mpRankPriorityList').innerHTML = rankPriorityDraft.map((r,i)=>`
+      <div class="row" style="margin-bottom:4px">
+        <span class="grow">${i+1}. ${r}</span>
+        <button class="ghost small" data-rankpri-up="${i}" ${i===0?'disabled':''}>▲</button>
+        <button class="ghost small" data-rankpri-down="${i}" ${i===rankPriorityDraft.length-1?'disabled':''}>▼</button>
+      </div>`).join('');
+    document.querySelectorAll('[data-rankpri-up]').forEach(b=>{
+      b.onclick=()=>{
+        const idx=Number(b.dataset.rankpriUp);
+        if(idx>0){ [rankPriorityDraft[idx-1],rankPriorityDraft[idx]]=[rankPriorityDraft[idx],rankPriorityDraft[idx-1]]; }
+        renderRankPriorityList();
+      };
+    });
+    document.querySelectorAll('[data-rankpri-down]').forEach(b=>{
+      b.onclick=()=>{
+        const idx=Number(b.dataset.rankpriDown);
+        if(idx<rankPriorityDraft.length-1){ [rankPriorityDraft[idx+1],rankPriorityDraft[idx]]=[rankPriorityDraft[idx],rankPriorityDraft[idx+1]]; }
+        renderRankPriorityList();
+      };
+    });
+  }
+  renderRankPriorityList();
+  document.getElementById('mpRankPriorityReset').onclick=()=>{
+    rankPriorityDraft = RANK_DEFS.map(r=>r.rank);
+    renderRankPriorityList();
+  };
   function renderTimesList(){
     document.getElementById('mpTimesList').innerHTML = timesDraft.map((t,i)=>`
       <div class="row wrap" style="margin-bottom:2px">
@@ -2719,12 +2771,16 @@ function openMiscPresetModal(editIndex){
     const requiredLicenses=[...document.querySelectorAll('.mp-req-license:checked')].map(cb=>cb.value);
     const requiredMedCert=document.getElementById('mpReqMedCert').checked;
     const requiredSkills=[...document.querySelectorAll('.mp-req-skill:checked')].map(cb=>cb.value);
+    const defaultOrder = RANK_DEFS.map(r=>r.rank);
+    const isDefaultOrder = rankPriorityDraft.length===defaultOrder.length && rankPriorityDraft.every((r,i)=>r===defaultOrder[i]);
+    const rankPriority = isDefaultOrder? null : [...rankPriorityDraft];
     if(editing){
       existing.role=role; existing.times=timesDraft.map(t=>({...t})); existing.fixed=fixed; existing.restUntil=restUntil;
       existing.requiredLicenses=requiredLicenses; existing.requiredMedCert=requiredMedCert; existing.requiredSkills=requiredSkills;
+      existing.rankPriority=rankPriority;
       delete existing.start; delete existing.end;
     } else {
-      state.miscPresets.push({role,times:timesDraft.map(t=>({...t})),roles:null,fixed,restUntil,requiredLicenses,requiredMedCert,requiredSkills});
+      state.miscPresets.push({role,times:timesDraft.map(t=>({...t})),roles:null,fixed,restUntil,requiredLicenses,requiredMedCert,requiredSkills,rankPriority});
     }
     saveState(); modal.remove(); render();
   };
@@ -2842,8 +2898,8 @@ function renderMisc(){
         const checked = cb ? cb.checked : miscFreeformCheckedIds.has(pid);
         const reasons=[];
         if(person){
-          if(hasTime && isPersonUnavailable(pid, currentDate, s, e0===0?1440:e0)){
-            unavailabilityReasonsInRange(pid, currentDate, s, e0===0?1440:e0).forEach(msg=>reasons.push(msg));
+          if(hasTime && isPersonUnavailable(pid, currentDate, s, wrapEndMin(s, e0))){
+            unavailabilityReasonsInRange(pid, currentDate, s, wrapEndMin(s, e0)).forEach(msg=>reasons.push(msg));
           }
           if(presetForForm) driverQualificationIssues(person, presetForForm).forEach(m=>reasons.push(m));
         }
@@ -2852,7 +2908,7 @@ function renderMisc(){
       withInfo.sort((a,b)=>{
         const ba=a.reasons.length>0?1:0, bb=b.reasons.length>0?1:0;
         if(ba!==bb) return ba-bb;
-        return groupIndex(a.person.group)-groupIndex(b.person.group) || rankIndex(a.person.rank)-rankIndex(b.person.rank);
+        return rankPriorityIndex(a.person.rank,presetForForm)-rankPriorityIndex(b.person.rank,presetForForm) || groupIndex(a.person.group)-groupIndex(b.person.group);
       });
       container.innerHTML = withInfo.map(({pid,person,checked,reasons})=>{
         const busy = reasons.length>0;
@@ -2883,8 +2939,8 @@ function renderMisc(){
       const withBusy = real.map(o=>{
         const person = state.personnel.find(p=>p.id===o.value);
         const reasons=[];
-        if(hasTime && isPersonUnavailable(o.value, currentDate, s, e0===0?1440:e0)){
-          unavailabilityReasonsInRange(o.value, currentDate, s, e0===0?1440:e0).forEach(msg=>reasons.push(msg));
+        if(hasTime && isPersonUnavailable(o.value, currentDate, s, wrapEndMin(s, e0))){
+          unavailabilityReasonsInRange(o.value, currentDate, s, wrapEndMin(s, e0)).forEach(msg=>reasons.push(msg));
         }
         if(person){
           if(r==='駕駛'){
