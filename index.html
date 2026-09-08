@@ -2603,6 +2603,7 @@ function runDailyCheck(){
 let miscSelectedRoles=null; // set by clicking a preset with structured roles (車長/駕駛 etc)
 let miscFreeformFilterState={search:'',group:''}; // for the freeform 人員 checkbox list
 let miscFreeformCheckedIds=new Set();
+let miscEditingId=null; // set while editing an existing 其他勤務 entry instead of creating a new one
 function miscPeopleCheckboxesHTML(groupFilter, searchFilter){
   if(!state.personnel.length) return `<div class="empty">尚無人員</div>`;
   let list=[...state.personnel];
@@ -2743,7 +2744,7 @@ function renderMisc(){
       <div class="divider"></div>
       <button class="ghost small" id="openAddPresetModal">＋新增常用項目</button>
     `)}
-    ${collapsibleCardHTML('miscAddForm', '新增項目', `
+    ${collapsibleCardHTML('miscAddForm', miscEditingId? '編輯項目' : '新增項目', `
       <div class="row wrap" style="margin-bottom:8px">
         <div class="grow"><label>項目名稱</label><input type="text" id="mRole" placeholder="例：技工 / 採買 / 查哨"></div>
       </div>
@@ -2790,7 +2791,8 @@ function renderMisc(){
         <div class="hint" style="margin-bottom:4px">人員（可複選，若已填時間會標示 🚫不可排 及原因）</div>
         <div id="mPeopleList" style="max-height:260px;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:8px;margin-bottom:8px">${miscPeopleCheckboxesHTML(miscFreeformFilterState.group||undefined, miscFreeformFilterState.search||undefined)}</div>
       `}
-      <button class="primary" id="mAdd" style="width:100%">新增</button>
+      <button class="primary" id="mAdd" style="width:100%">${miscEditingId? '儲存修改':'新增'}</button>
+      ${miscEditingId? `<button class="ghost small" id="mCancelEdit" style="width:100%;margin-top:6px">取消編輯</button>`:''}
     `)}
     ${collapsibleCardHTML('miscToday', `${fmtDate(currentDate)} 其他勤務（${list.length}筆）`, `
       ${list.length===0? `<div class="empty">尚未新增</div>` : list.map(m=>{
@@ -2802,6 +2804,7 @@ function renderMisc(){
         <div class="list-item" style="flex-direction:column;align-items:stretch">
           <div class="row">
             <span class="grow"><b>${esc(m.role)}</b>${m.start&&m.end? ` (${m.start}-${m.end})`:''}：${peopleLabel}</span>
+            <button class="ghost small" data-edit-misc="${m.id}">編輯</button>
             <button class="ghost small danger" data-del-misc="${m.id}">刪除</button>
           </div>
           ${issues.map(i=>`<div class="badge-issue">⚠️ ${esc(i)}</div>`).join('')}
@@ -2811,6 +2814,14 @@ function renderMisc(){
     <div class="hint">此區用於不需6小時規則的項目，如：技工、採買、愛心便當、消防車、救護車、話務、督伙、開關門、健身房簽到等，依你們單位每日需要自行新增，也可以直接點上方常用項目快速帶入。採買/愛心便當/消防車/救護車需分別指定駕駛與車長：消防車駕駛需大型車或大客車駕照，救護車駕駛需小型車/大型車/大客車其中一種且救護車車長與駕駛都需具備EMT-1/EMT-2/EMT-P或醫生證書，其餘車輛駕駛至少需小型車駕照；車長需士官以上且階級高於駕駛，選單會把符合資格的人排到最上面。話務需至少小型車駕照。</div>
   `;
   document.getElementById('dateSel').onchange=(e)=>{ currentDate=e.target.value; render(); };
+  function wireMiscCheckboxes(){
+    document.querySelectorAll('.misc-person-cb').forEach(cb=>{
+      cb.onchange=()=>{
+        if(cb.checked) miscFreeformCheckedIds.add(cb.value);
+        else miscFreeformCheckedIds.delete(cb.value);
+      };
+    });
+  }
   function refreshPeopleFlags(){
     const startVal=document.getElementById('mStart').value, endVal=document.getElementById('mEnd').value;
     const hasTime = !!(startVal && endVal);
@@ -2818,25 +2829,39 @@ function renderMisc(){
     const e0 = hasTime? toMin(endVal) : null;
     const presetForForm = state.miscPresets.find(p=>p.role===miscSelectedPresetRole);
     if(!miscSelectedRoles){
-      // freeform checkbox list — annotate each row's label instead of <option> text
-      document.querySelectorAll('[data-misc-person-row]').forEach(row=>{
+      // freeform checkbox list — recompute each person's status and rebuild
+      // the whole list sorted (available first, 🚫不可排 pushed to the bottom)
+      const container = document.getElementById('mPeopleList');
+      if(!container) return;
+      const rows = [...container.querySelectorAll('[data-misc-person-row]')];
+      if(!rows.length) return;
+      const withInfo = rows.map(row=>{
         const pid = row.dataset.miscPersonRow;
         const person = state.personnel.find(p=>p.id===pid);
-        if(!person) return;
-        const reasons=[];
-        if(hasTime && isPersonUnavailable(pid, currentDate, s, e0===0?1440:e0)){
-          unavailabilityReasonsInRange(pid, currentDate, s, e0===0?1440:e0).forEach(msg=>reasons.push(msg));
-        }
-        if(presetForForm) driverQualificationIssues(person, presetForForm).forEach(m=>reasons.push(m));
-        const busy = reasons.length>0;
         const cb = row.querySelector('input');
-        row.style.color = busy? 'var(--danger)':'';
-        row.innerHTML = `<input type="checkbox" class="misc-person-cb" value="${pid}" style="width:auto" ${cb&&cb.checked?'checked':''}> ${esc(person.name)}（${person.group||'未分組'}·${person.rank}）${busy? ` 🚫不可排（${reasons.join('・')}）`:''}`;
-        row.querySelector('input').onchange=(e)=>{
-          if(e.target.checked) miscFreeformCheckedIds.add(pid);
-          else miscFreeformCheckedIds.delete(pid);
-        };
+        const checked = cb ? cb.checked : miscFreeformCheckedIds.has(pid);
+        const reasons=[];
+        if(person){
+          if(hasTime && isPersonUnavailable(pid, currentDate, s, e0===0?1440:e0)){
+            unavailabilityReasonsInRange(pid, currentDate, s, e0===0?1440:e0).forEach(msg=>reasons.push(msg));
+          }
+          if(presetForForm) driverQualificationIssues(person, presetForForm).forEach(m=>reasons.push(m));
+        }
+        return {pid, person, checked, reasons};
+      }).filter(x=>x.person);
+      withInfo.sort((a,b)=>{
+        const ba=a.reasons.length>0?1:0, bb=b.reasons.length>0?1:0;
+        if(ba!==bb) return ba-bb;
+        return groupIndex(a.person.group)-groupIndex(b.person.group) || rankIndex(a.person.rank)-rankIndex(b.person.rank);
       });
+      container.innerHTML = withInfo.map(({pid,person,checked,reasons})=>{
+        const busy = reasons.length>0;
+        return `<label data-misc-person-row="${pid}" style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0;${busy?'color:var(--danger)':''}">
+          <input type="checkbox" class="misc-person-cb" value="${pid}" style="width:auto" ${checked?'checked':''}>
+          ${esc(person.name)}（${person.group||'未分組'}·${person.rank}）${busy? ` 🚫不可排（${reasons.join('・')}）`:''}
+        </label>`;
+      }).join('');
+      wireMiscCheckboxes();
       return;
     }
     const selects = miscSelectedRoles.map((_,i)=>document.getElementById('mRoleSel'+i));
@@ -2904,14 +2929,6 @@ function renderMisc(){
       wireMiscCheckboxes();
       refreshPeopleFlags();
     }
-    function wireMiscCheckboxes(){
-      document.querySelectorAll('.misc-person-cb').forEach(cb=>{
-        cb.onchange=()=>{
-          if(cb.checked) miscFreeformCheckedIds.add(cb.value);
-          else miscFreeformCheckedIds.delete(cb.value);
-        };
-      });
-    }
     wireMiscCheckboxes();
     document.getElementById('mSearch').oninput=(e)=>{ miscFreeformFilterState.search=e.target.value.trim(); refreshMiscCheckboxes(); };
     document.getElementById('mGroupFilter').onchange=(e)=>{ miscFreeformFilterState.group=e.target.value; refreshMiscCheckboxes(); };
@@ -2965,10 +2982,12 @@ function renderMisc(){
               state.misc[currentDate].push({id:uid(), role:mp.role, start:t.start, end:t.end, restUntil:mp.restUntil||'', roles:mp.roles?[...mp.roles]:undefined, personIds: mp.roles? mp.roles.map(()=>undefined):[]});
             }
           });
+          collapseState['miscToday']=true; // auto-expand so the newly created entries are visible
           saveState(); render();
         });
         return;
       }
+      collapseState['miscAddForm']=true; // auto-expand so the populated fields are visible
       miscSelectedRoles = mp.roles||null;
       miscSelectedPresetRole = mp.role;
       miscSelectedRestUntil = mp.restUntil||'';
@@ -2977,6 +2996,7 @@ function renderMisc(){
       document.getElementById('mStart').value=times[0].start;
       document.getElementById('mEnd').value=times[0].end;
       refreshPeopleFlags();
+      updateNextDayHint();
     };
   });
   app.querySelectorAll('[data-edit-preset]').forEach(x=>{
@@ -2991,19 +3011,72 @@ function renderMisc(){
     if(!role) return;
     const start=document.getElementById('mStart').value, end=document.getElementById('mEnd').value;
     if(!state.misc[currentDate]) state.misc[currentDate]=[];
+    const existing = miscEditingId? state.misc[currentDate].find(m=>m.id===miscEditingId) : null;
     if(miscSelectedRoles){
       const personIds=miscSelectedRoles.map((_,i)=>document.getElementById('mRoleSel'+i).value);
-      state.misc[currentDate].push({id:uid(),role,start,end,restUntil:miscSelectedRestUntil,roles:miscSelectedRoles,personIds});
+      if(existing){
+        existing.role=role; existing.start=start; existing.end=end; existing.restUntil=miscSelectedRestUntil;
+        existing.roles=miscSelectedRoles; existing.personIds=personIds;
+      } else {
+        state.misc[currentDate].push({id:uid(),role,start,end,restUntil:miscSelectedRestUntil,roles:miscSelectedRoles,personIds});
+      }
     } else {
       const personIds=[...miscFreeformCheckedIds];
-      state.misc[currentDate].push({id:uid(),role,start,end,restUntil:miscSelectedRestUntil,personIds});
+      if(existing){
+        existing.role=role; existing.start=start; existing.end=end; existing.restUntil=miscSelectedRestUntil;
+        existing.personIds=personIds; delete existing.roles;
+      } else {
+        state.misc[currentDate].push({id:uid(),role,start,end,restUntil:miscSelectedRestUntil,personIds});
+      }
       miscFreeformCheckedIds.clear();
     }
     miscSelectedRoles=null;
     miscSelectedPresetRole=null;
     miscSelectedRestUntil='';
+    miscEditingId=null;
     saveState(); render();
   };
+  if(document.getElementById('mCancelEdit')){
+    document.getElementById('mCancelEdit').onclick=()=>{
+      miscEditingId=null;
+      miscSelectedRoles=null;
+      miscSelectedPresetRole=null;
+      miscSelectedRestUntil='';
+      miscFreeformCheckedIds.clear();
+      render();
+    };
+  }
+  app.querySelectorAll('[data-edit-misc]').forEach(b=>{
+    b.onclick=()=>{
+      const m = state.misc[currentDate].find(mm=>mm.id===b.dataset.editMisc);
+      if(!m) return;
+      miscEditingId = m.id;
+      collapseState['miscAddForm']=true;
+      if(m.roles){
+        miscSelectedRoles=[...m.roles];
+        miscSelectedPresetRole=m.role;
+        miscSelectedRestUntil=m.restUntil||'';
+      } else {
+        miscSelectedRoles=null;
+        miscSelectedPresetRole=null;
+        miscSelectedRestUntil=m.restUntil||'';
+        miscFreeformCheckedIds=new Set(m.personIds||[]);
+      }
+      render();
+      document.getElementById('mRole').value=m.role;
+      document.getElementById('mStart').value=m.start||'';
+      document.getElementById('mEnd').value=m.end||'';
+      if(m.roles){
+        m.roles.forEach((r,i)=>{
+          const sel=document.getElementById('mRoleSel'+i);
+          if(sel) sel.value = m.personIds[i]||'';
+        });
+      }
+      refreshPeopleFlags();
+      updateNextDayHint();
+      window.scrollTo(0,0);
+    };
+  });
   app.querySelectorAll('[data-del-misc]').forEach(b=>{
     b.onclick=()=>{
       state.misc[currentDate]=state.misc[currentDate].filter(m=>m.id!==b.dataset.delMisc);
