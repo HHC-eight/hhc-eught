@@ -54,6 +54,8 @@ button.danger{color:var(--danger);border-color:var(--danger);background:transpar
 button.small{padding:5px 9px;font-size:12px;}
 button{transition:transform .12s ease, opacity .12s ease;}
 button:active{opacity:.6;transform:scale(.94);}
+@keyframes pressFlash{0%{background-color:var(--accent);color:#1a140a;}100%{background-color:inherit;color:inherit;}}
+button.press-flash{animation:pressFlash .4s ease;}
 button.pressed,.pill-btn.pressed{opacity:.6;transform:scale(.94);}
 .tabs{position:fixed;bottom:0;left:0;right:0;display:flex;background:var(--panel);border-top:1px solid var(--line);z-index:30;padding-bottom:env(safe-area-inset-bottom);}
 .tabs button{flex:1;background:transparent;border:none;border-radius:0;padding:11px 4px;font-size:12px;color:var(--dim);}
@@ -97,7 +99,8 @@ textarea{min-height:50px;resize:vertical;}
   <div class="topbar-main">
     <div class="row" style="gap:6px;align-items:center">
       <button class="ghost small" id="undoBtn" title="復原上一步" style="display:none">↩️</button>
-      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v11</span></h1>
+      <button class="ghost small" id="redoBtn" title="取消復原（重做）" style="display:none">↪️</button>
+      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v14</span></h1>
     </div>
     <div class="row" style="gap:6px;align-items:center">
       <select id="timeStepSelect" style="font-size:11px;padding:3px 6px;width:auto">
@@ -151,19 +154,32 @@ function saveState(){
     undoStack.push(lastSavedSnapshot);
     if(undoStack.length>UNDO_LIMIT) undoStack.shift();
   }
+  redoStack=[]; // a fresh change invalidates whatever "future" redo had
   lastSavedSnapshot = JSON.stringify(state);
   localStorage.setItem(LS_KEY, lastSavedSnapshot);
   if(typeof refreshUndoButton==='function') refreshUndoButton();
 }
 const UNDO_LIMIT=50;
 let undoStack=[];
+let redoStack=[];
 let lastSavedSnapshot; // set on first load, see below
 function undoLastAction(){
   if(!undoStack.length) return;
   const prevSnapshot = undoStack.pop();
+  redoStack.push(lastSavedSnapshot);
   state = JSON.parse(prevSnapshot);
   lastSavedSnapshot = prevSnapshot;
   localStorage.setItem(LS_KEY, prevSnapshot);
+  if(typeof refreshUndoButton==='function') refreshUndoButton();
+  render();
+}
+function redoLastAction(){
+  if(!redoStack.length) return;
+  const nextSnapshot = redoStack.pop();
+  undoStack.push(lastSavedSnapshot);
+  state = JSON.parse(nextSnapshot);
+  lastSavedSnapshot = nextSnapshot;
+  localStorage.setItem(LS_KEY, nextSnapshot);
   if(typeof refreshUndoButton==='function') refreshUndoButton();
   render();
 }
@@ -1091,10 +1107,18 @@ function openHolidayDateModal(){
 refreshGlobalDate();
 function refreshUndoButton(){
   const btn = document.getElementById('undoBtn');
-  if(!btn) return;
-  btn.style.display = undoStack.length? 'inline-block' : 'none';
+  const rbtn = document.getElementById('redoBtn');
+  if(btn) btn.style.display = undoStack.length? 'inline-block' : 'none';
+  if(rbtn) rbtn.style.display = redoStack.length? 'inline-block' : 'none';
 }
-document.getElementById('undoBtn').addEventListener('click', undoLastAction);
+function flashPressed(btn){
+  if(!btn) return;
+  btn.classList.remove('press-flash');
+  void btn.offsetWidth; // restart the animation if clicked again quickly
+  btn.classList.add('press-flash');
+}
+document.getElementById('undoBtn').addEventListener('click', (e)=>{ flashPressed(e.currentTarget); undoLastAction(); });
+document.getElementById('redoBtn').addEventListener('click', (e)=>{ flashPressed(e.currentTarget); redoLastAction(); });
 refreshUndoButton();
 document.getElementById('exportBtn').addEventListener('click', openExportModal);
 function openExportModal(){
@@ -1173,6 +1197,9 @@ function renderPeople(){
         <div style="width:108px"><label>階級</label>
           <select id="npRank">${rankOptionsHTML('二兵')}</select>
         </div>
+      </div>
+      <div class="row wrap" style="margin-bottom:8px">
+        <div class="grow"><label>手機號碼（選填，個人資料，名冊列表不會顯示，只有點進編輯才看得到）</label><input type="text" id="npPhone" placeholder="例：0912345678"></div>
       </div>
       <div class="row wrap" style="margin-bottom:8px">
         <div class="grow"><label>駕照(選填，消防車等大車需標註)</label>
@@ -1372,6 +1399,7 @@ function renderPeople(){
     const name=document.getElementById('npName').value.trim();
     const group=document.getElementById('npGroup').value;
     const rank=document.getElementById('npRank').value;
+    const phone=document.getElementById('npPhone').value.trim();
     const license=document.getElementById('npLicense').value;
     const medCert=document.getElementById('npMedCert').value;
     const skills=[...document.querySelectorAll('.np-skill-cb:checked')].map(cb=>cb.value);
@@ -1381,7 +1409,7 @@ function renderPeople(){
       : {mode};
     const note = document.getElementById('npNote').value.trim();
     if(!name) return;
-    state.personnel.push({id:uid(),name,group,rank,license,medCert,skills,longTerm,note});
+    state.personnel.push({id:uid(),name,group,rank,phone,license,medCert,skills,longTerm,note});
     saveState(); render();
   };
   document.getElementById('importBtn').onclick=()=>document.getElementById('importFile').click();
@@ -1398,6 +1426,7 @@ function openPersonEditor(personId){
       <label>姓名</label><input type="text" id="epName" value="${esc(p.name)}" style="margin-bottom:8px">
       <label>排/組別</label><select id="epGroup" style="margin-bottom:8px">${groupOptionsHTML(p.group)}</select>
       <label>階級</label><select id="epRank" style="margin-bottom:8px">${rankOptionsHTML(p.rank)}</select>
+      <label>手機號碼（選填，個人資料）</label><input type="text" id="epPhone" value="${esc(p.phone||'')}" placeholder="例：0912345678" style="margin-bottom:8px">
       <label>駕照</label>
       <select id="epLicense" style="margin-bottom:8px">
         <option value="" ${!p.license?'selected':''}>（無）</option>
@@ -1455,6 +1484,7 @@ function openPersonEditor(personId){
     p.name=document.getElementById('epName').value.trim()||p.name;
     p.group=document.getElementById('epGroup').value;
     p.rank=document.getElementById('epRank').value;
+    p.phone=document.getElementById('epPhone').value.trim();
     p.license=document.getElementById('epLicense').value;
     p.medCert=document.getElementById('epMedCert').value;
     p.skills=[...document.querySelectorAll('.ep-skill-cb:checked')].map(cb=>cb.value);
@@ -1559,6 +1589,31 @@ function computeDayListFiltered(){
 function dayListBaseEntries(){
   return (state.unavail[currentDate]||[]).filter(u=> !isLeaveBufferEntry(u));
 }
+/* per-排組 breakdown of who's on 休假 today — collapsed by group, each
+   showing a count + 官/士/兵 summary, expand to see the actual names */
+function renderLeaveGroupSummary(date){
+  const entries = (state.unavail[date]||[]).filter(u=>!isLeaveBufferEntry(u) && isLeaveReason(u.reason));
+  const personIds = [...new Set(entries.map(u=>u.personId))];
+  const people = personIds.map(id=>state.personnel.find(p=>p.id===id)).filter(Boolean);
+  if(!people.length) return `<div class="empty">今天沒有人休假</div>`;
+  const byGroup = {};
+  people.forEach(p=>{
+    const g = p.group || '未分組';
+    if(!byGroup[g]) byGroup[g]=[];
+    byGroup[g].push(p);
+  });
+  const total = {軍官:0,士官:0,士兵:0};
+  people.forEach(p=>{ const k=rankCategory(p.rank); if(k) total[k]++; });
+  let html = `<div class="muted" style="margin-bottom:8px">全連共 ${people.length} 人休假・${total.軍官}官${total.士官}士${total.士兵}兵</div>`;
+  html += Object.entries(byGroup).sort((a,b)=>groupIndex(a[0])-groupIndex(b[0])).map(([g,members])=>{
+    const bd = {軍官:0,士官:0,士兵:0};
+    members.forEach(p=>{ const k=rankCategory(p.rank); if(k) bd[k]++; });
+    const sorted = members.slice().sort((a,b)=>rankIndex(a.rank)-rankIndex(b.rank));
+    const inner = sorted.map(p=>`<div class="muted">・${esc(p.name)}（${p.rank}）</div>`).join('');
+    return collapsibleCardHTML('leaveGroup-'+g, `${esc(g)}（${members.length}人・${bd.軍官}官${bd.士官}士${bd.士兵}兵）`, inner);
+  }).join('');
+  return html;
+}
 /* someone counts as "on leave" (休假) specifically when their reason is
    休假-related — an all-day 不可排 entry for another reason (e.g. a mission,
    sick leave for the day, hospital, whatever text was typed) does NOT mean
@@ -1622,10 +1677,31 @@ function isEligibleForOuting(personId, date){
   }
   return true;
 }
-function outingEligibleList(date){
+/* fixed-date Taiwan public holidays (lunar-calendar ones like 春節/清明/端午/
+   中秋 move every year, so those are left for the user to add manually via
+   the date picker — this only covers the ones that fall on the same date
+   every year) */
+const COMMON_HOLIDAYS_FIXED = [
+  {m:1,d:1,name:'元旦'}, {m:2,d:28,name:'和平紀念日'}, {m:4,d:4,name:'兒童節'},
+  {m:5,d:1,name:'勞動節'}, {m:9,d:3,name:'軍人節'}, {m:10,d:10,name:'國慶日'},
+  {m:10,d:25,name:'台灣光復節'}, {m:12,d:25,name:'行憲紀念日'}
+];
+let outingFilterState={search:'',group:''};
+function renderOutingList(date){
+  const filterFn = p=>{
+    if(outingFilterState.search && !p.name.includes(outingFilterState.search)) return false;
+    if(outingFilterState.group==='__none' && p.group) return false;
+    if(outingFilterState.group && outingFilterState.group!=='__none' && p.group!==outingFilterState.group) return false;
+    return true;
+  };
+  const list = outingEligibleList(date, filterFn);
+  return list.length? list.map(p=>`<div class="muted">・${esc(p.name)}（${p.group||'未分組'}·${p.rank}）</div>`).join('') : `<div class="empty">找不到符合條件的人</div>`;
+}
+function outingEligibleList(date, filterFn){
   const onLeaveIds = new Set((state.unavail[date]||[]).filter(u=>u.allDay).map(u=>u.personId));
-  return state.personnel.filter(p=>!onLeaveIds.has(p.id) && isEligibleForOuting(p.id, date))
-    .sort((a,b)=>groupIndex(a.group)-groupIndex(b.group) || rankIndex(a.rank)-rankIndex(b.rank));
+  let list = state.personnel.filter(p=>!onLeaveIds.has(p.id) && isEligibleForOuting(p.id, date));
+  if(filterFn) list = list.filter(filterFn);
+  return list.sort((a,b)=>rankIndex(a.rank)-rankIndex(b.rank) || groupIndex(a.group)-groupIndex(b.group));
 }
 function personDutySummary(personId, date){
   const parts=[];
@@ -1822,6 +1898,7 @@ function renderUnavail(){
       <button class="primary" id="lvAdd" style="width:100%">新增休假</button>
       <div class="hint">一般休假：從休假第一天「前一天18:00」到休假最後一天「隔天07:30」都會標記不可排（例：休9/8-9/10，會從9/7 18:00封鎖到9/11 07:30）。「榮譽提早假」的前一天會提早到12:00開始，但套用條件是「休假天數＋前後緩衝」總共不能超過5天（例：休9/8-9/10共3天，含緩衝是9/7~9/11共5天，符合，可套用榮譽假從9/7 12:00開始；休9/7-9/11共5天，含緩衝是9/6~9/12共7天，超過5天，榮譽假不適用，改用一般18:00起算）；除非勾選「特殊情況」允許例外套用。休假天數本身也有5天上限，超過需勾選「特殊情況」才能新增。</div>
 `)}
+    ${collapsibleCardHTML('leaveGroupSummary', `${minguoLabel(currentDate)} 休假統計（依排組，點各項展開名單）`, renderLeaveGroupSummary(currentDate))}
     ${Object.keys(leaveBlocks).length? collapsibleCardHTML('leaveBlocks', `目前登記的休假（${Object.keys(leaveBlocks).length}筆）`, `
       ${Object.entries(leaveBlocks).map(([lid,b])=>{
         return `<div class="list-item">
@@ -1859,10 +1936,25 @@ function renderUnavail(){
           <span class="pill-btn">${minguoLabel(d)} <span data-del-holiday="${d}" style="color:var(--danger);margin-left:3px;cursor:pointer">✕</span></span>`).join('') : `<span class="muted" style="font-size:12px">尚未新增</span>`}
       </div>
       <button class="ghost small" id="addHolidayBtn" style="margin-bottom:8px">＋新增國定假日</button>
+      <button class="ghost small" id="addCommonHolidaysBtn" style="margin-bottom:8px">＋一鍵加入常見國定假日（固定日期）</button>
+      <div class="hint" style="margin-bottom:8px">會加入元旦、228、勞動節、國慶日等固定日期假日；農曆假日（春節、清明、端午、中秋）日期每年不同，請自行用上面「新增國定假日」個別新增。</div>
       <div class="divider"></div>
-      ${outingEligibleList(currentDate).length? outingEligibleList(currentDate).map(p=>`<div class="muted">・${esc(p.name)}（${p.group||'未分組'}·${p.rank}）</div>`).join('') : `<div class="empty">今天沒有人符合外散宿資格</div>`}
+      <div class="row wrap" style="margin-bottom:8px">
+        <div class="grow"><label>搜尋姓名</label><input type="text" id="outingSearch" placeholder="輸入姓名關鍵字" value="${esc(outingFilterState.search)}"></div>
+        <div style="width:120px"><label>排組篩選</label>
+          <select id="outingGroupFilter">
+            <option value="" ${!outingFilterState.group?'selected':''}>（全部）</option>
+            ${[...new Set(state.personnel.map(p=>p.group).filter(Boolean))].sort((a,b)=>groupIndex(a)-groupIndex(b)).map(g=>`<option value="${esc(g)}" ${outingFilterState.group===g?'selected':''}>${esc(g)}</option>`).join('')}
+            <option value="__none" ${outingFilterState.group==='__none'?'selected':''}>未分組</option>
+          </select>
+        </div>
+      </div>
+      <div id="outingListArea">${renderOutingList(currentDate)}</div>
     `)}
     ${collapsibleCardHTML('dayList', `<span id="dayListHeader">${minguoLabel(currentDate)} 休假名單（篩選出 ${filteredList.length} / 共 ${list.length}）</span>`, `
+      <div class="muted" style="margin-bottom:4px"><b>各排組休假統計</b>（點各組展開名單）</div>
+      ${renderLeaveGroupSummary(currentDate)}
+      <div class="divider"></div>
       ${list.length? `
       <div class="row wrap" style="margin-bottom:8px">
         <div class="grow"><label>搜尋姓名</label><input type="text" id="dayListSearch" placeholder="輸入姓名關鍵字" value="${esc(dayListFilterState.search)}"></div>
@@ -1951,6 +2043,24 @@ function renderUnavail(){
     document.getElementById('addHolidayBtn').onclick=()=>{
       openHolidayDateModal();
     };
+    document.getElementById('addCommonHolidaysBtn').onclick=()=>{
+      const y = Number(currentDate.slice(0,4));
+      let added=0;
+      [y-1,y,y+1].forEach(yy=>{
+        COMMON_HOLIDAYS_FIXED.forEach(h=>{
+          const p=n=>String(n).padStart(2,'0');
+          const dateStr=`${yy}-${p(h.m)}-${p(h.d)}`;
+          if(!state.holidayDates.includes(dateStr)){ state.holidayDates.push(dateStr); added++; }
+        });
+      });
+      showAlert(added? `已加入 ${added} 個固定日期假日（含前後一年）。`:'固定日期假日已經都加過了。');
+      saveState(); render();
+    };
+    function refreshOutingList(){
+      document.getElementById('outingListArea').innerHTML = renderOutingList(currentDate);
+    }
+    document.getElementById('outingSearch').oninput=(e)=>{ outingFilterState.search=e.target.value.trim(); refreshOutingList(); };
+    document.getElementById('outingGroupFilter').onchange=(e)=>{ outingFilterState.group=e.target.value; refreshOutingList(); };
   }
   function refreshDayList(){
     document.getElementById('dayListItems').innerHTML = renderDayListItemsHTML();
@@ -2447,7 +2557,6 @@ document.addEventListener('click', (e)=>{
   const btn = e.target.closest('[data-collapse-toggle]');
   if(btn){ collapseState[btn.dataset.collapseToggle] = !collapseState[btn.dataset.collapseToggle]; render(); }
 });
-let statsPeopleFilterState={search:'',group:''}; // 人員區分 only shows results once you search/filter
 /* groups a day's 休假/事故 entries by reason (大項) into collapsible
    sub-sections, each showing the person list plus a 官/士/兵 breakdown —
    dedupes so someone with multiple time-slot entries under one reason only
@@ -2470,18 +2579,30 @@ function renderIncidentBreakdown(date){
     return collapsibleCardHTML('incident-'+reason, `${esc(reason)}（共${people.length}人・${breakdown.軍官}官${breakdown.士官}士${breakdown.士兵}兵）`, inner);
   }).join('');
 }
-function renderStatsPeopleArea(groups){
+/* per-排組 headcount broken into 官/士/兵, with an overall total row — a
+   lightweight statistics-only replacement for the old 人員區分 section,
+   which duplicated the full roster (already browsable/editable in 人員頁) */
+function renderGroupRankStats(){
   if(!state.personnel.length) return `<div class="empty">尚未新增人員</div>`;
-  const {search:kw, group:gf} = statsPeopleFilterState;
-  if(!kw && !gf) return `<div class="hint">輸入姓名或選擇排組後會顯示人員清單。</div>`;
-  const filterFn = p=>{
-    if(kw && !p.name.includes(kw)) return false;
-    if(gf==='__none' && p.group) return false;
-    if(gf && gf!=='__none' && p.group!==gf) return false;
-    return true;
+  const groups = [...new Set(state.personnel.map(p=>p.group).filter(Boolean))].sort((a,b)=>groupIndex(a)-groupIndex(b));
+  const hasUngrouped = state.personnel.some(p=>!p.group);
+  const rows = hasUngrouped? [...groups, '__none'] : groups;
+  const countFor = list=>{
+    const bd={軍官:0,士官:0,士兵:0};
+    list.forEach(p=>{ const k=rankCategory(p.rank); if(k) bd[k]++; });
+    return bd;
   };
-  const html = renderPeopleGroups(groups.length?groups:[''], filterFn);
-  return html || `<div class="empty">找不到符合的人員</div>`;
+  const total = countFor(state.personnel);
+  let html = `<table style="width:100%;border-collapse:collapse;font-size:13px">
+    <tr class="muted"><td style="padding:4px 0">排組</td><td style="padding:4px 0;text-align:right">官</td><td style="padding:4px 0;text-align:right">士</td><td style="padding:4px 0;text-align:right">兵</td><td style="padding:4px 0;text-align:right">總計</td></tr>`;
+  rows.forEach(g=>{
+    const list = g==='__none'? state.personnel.filter(p=>!p.group) : state.personnel.filter(p=>p.group===g);
+    const bd = countFor(list);
+    html += `<tr style="border-top:1px solid var(--line)"><td style="padding:4px 0">${g==='__none'?'未分組':esc(g)}</td><td style="padding:4px 0;text-align:right">${bd.軍官}</td><td style="padding:4px 0;text-align:right">${bd.士官}</td><td style="padding:4px 0;text-align:right">${bd.士兵}</td><td style="padding:4px 0;text-align:right"><b>${list.length}</b></td></tr>`;
+  });
+  html += `<tr style="border-top:2px solid var(--line)"><td style="padding:4px 0"><b>全連</b></td><td style="padding:4px 0;text-align:right"><b>${total.軍官}</b></td><td style="padding:4px 0;text-align:right"><b>${total.士官}</b></td><td style="padding:4px 0;text-align:right"><b>${total.士兵}</b></td><td style="padding:4px 0;text-align:right"><b>${state.personnel.length}</b></td></tr>`;
+  html += `</table>`;
+  return html;
 }
 function renderStats(){
   const groups = [...new Set(state.personnel.map(p=>p.group).filter(Boolean))].sort((a,b)=>groupIndex(a)-groupIndex(b));
@@ -2547,18 +2668,8 @@ function renderStats(){
       ` : `<div class="hint">點「展開」查看每小時空閒人數長條圖（含官/士/兵細分）。</div>`}
     </div>
     <div class="card">
-      <h2>人員區分（排組 × 階級）</h2>
-      <div class="row wrap" style="margin-bottom:8px">
-        <div class="grow"><label>搜尋姓名</label><input type="text" id="statsSearch" placeholder="輸入姓名關鍵字" value="${esc(statsPeopleFilterState.search)}"></div>
-        <div style="width:120px"><label>排組篩選</label>
-          <select id="statsGroupFilter">
-            <option value="" ${!statsPeopleFilterState.group?'selected':''}>（全部）</option>
-            ${groups.map(g=>`<option value="${esc(g)}" ${statsPeopleFilterState.group===g?'selected':''}>${esc(g)}</option>`).join('')}
-            <option value="__none" ${statsPeopleFilterState.group==='__none'?'selected':''}>未分組</option>
-          </select>
-        </div>
-      </div>
-      <div id="statsPeopleArea">${renderStatsPeopleArea(groups)}</div>
+      <h2>各排組人數統計（官/士/兵）</h2>
+      ${renderGroupRankStats()}
     </div>
     <div class="hint" style="margin:4px 0 -2px 2px">${minguoLabel(currentDate)} 事故/管制分類（點各項展開名單）</div>
     ${renderIncidentBreakdown(currentDate)}
@@ -2571,14 +2682,6 @@ function renderStats(){
   document.getElementById('hourlyToggle').onclick=()=>{
     hourlyBarsExpanded=!hourlyBarsExpanded;
     render();
-  };
-  document.getElementById('statsSearch').oninput=(e)=>{
-    statsPeopleFilterState.search=e.target.value.trim();
-    document.getElementById('statsPeopleArea').innerHTML = renderStatsPeopleArea([...new Set(state.personnel.map(p=>p.group).filter(Boolean))].sort((a,b)=>groupIndex(a)-groupIndex(b)));
-  };
-  document.getElementById('statsGroupFilter').onchange=(e)=>{
-    statsPeopleFilterState.group=e.target.value;
-    document.getElementById('statsPeopleArea').innerHTML = renderStatsPeopleArea([...new Set(state.personnel.map(p=>p.group).filter(Boolean))].sort((a,b)=>groupIndex(a)-groupIndex(b)));
   };
   document.getElementById('queryBtn').onclick=()=>{
     const t=document.getElementById('queryTime').value;
@@ -2851,8 +2954,10 @@ function renderCategoryCard(cat){
     ${cat.shifts.map(s=>{
       const assigned = dayAssign[s.id] || [];
       const timeLabel = s.label? s.label+'（'+s.start+'-'+s.end+'）' : (s.start+'-'+s.end);
+      const ncoCount = assigned.filter(pid=>pid && ['士官','軍官'].includes(rankCategory(personRank(pid)))).length;
       return `<div class="shift-row" data-shift="${s.id}">
         <div class="shift-head"><span class="shift-time">${esc(timeLabel)}</span><span class="muted">需 ${s.count} 人${s.restUntil? '・補休至'+s.restUntil:''}</span></div>
+        ${s.minNCO? `<div class="${ncoCount<s.minNCO?'badge-issue':'hint'}" style="margin-bottom:6px">${ncoCount<s.minNCO?'⚠️ ':''}此班需至少 ${s.minNCO} 位士官(含)以上，目前 ${ncoCount} 位</div>`:''}
         ${Array.from({length:s.count}).map((_,idx)=>{
           const pid = assigned[idx]||'';
           const issues = pid? restIssues(pid, currentDate, cat.id, s).filter(x=>true) : [];
@@ -2938,26 +3043,35 @@ function openCategoryEditor(catId){
         </div>
       </div>
       <div class="divider"></div>
-      <h3>階級優先順序（可自行調整，越上面越優先）</h3>
-      ${cat.needsNCO? `
-        <div class="muted" style="margin-bottom:4px">帶隊(第1位)優先順序</div>
-        <div id="priListLead"></div>
-        <div class="muted" style="margin:10px 0 4px">其餘成員／整天優先順序</div>
-        <div id="priListHelper"></div>
-      ` : `
-        <div id="priListMain"></div>
-      `}
-      <button class="ghost small" id="priReset" style="margin-top:8px">還原成預設順序</button>
-      <div class="divider"></div>
       <h3>班別時段</h3>
       <div id="shiftEditList">${cat.shifts.map((s,i)=>shiftEditRow(s,i)).join('')}</div>
       <button class="ghost small" id="addShift">＋新增班別</button>
       ${['safety','bridge','control','meal'].includes(cat.id)? `<button class="ghost small" id="restoreShiftsBtn">↺ 恢復預設班別設定</button>`:''}
       <div class="divider"></div>
+      <div class="section-title"><h3 style="margin:0">階級優先順序（可自行調整，越上面越優先）</h3><button class="ghost small" id="priToggle">▼ 展開</button></div>
+      <div id="priSection" style="display:none">
+        ${cat.needsNCO? `
+          <div class="muted" style="margin-bottom:4px">帶隊(第1位)優先順序</div>
+          <div id="priListLead"></div>
+          <div class="muted" style="margin:10px 0 4px">其餘成員／整天優先順序</div>
+          <div id="priListHelper"></div>
+        ` : `
+          <div id="priListMain"></div>
+        `}
+        <button class="ghost small" id="priReset" style="margin-top:8px">還原成預設順序</button>
+      </div>
+      <div class="divider"></div>
       <button class="primary" id="saveCat" style="width:100%">儲存</button>
     </div>
   `;
   document.body.appendChild(modal);
+  document.getElementById('priToggle').onclick=()=>{
+    const sec=document.getElementById('priSection');
+    const expanded = sec.style.display!=='none';
+    sec.style.display = expanded? 'none':'block';
+    document.getElementById('priToggle').textContent = expanded? '▼ 展開':'▲ 收合';
+    if(!expanded) rerenderPriorityLists(); // re-measure now that it's actually visible (was 0×0 while hidden)
+  };
   let priorityDraft = normalizePriorityArray(cat.customPriority || defaultPriorityArray(cat));
   let priorityHelperDraft = cat.needsNCO ? normalizePriorityArray(cat.customPriorityHelper || defaultHelperPriorityArray()) : null;
   function renderPriorityListHTML(listId, arr){
@@ -3036,6 +3150,7 @@ function openCategoryEditor(catId){
       cat.shifts[i].count=Math.max(1, Number(row.querySelector('.se-count').value)||1);
       cat.shifts[i].label=row.querySelector('.se-label').value.trim();
       cat.shifts[i].restUntil=row.querySelector('.se-rest').value;
+      cat.shifts[i].minNCO=Math.max(0, Number(row.querySelector('.se-minnco').value)||0);
     });
     saveState(); modal.remove(); render();
   };
@@ -3057,6 +3172,9 @@ function openCategoryEditor(catId){
             ${opts.map(t=>`<option ${t===s.restUntil?'selected':''}>${t}</option>`).join('')}
           </select>
         </div>
+      </div>
+      <div class="row wrap" style="margin-top:6px">
+        <div style="width:120px"><label>最少需要幾位士官(含)以上(選填，0代表不限)</label><input type="text" class="se-minnco" value="${s.minNCO||0}"></div>
       </div>
     </div>`;
   }
@@ -3186,10 +3304,6 @@ function openMiscPresetModal(editIndex){
         </label>
       </div>
       <div class="divider"></div>
-      <h3>優先階級順序（適用於自由選人的項目，自動排班時越上面越優先）</h3>
-      <div id="mpRankPriorityList"></div>
-      <button class="ghost small" id="mpRankPriorityReset" style="margin-bottom:8px">還原成預設順序</button>
-      <div class="divider"></div>
       <h3>資格要求（若項目分「駕駛/車長」，以下套用在駕駛；若為單一人員項目，套用在該人員）</h3>
       <label>需持有駕照(可複選，不選代表不限)</label>
       <div style="margin-bottom:8px">
@@ -3209,10 +3323,24 @@ function openMiscPresetModal(editIndex){
           </label>`).join('')}
       </div>
       ${editing? `<button class="ghost small danger" id="deleteMiscPreset" style="width:100%;margin-bottom:8px">刪除此項目</button>`:''}
+      <div class="divider"></div>
+      <div class="section-title"><h3 style="margin:0">優先階級順序（適用於自由選人的項目）</h3><button class="ghost small" id="mpPriToggle">▼ 展開</button></div>
+      <div id="mpPriSection" style="display:none">
+        <div id="mpRankPriorityList"></div>
+        <button class="ghost small" id="mpRankPriorityReset" style="margin-bottom:8px">還原成預設順序</button>
+      </div>
+      <div class="divider"></div>
       <button class="primary" id="saveMiscPreset" style="width:100%">${editing?'儲存':'新增'}</button>
     </div>
   `;
   document.body.appendChild(modal);
+  document.getElementById('mpPriToggle').onclick=()=>{
+    const sec=document.getElementById('mpPriSection');
+    const expanded = sec.style.display!=='none';
+    sec.style.display = expanded? 'none':'block';
+    document.getElementById('mpPriToggle').textContent = expanded? '▼ 展開':'▲ 收合';
+    if(!expanded) renderRankPriorityList(); // re-measure now that it's visible
+  };
   let rankPriorityDraft = normalizePriorityArray(existing&&existing.rankPriority? existing.rankPriority : RANK_DEFS.map(r=>r.rank));
   function renderRankPriorityList(){
     document.getElementById('mpRankPriorityList').innerHTML = `<div id="mpRankPriContainer">${rankPriorityDraft.map((r,i)=>`
