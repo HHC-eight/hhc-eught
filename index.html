@@ -1274,6 +1274,25 @@ function renderReverseCheckboxes(){
       </label>`).join('');
   }).join('');
 }
+function computeDayListFiltered(){
+  const list = (state.unavail[currentDate]||[]);
+  return list.filter(u=>{
+    const p = state.personnel.find(pp=>pp.id===u.personId);
+    if(dayListFilterState.search && !(p && p.name.includes(dayListFilterState.search))) return false;
+    if(dayListFilterState.group==='__none' && p && p.group) return false;
+    if(dayListFilterState.group && dayListFilterState.group!=='__none' && !(p && p.group===dayListFilterState.group)) return false;
+    return true;
+  });
+}
+function renderDayListItemsHTML(){
+  const list=(state.unavail[currentDate]||[]);
+  const filteredList=computeDayListFiltered();
+  return filteredList.length===0? `<div class="empty">${list.length? '找不到符合的紀錄':'此日尚無登記'}</div>` : filteredList.map(u=>`
+    <div class="list-item">
+      <span class="grow">${esc(personName(u.personId))}：${u.allDay? '全天不能' : (u.start+'-'+u.end+' 不能')}${u.reason? `（${esc(u.reason)}）`:''}${u.leaveId?'　🏖️休假':''}</span>
+      <button class="ghost small danger" data-del-ua="${u.id}">刪除</button>
+    </div>`).join('');
+}
 function renderUnavail(){
   const list = (state.unavail[currentDate]||[]);
   const filteredList = list.filter(u=>{
@@ -1443,7 +1462,7 @@ function renderUnavail(){
       }).join('')}
     </div>`:''}
     <div class="card">
-      <div class="section-title"><h2 style="margin:0">${fmtDate(currentDate)} 名單（篩選出 ${filteredList.length} / 共 ${list.length}）</h2><button class="ghost small" id="dayListClearFilter">清除篩選</button></div>
+      <div class="section-title"><h2 style="margin:0" id="dayListHeader">${fmtDate(currentDate)} 名單（篩選出 ${filteredList.length} / 共 ${list.length}）</h2><button class="ghost small" id="dayListClearFilter">清除篩選</button></div>
       ${list.length? `
       <div class="row wrap" style="margin-bottom:8px">
         <div class="grow"><label>搜尋姓名</label><input type="text" id="dayListSearch" placeholder="輸入姓名關鍵字" value="${esc(dayListFilterState.search)}"></div>
@@ -1465,11 +1484,7 @@ function renderUnavail(){
         </div>
         <button class="ghost small danger" id="clearDayBtn" style="align-self:flex-end">清空此類別</button>
       </div>`:''}
-      ${filteredList.length===0? `<div class="empty">${list.length? '找不到符合的紀錄':'此日尚無登記'}</div>` : filteredList.map(u=>`
-        <div class="list-item">
-          <span class="grow">${esc(personName(u.personId))}：${u.allDay? '全天不能' : (u.start+'-'+u.end+' 不能')}${u.reason? `（${esc(u.reason)}）`:''}${u.leaveId?'　🏖️休假':''}</span>
-          <button class="ghost small danger" data-del-ua="${u.id}">刪除</button>
-        </div>`).join('')}
+      <div id="dayListItems">${renderDayListItemsHTML()}</div>
     </div>
     <div class="card">
       <button class="primary" id="autoAssignBtn" style="width:100%">🪄 事故登記完成，自動排今日勤務</button>
@@ -1511,9 +1526,25 @@ function renderUnavail(){
   document.getElementById('uaClearAll').onclick=()=>{
     document.querySelectorAll('.ua-person-cb').forEach(cb=>{ cb.checked=false; uaCheckedIds.delete(cb.value); });
   };
+  function refreshDayList(){
+    document.getElementById('dayListItems').innerHTML = renderDayListItemsHTML();
+    const list=(state.unavail[currentDate]||[]);
+    const filteredList=computeDayListFiltered();
+    document.getElementById('dayListHeader').textContent = `${fmtDate(currentDate)} 名單（篩選出 ${filteredList.length} / 共 ${list.length}）`;
+    wireDayListDeleteButtons();
+  }
+  function wireDayListDeleteButtons(){
+    document.querySelectorAll('#dayListItems [data-del-ua]').forEach(b=>{
+      b.onclick=()=>{
+        state.unavail[currentDate]=state.unavail[currentDate].filter(u=>u.id!==b.dataset.delUa);
+        saveState(); render();
+      };
+    });
+  }
+  wireDayListDeleteButtons();
   if(document.getElementById('dayListSearch')){
-    document.getElementById('dayListSearch').oninput=(e)=>{ dayListFilterState.search=e.target.value.trim(); render(); };
-    document.getElementById('dayListGroupFilter').onchange=(e)=>{ dayListFilterState.group=e.target.value; render(); };
+    document.getElementById('dayListSearch').oninput=(e)=>{ dayListFilterState.search=e.target.value.trim(); refreshDayList(); };
+    document.getElementById('dayListGroupFilter').onchange=(e)=>{ dayListFilterState.group=e.target.value; refreshDayList(); };
   }
   document.getElementById('dayListClearFilter').onclick=()=>{
     dayListFilterState={search:'',group:''};
@@ -2681,12 +2712,22 @@ function renderMisc(){
       ? miscSelectedRoles.map((_,i)=>document.getElementById('mRoleSel'+i))
       : [document.getElementById('mPeople')];
     selects.forEach(sel=>{
-      [...sel.options].forEach(opt=>{
-        const busy = opt.value && isPersonUnavailable(opt.value, currentDate, s, e0===0?1440:e0);
-        opt.style.color = busy? 'var(--danger)':'';
-        const base = opt.textContent.replace(/\s*🚫不可排$/,'');
-        opt.textContent = base + (busy? ' 🚫不可排':'');
+      const currentVal = sel.value;
+      const opts=[...sel.options];
+      const placeholder = opts.find(o=>!o.value);
+      const real = opts.filter(o=>o.value);
+      const withBusy = real.map(o=>{
+        const busy = isPersonUnavailable(o.value, currentDate, s, e0===0?1440:e0);
+        const baseText = o.textContent.replace(/\s*🚫不可排$/,'');
+        return {value:o.value, text: baseText + (busy? ' 🚫不可排':''), busy, selected:o.value===currentVal};
       });
+      // move anyone flagged 🚫不可排 to the bottom — sort is stable, so the
+      // license/rank priority order already established is kept within
+      // each group (available first, unavailable last)
+      withBusy.sort((a,b)=>(a.busy?1:0)-(b.busy?1:0));
+      let html = placeholder? `<option value="">${placeholder.textContent}</option>` : '';
+      html += withBusy.map(o=>`<option value="${o.value}" ${o.selected?'selected':''} style="${o.busy?'color:var(--danger)':''}">${esc(o.text)}</option>`).join('');
+      sel.innerHTML = html;
     });
   }
   document.getElementById('mStart').onchange=refreshPeopleFlags;
