@@ -97,7 +97,7 @@ textarea{min-height:50px;resize:vertical;}
   <div class="topbar-main">
     <div class="row" style="gap:6px;align-items:center">
       <button class="ghost small" id="undoBtn" title="復原上一步" style="display:none">↩️</button>
-      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v9</span></h1>
+      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v10</span></h1>
     </div>
     <div class="row" style="gap:6px;align-items:center">
       <select id="timeStepSelect" style="font-size:11px;padding:3px 6px;width:auto">
@@ -896,7 +896,7 @@ function autoAssignMiscForDate(date){
       // there's no defined role structure to reason about beyond that
       if(!entry.personIds) entry.personIds=[];
       const alreadyHasSomeone = entry.personIds.some(id=>id);
-      if(!alreadyHasSomeone){
+      if(!alreadyHasSomeone && !entry.skipAutoFill){
         const sMin = entry.start? toMin(entry.start) : null;
         const eMinRaw = entry.end? toMin(entry.end) : null;
         const candidates = state.personnel.filter(p=>
@@ -921,6 +921,7 @@ function autoAssignMiscForDate(date){
     const preset=presetForEntry(entry);
     entry.roles.forEach((r,i)=>{
       if(entry.personIds[i]) return; // already assigned
+      if(entry.lockedSlots && entry.lockedSlots[i]) return; // intentionally left blank this time
       const needsMed = preset? preset.requiredMedCert : false;
       let eligibleFn;
       if(r==='駕駛'){
@@ -3312,10 +3313,18 @@ function renderMisc(){
             <div class="grow"><label>${esc(r)}</label>
               <select id="mRoleSel${i}"><option value="">（未指派）</option>${personOptionsPrioritized(undefined, eligibleFn)}</select>
             </div>
+            <label style="display:flex;align-items:center;gap:4px;font-size:12px;align-self:flex-end;padding-bottom:8px">
+              <input type="checkbox" class="mp-lock-slot" data-lock-idx="${i}" style="width:auto"> 🔒暫不排
+            </label>
           </div>`;
         }).join('')}
         <button class="ghost small" id="mFreeform" style="margin-bottom:8px">改用自由複選人員</button>
       ` : `
+        <div class="row wrap" style="margin-bottom:8px">
+          <label style="display:flex;align-items:center;gap:6px;font-size:13px">
+            <input type="checkbox" id="mSkipAutoFill" style="width:auto"> 🔒此項目本次不自動排人（保持空白）
+          </label>
+        </div>
         <div class="row wrap" style="margin-bottom:8px">
           <div class="grow"><label>搜尋姓名</label><input type="text" id="mSearch" placeholder="輸入姓名關鍵字" value="${esc(miscFreeformFilterState.search)}"></div>
           <div style="width:120px"><label>排組篩選</label>
@@ -3341,7 +3350,7 @@ function renderMisc(){
       ${list.length===0? `<div class="empty">尚未新增</div>` : list.map(m=>{
         const issues = validateMiscEntry(m);
         const peopleLabel = m.roles
-          ? m.roles.map((r,i)=>`${r}：${m.personIds[i]? esc(personName(m.personIds[i])):'（未指派）'}`).join('　')
+          ? m.roles.map((r,i)=>`${r}：${m.personIds[i]? esc(personName(m.personIds[i])) : ((m.lockedSlots&&m.lockedSlots[i])? '🔒保留空白':'（未指派）')}`).join('　')
           : (m.personIds.map(pid=>esc(personName(pid))).join('、')||'（未指派）');
         return `
         <div class="list-item" style="flex-direction:column;align-items:stretch">
@@ -3525,6 +3534,7 @@ function renderMisc(){
             }
           });
           collapseState['miscToday']=true; // auto-expand so the newly created entries are visible
+          autoAssignMiscForDate(currentDate); // fill them in right away instead of leaving them blank
           saveState(); render();
         });
         return;
@@ -3556,26 +3566,33 @@ function renderMisc(){
     const existing = miscEditingId? state.misc[currentDate].find(m=>m.id===miscEditingId) : null;
     if(miscSelectedRoles){
       const personIds=miscSelectedRoles.map((_,i)=>document.getElementById('mRoleSel'+i).value);
+      const lockedSlots=miscSelectedRoles.map((_,i)=>{
+        const cb=document.querySelector(`.mp-lock-slot[data-lock-idx="${i}"]`);
+        return cb? cb.checked : false;
+      });
       if(existing){
         existing.role=role; existing.start=start; existing.end=end; existing.restUntil=miscSelectedRestUntil;
-        existing.roles=miscSelectedRoles; existing.personIds=personIds;
+        existing.roles=miscSelectedRoles; existing.personIds=personIds; existing.lockedSlots=lockedSlots;
       } else {
-        state.misc[currentDate].push({id:uid(),role,start,end,restUntil:miscSelectedRestUntil,roles:miscSelectedRoles,personIds});
+        state.misc[currentDate].push({id:uid(),role,start,end,restUntil:miscSelectedRestUntil,roles:miscSelectedRoles,personIds,lockedSlots});
       }
     } else {
       const personIds=[...miscFreeformCheckedIds];
+      const skipAutoFill = document.getElementById('mSkipAutoFill') ? document.getElementById('mSkipAutoFill').checked : false;
       if(existing){
         existing.role=role; existing.start=start; existing.end=end; existing.restUntil=miscSelectedRestUntil;
-        existing.personIds=personIds; delete existing.roles;
+        existing.personIds=personIds; existing.skipAutoFill=skipAutoFill; delete existing.roles;
       } else {
-        state.misc[currentDate].push({id:uid(),role,start,end,restUntil:miscSelectedRestUntil,personIds});
+        state.misc[currentDate].push({id:uid(),role,start,end,restUntil:miscSelectedRestUntil,personIds,skipAutoFill});
       }
       miscFreeformCheckedIds.clear();
     }
+    const wasNewEntry = !existing;
     miscSelectedRoles=null;
     miscSelectedPresetRole=null;
     miscSelectedRestUntil='';
     miscEditingId=null;
+    if(wasNewEntry) autoAssignMiscForDate(currentDate); // fill the slots the user didn't pick, right away
     saveState(); render();
   };
   if(document.getElementById('mCancelEdit')){
@@ -3612,7 +3629,11 @@ function renderMisc(){
         m.roles.forEach((r,i)=>{
           const sel=document.getElementById('mRoleSel'+i);
           if(sel) sel.value = m.personIds[i]||'';
+          const lockCb=document.querySelector(`.mp-lock-slot[data-lock-idx="${i}"]`);
+          if(lockCb) lockCb.checked = !!(m.lockedSlots && m.lockedSlots[i]);
         });
+      } else if(document.getElementById('mSkipAutoFill')){
+        document.getElementById('mSkipAutoFill').checked = !!m.skipAutoFill;
       }
       refreshPeopleFlags();
       updateNextDayHint();
