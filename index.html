@@ -100,7 +100,7 @@ textarea{min-height:50px;resize:vertical;}
     <div class="row" style="gap:6px;align-items:center">
       <button class="ghost small" id="undoBtn" title="復原上一步" style="display:none">↩️</button>
       <button class="ghost small" id="redoBtn" title="取消復原（重做）" style="display:none">↪️</button>
-      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v25</span></h1>
+      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v27</span></h1>
     </div>
     <div class="row" style="gap:6px;align-items:center">
       <select id="timeStepSelect" style="font-size:11px;padding:3px 6px;width:auto">
@@ -193,7 +193,10 @@ function uid(){ return Math.random().toString(36).slice(2,9); }
 (function(){
   function pressOn(ev){
     const el = ev.target.closest('button, .pill-btn');
-    if(el) el.classList.add('pressed');
+    if(el){
+      el.classList.add('pressed');
+      if(navigator.vibrate){ try{ navigator.vibrate(10); }catch(e){} }
+    }
   }
   function pressOff(){
     document.querySelectorAll('.pressed').forEach(el=>el.classList.remove('pressed'));
@@ -503,6 +506,24 @@ if(!state.outingExcludedMiscRoles) state.outingExcludedMiscRoles=['消防車','�
    array of "YYYY-MM-DD" specific dates. */
 if(!state.holidayWeekdays) state.holidayWeekdays=[];
 if(!state.holidayDates) state.holidayDates=[];
+/* categoryShiftDefaults: catId -> shifts[] — the user-editable "restore
+   point" for a category's 班別時段. Seeded once from the hardcoded
+   defaultCategories() template for the 4 built-in categories so "恢復預設"
+   has something to fall back to even before the user ever customizes it;
+   after that it's entirely user-controlled via "設為預設班別" in the
+   category editor, so restoring never reverts to the wrong (out-of-the-box
+   example) values once the unit has set their own baseline.
+   dailyShiftOverrides: date -> catId -> shifts[] — an optional per-day
+   override of a category's shift times/counts that applies ONLY to that
+   one date; effectiveShifts(cat,date) is the single place that resolves
+   which of the two (override vs category-wide default) is in effect, and
+   every part of the app that reasons about a category's shift times for a
+   specific date goes through it. */
+if(!state.categoryShiftDefaults) state.categoryShiftDefaults={};
+defaultCategories().forEach(d=>{
+  if(!state.categoryShiftDefaults[d.id]) state.categoryShiftDefaults[d.id]=d.shifts.map(s=>({...s}));
+});
+if(!state.dailyShiftOverrides) state.dailyShiftOverrides={};
 // now that every migration/backfill above has run, this is the true
 // "fully-formed" initial state — snapshot it as the undo baseline so
 // undoing all the way back never lands on a state missing required fields
@@ -578,9 +599,21 @@ function timeOptions(){
    nominal shift times only. */
 const PREP_MINUTES = 30;
 const DAY_START_MIN = 22*60; // 22:00 — the roster day's reference hour
-function absoluteShiftTimes(category){
+/* the shifts actually in effect for a category on a given date: a
+   per-day override if one has been saved for that (date, category) pair,
+   otherwise the category's own (all-dates) shift template. Every place that
+   reasons about a category's shift TIMES for a specific date — rest-rule
+   checks, auto-assign, rendering, exports — goes through this, so a
+   day-specific override is honored everywhere consistently rather than
+   just in the display. */
+function effectiveShifts(cat, date){
+  const override = (state.dailyShiftOverrides||{})[date];
+  if(override && override[cat.id]) return override[cat.id];
+  return cat.shifts;
+}
+function absoluteShiftTimes(category, date){
   const out={};
-  category.shifts.forEach(s=>{
+  effectiveShifts(category, date).forEach(s=>{
     const sr=toMin(s.start), er=toMin(s.end);
     const dur = er<=sr ? (er+1440-sr) : (er-sr);
     const abs_s = sr>=DAY_START_MIN ? sr : sr+1440;
@@ -639,7 +672,7 @@ function personCompRestWindows(personId, date){
   const out=[];
   state.categories.forEach(cat=>{
     const catAssign=dayAssign[cat.id]||{};
-    cat.shifts.forEach(s=>{
+    effectiveShifts(cat, date).forEach(s=>{
       if(!s.restUntil) return;
       if((catAssign[s.id]||[]).includes(personId)){
         out.push({start:s.end, end:s.restUntil, catName:cat.name, label:s.label||(s.start+'-'+s.end)});
@@ -673,7 +706,7 @@ function isPersonUnavailable(personId, date, s, e, excludeCatShift){
   const dayAssign = state.assign[date]||{};
   for(const cat of state.categories){
     const catAssign = dayAssign[cat.id]||{};
-    for(const sft of cat.shifts){
+    for(const sft of effectiveShifts(cat, date)){
       if(excludeCatShift && excludeCatShift.catId===cat.id && excludeCatShift.shiftId===sft.id) continue;
       if((catAssign[sft.id]||[]).includes(personId) && windowsOverlapOnce(s,e,toMin(sft.start),toMin(sft.end))) return true;
     }
@@ -717,7 +750,7 @@ function unavailabilityReasonsInRange(personId, date, s, e){
   const dayAssign = state.assign[date]||{};
   state.categories.forEach(cat=>{
     const catAssign = dayAssign[cat.id]||{};
-    cat.shifts.forEach(sft=>{
+    effectiveShifts(cat, date).forEach(sft=>{
       if((catAssign[sft.id]||[]).includes(personId) && windowsOverlapOnce(s,e,toMin(sft.start),toMin(sft.end))){
         out.push(`勤務中：${cat.name} ${sft.label||sft.start+'-'+sft.end}`);
       }
@@ -751,9 +784,9 @@ function personEnforcedShifts(personId, date, excludeCatShift){
   const dayAssign = state.assign[date]||{};
   const out=[];
   state.categories.filter(c=>c.enforceRest).forEach(cat=>{
-    const abs = absoluteShiftTimes(cat);
+    const abs = absoluteShiftTimes(cat, date);
     const catAssign = dayAssign[cat.id]||{};
-    cat.shifts.forEach(s=>{
+    effectiveShifts(cat, date).forEach(s=>{
       if(excludeCatShift && excludeCatShift.catId===cat.id && excludeCatShift.shiftId===s.id) return;
       const list = catAssign[s.id]||[];
       if(list.includes(personId)){
@@ -768,7 +801,7 @@ function restIssues(personId, date, catId, shift){
   // returns array of warning strings if assigning personId to this shift breaks the 6h rest / 6h per day rule
   const cat = state.categories.find(c=>c.id===catId);
   if(!cat.enforceRest) return [];
-  const abs = absoluteShiftTimes(cat)[shift.id];
+  const abs = absoluteShiftTimes(cat, date)[shift.id];
   const existing = personEnforcedShifts(personId, date, {catId, shiftId:shift.id});
   const all = [...existing, {abs_s:abs.abs_s, abs_e:abs.abs_e, catName:cat.name, label: shift.label||(shift.start+'-'+shift.end)}].sort((a,b)=>a.abs_s-b.abs_s);
   const issues=[];
@@ -799,7 +832,7 @@ function wouldRestWindowConflict(personId, date, shift, excludeCatShift){
   for(const cat of state.categories){
     if(cat.enforceRest) continue;
     const catAssign=dayAssign[cat.id]||{};
-    for(const sft of cat.shifts){
+    for(const sft of effectiveShifts(cat, date)){
       if(excludeCatShift && excludeCatShift.catId===cat.id && excludeCatShift.shiftId===sft.id) continue;
       if((catAssign[sft.id]||[]).includes(personId) && windowsOverlapRecurring(toMin(sft.start),toMin(sft.end),winStart,winEnd)) return true;
     }
@@ -826,7 +859,7 @@ function prepGapConflict(personId, date, cat, shift){
   for(const c of state.categories){
     if(c.enforceRest) continue;
     const catAssign=dayAssign[c.id]||{};
-    for(const sft of c.shifts){
+    for(const sft of effectiveShifts(c, date)){
       if((catAssign[sft.id]||[]).includes(personId) && windowsOverlapOnce(prepStart,shiftStart,toMin(sft.start),toMin(sft.end))) return true;
     }
   }
@@ -839,7 +872,7 @@ function prepGapConflict(personId, date, cat, shift){
    everyone right at the 6-hour minimum */
 function minAdjacentGap(personId, date, cat, shift){
   if(!cat.enforceRest) return Infinity;
-  const abs=absoluteShiftTimes(cat)[shift.id];
+  const abs=absoluteShiftTimes(cat, date)[shift.id];
   const existing=personEnforcedShifts(personId, date, {catId:cat.id, shiftId:shift.id});
   let minGap=Infinity;
   existing.forEach(ex=>{
@@ -860,8 +893,8 @@ function autoAssignDay(date){
   const allSlots=[];
   state.categories.forEach(cat=>{
     if(!state.assign[date][cat.id]) state.assign[date][cat.id]={};
-    const abs=absoluteShiftTimes(cat);
-    cat.shifts.forEach(s=>{
+    const abs=absoluteShiftTimes(cat, date);
+    effectiveShifts(cat, date).forEach(s=>{
       if(!state.assign[date][cat.id][s.id]) state.assign[date][cat.id][s.id]=[];
       allSlots.push({cat, s, absStart:abs[s.id].abs_s});
     });
@@ -1643,7 +1676,7 @@ function isEligibleForOuting(personId, date){
     const dayAssign = state.assign[date]||{};
     for(const cat of state.categories){
       const catAssign = dayAssign[cat.id]||{};
-      for(const sft of cat.shifts){
+      for(const sft of effectiveShifts(cat, date)){
         if(!(catAssign[sft.id]||[]).includes(personId)) continue;
         const sMin=toMin(sft.start);
         if(sMin>=22*60 || sMin<6*60) return false;
@@ -1688,7 +1721,7 @@ function personDutySummary(personId, date){
   const dayAssign = (state.assign[date]||{});
   state.categories.forEach(cat=>{
     const catAssign = dayAssign[cat.id]||{};
-    cat.shifts.forEach(sft=>{
+    effectiveShifts(cat, date).forEach(sft=>{
       if((catAssign[sft.id]||[]).includes(personId)){
         parts.push(`${cat.name} ${sft.label||sft.start+'-'+sft.end}`);
       }
@@ -2751,7 +2784,10 @@ function renderSchedule(){
   });
   document.getElementById('addCat').onclick=()=>{
     showPrompt('新類別名稱？（例：查哨）', '', (name)=>{
-      state.categories.push({id:uid(),name,enforceRest:false,preferLowRank:false,needsNCO:false,shifts:[sh('08:00','12:00')]});
+      const newId=uid();
+      const newShifts=[sh('08:00','12:00')];
+      state.categories.push({id:newId,name,enforceRest:false,preferLowRank:false,needsNCO:false,shifts:newShifts});
+      state.categoryShiftDefaults[newId]=newShifts.map(s=>({...s}));
       saveState(); render();
     });
   };
@@ -2767,7 +2803,7 @@ function generateScheduleText(date){
   orderedCategories().filter(c=>c.enforceRest && !c.excludeFromExport).forEach(cat=>{
     lines.push('🔶'+cat.name);
     const dayAssign=(state.assign[date]||{})[cat.id]||{};
-    cat.shifts.forEach(s=>{
+    effectiveShifts(cat, date).forEach(s=>{
       const assigned=dayAssign[s.id]||[];
       const names=Array.from({length:s.count}).map((_,i)=>assigned[i]?personName(assigned[i]):'');
       const timeLabel = s.label? s.label : (s.start+'-'+s.end);
@@ -2789,7 +2825,7 @@ function generateScheduleText(date){
       const cat=item.ref;
       lines.push('♦️'+cat.name+'：');
       const dayAssign=(state.assign[date]||{})[cat.id]||{};
-      cat.shifts.forEach(s=>{
+      effectiveShifts(cat, date).forEach(s=>{
         const assigned=dayAssign[s.id]||[];
         const names=Array.from({length:s.count}).map((_,i)=>assigned[i]?personName(assigned[i]):'').filter(Boolean);
         const label=s.label||(s.start+'-'+s.end);
@@ -2930,19 +2966,22 @@ function renderMiscDutyCard(role, entries, preset, dragIdx){
 }
 function renderCategoryCard(cat, dragIdx){
   const dayAssign = (state.assign[currentDate]||{})[cat.id] || {};
-  const filledCount = cat.shifts.reduce((sum,s)=>sum+(dayAssign[s.id]||[]).filter(Boolean).length,0);
-  const totalCount = cat.shifts.reduce((sum,s)=>sum+s.count,0);
+  const shifts = effectiveShifts(cat, currentDate);
+  const hasTodayOverride = !!((state.dailyShiftOverrides[currentDate]||{})[cat.id]);
+  const filledCount = shifts.reduce((sum,s)=>sum+(dayAssign[s.id]||[]).filter(Boolean).length,0);
+  const totalCount = shifts.reduce((sum,s)=>sum+s.count,0);
   const title = `<span data-drag-handle style="cursor:grab;padding-right:6px;color:var(--dim)">⠿</span>${esc(cat.name)}
         ${cat.enforceRest?'<span class="tag" style="margin-left:6px">6hr規則</span>':''}
         ${cat.preferLowRank?'<span class="tag" style="margin-left:4px">建議低階</span>':''}
         ${cat.needsNCO?'<span class="tag" style="margin-left:4px">需士官帶隊</span>':''}
         ${(cat.excludeRanks||[]).length?`<span class="tag" style="margin-left:4px">${esc((cat.excludeRanks||[]).join('、'))}不可排</span>`:''}
         ${(cat.avoidRanks||[]).length?`<span class="tag" style="margin-left:4px">盡量避免${esc((cat.avoidRanks||[]).join('、'))}</span>`:''}
+        ${hasTodayOverride?'<span class="tag" style="margin-left:4px;color:var(--accent);border-color:var(--accent)">今日專屬設定</span>':''}
         <span class="muted" style="margin-left:6px">已排 ${filledCount}/${totalCount}</span>`;
   const extraButtons = `<label style="display:flex;align-items:center;gap:3px;font-size:11px"><input type="checkbox" class="card-exclude-cb" data-exclude-kind="cat" data-exclude-id="${cat.id}" style="width:auto" ${cat.excludeFromExport?'checked':''}>不匯出</label><button class="ghost small" data-edit-cat="${cat.id}">編輯</button><button class="ghost small danger" data-clear-cat="${cat.id}">清空排班</button>`;
   const inner = `
     <div class="hint" style="margin-bottom:8px">${esc(categoryPriorityLabel(cat))}</div>
-    ${cat.shifts.map(s=>{
+    ${shifts.map(s=>{
       const assigned = dayAssign[s.id] || [];
       const timeLabel = s.label? s.label+'（'+s.start+'-'+s.end+'）' : (s.start+'-'+s.end);
       const ncoCount = assigned.filter(pid=>pid && ['士官','軍官'].includes(rankCategory(personRank(pid)))).length;
@@ -3034,9 +3073,20 @@ function openCategoryEditor(catId){
       </div>
       <div class="divider"></div>
       <h3>班別時段</h3>
+      <div class="row wrap" style="margin-bottom:8px">
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px">
+          <input type="radio" name="editScope" value="default" checked style="width:auto"> 套用到所有日期（預設）
+        </label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px">
+          <input type="radio" name="editScope" value="today" style="width:auto"> 只套用到今天（${minguoLabel(currentDate)}）
+        </label>
+      </div>
+      <div class="hint" id="scopeHint" style="margin-bottom:8px"></div>
       <div id="shiftEditList">${cat.shifts.map((s,i)=>shiftEditRow(s,i)).join('')}</div>
       <button class="ghost small" id="addShift">＋新增班別</button>
-      ${['safety','bridge','control','meal'].includes(cat.id)? `<button class="ghost small" id="restoreShiftsBtn">↺ 恢復預設班別設定</button>`:''}
+      <button class="ghost small" id="restoreShiftsBtn">↺ 恢復預設班別</button>
+      <button class="ghost small danger" id="clearTodayOverrideBtn" style="display:none">🗑️ 移除今天的專屬設定</button>
+      <button class="ghost small" id="setAsDefaultBtn">📌 將目前設定存為預設班別</button>
       <div class="divider"></div>
       <div class="section-title"><h3 style="margin:0">階級優先順序（可自行調整，越上面越優先）</h3><button class="ghost small" id="priToggle">▼ 展開</button></div>
       <div id="priSection" style="display:none">
@@ -3099,30 +3149,91 @@ function openCategoryEditor(catId){
     if(cat.needsNCO) priorityHelperDraft = defaultHelperPriorityArray();
     rerenderPriorityLists();
   };
+  /* --- 班別時段 scope handling: "default" edits cat.shifts (applies to
+     every date); "today" edits a separate working array that's only
+     written into state.dailyShiftOverrides[currentDate] on Save, so
+     switching the radio back and forth before saving never touches the
+     category-wide template. */
+  let editScope='default';
+  let todayShiftsDraft=null; // lazily built the first time the user switches to "today"
+  function activeShiftsArray(){
+    return editScope==='today' ? todayShiftsDraft : cat.shifts;
+  }
+  function hasTodayOverride(){
+    return !!((state.dailyShiftOverrides[currentDate]||{})[cat.id]);
+  }
+  function updateScopeUI(){
+    const hintEl=document.getElementById('scopeHint');
+    if(editScope==='today'){
+      hintEl.textContent = `這裡改的是「${cat.name}」只在今天（${minguoLabel(currentDate)}）套用的班別設定，存檔後不影響其他日期，也不影響這個類別本身的預設值。`;
+    } else {
+      hintEl.textContent = `這裡改的是「${cat.name}」這個類別的預設班別設定，會套用到所有日期${hasTodayOverride()? '（但今天已經有專屬設定，實際仍以那份為準，除非切到「只套用到今天」調整或移除它）':''}。只是想改「今天」某一班的人員，不用進這裡——回排班分頁該班別下面的下拉選單直接改人就好。`;
+    }
+    document.getElementById('clearTodayOverrideBtn').style.display = (editScope==='today' && hasTodayOverride())? 'inline-block':'none';
+  }
+  updateScopeUI();
+  document.querySelectorAll('input[name="editScope"]').forEach(r=>{
+    r.addEventListener('change', ()=>{
+      editScope = document.querySelector('input[name="editScope"]:checked').value;
+      if(editScope==='today' && !todayShiftsDraft){
+        const existing = (state.dailyShiftOverrides[currentDate]||{})[cat.id];
+        todayShiftsDraft = existing? existing.map(s=>({...s})) : cat.shifts.map(s=>({...s}));
+      }
+      shiftEditRowRerender();
+      updateScopeUI();
+    });
+  });
   function shiftEditRowRerender(){
-    document.getElementById('shiftEditList').innerHTML = cat.shifts.map((s,i)=>shiftEditRow(s,i)).join('');
+    document.getElementById('shiftEditList').innerHTML = activeShiftsArray().map((s,i)=>shiftEditRow(s,i)).join('');
     wireShiftRows();
   }
   function wireShiftRows(){
     document.querySelectorAll('[data-shift-del]').forEach(b=>{
-      b.onclick=()=>{ cat.shifts.splice(Number(b.dataset.shiftDel),1); shiftEditRowRerender(); };
+      b.onclick=()=>{ activeShiftsArray().splice(Number(b.dataset.shiftDel),1); shiftEditRowRerender(); };
     });
   }
   wireShiftRows();
   document.getElementById('addShift').onclick=()=>{
-    cat.shifts.push(sh('08:00','12:00')); shiftEditRowRerender();
+    activeShiftsArray().push(sh('08:00','12:00')); shiftEditRowRerender();
   };
-  if(document.getElementById('restoreShiftsBtn')){
-    document.getElementById('restoreShiftsBtn').onclick=()=>{
-      showConfirm('確定要把班別時段還原成系統預設嗎？目前編輯中尚未儲存的班別調整會被取代（已經存檔的排班紀錄不會受影響）。', ()=>{
-        const defaultCat = defaultCategories().find(d=>d.id===cat.id);
-        if(defaultCat){
-          cat.shifts = defaultCat.shifts.map(s=>({...s, id:uid()}));
-          shiftEditRowRerender();
-        }
-      });
-    };
+  function readShiftDraftValues(){
+    const arr = activeShiftsArray();
+    return [...document.querySelectorAll('.shiftEditItem')].map((row,i)=>({
+      id: arr[i]? arr[i].id : uid(),
+      start: row.querySelector('.se-start').value,
+      end: row.querySelector('.se-end').value,
+      count: Math.max(1, Number(row.querySelector('.se-count').value)||1),
+      label: row.querySelector('.se-label').value.trim(),
+      restUntil: row.querySelector('.se-rest').value,
+      minNCO: Math.max(0, Number(row.querySelector('.se-minnco').value)||0)
+    }));
   }
+  document.getElementById('restoreShiftsBtn').onclick=()=>{
+    const defaults = state.categoryShiftDefaults[cat.id];
+    if(!defaults){ showAlert('這個類別目前還沒有存過預設班別，請先按下面「將目前設定存為預設班別」建立一份。'); return; }
+    showConfirm(`確定要把${editScope==='today'? '「今天」這份':''}班別時段還原成你設定的預設班別嗎？目前編輯中尚未儲存的調整會被取代（已經存檔的排班紀錄不會受影響）。`, ()=>{
+      const cloned = defaults.map(s=>({...s, id:uid()}));
+      if(editScope==='today') todayShiftsDraft = cloned;
+      else cat.shifts = cloned;
+      shiftEditRowRerender();
+    });
+  };
+  document.getElementById('setAsDefaultBtn').onclick=()=>{
+    showConfirm('確定要把目前畫面上的班別設定存為這個類別的「預設班別」嗎？之後「恢復預設班別」都會用這份（不影響已經排定的班表）。', ()=>{
+      state.categoryShiftDefaults[cat.id] = readShiftDraftValues().map(s=>({...s}));
+      saveState();
+      showAlert('已存為這個類別的預設班別。');
+    });
+  };
+  document.getElementById('clearTodayOverrideBtn').onclick=()=>{
+    showConfirm('確定要移除「今天」的專屬班別設定嗎？之後今天會改回套用這個類別的預設班別時段。', ()=>{
+      if(state.dailyShiftOverrides[currentDate]) delete state.dailyShiftOverrides[currentDate][cat.id];
+      todayShiftsDraft = cat.shifts.map(s=>({...s}));
+      saveState();
+      shiftEditRowRerender();
+      updateScopeUI();
+    });
+  };
   wireCloseConfirm(modal, document.getElementById('closeModal'));
   document.getElementById('saveCat').onclick=()=>{
     cat.name=document.getElementById('catName').value.trim()||cat.name;
@@ -3134,14 +3245,14 @@ function openCategoryEditor(catId){
     cat.customPriority=[...priorityDraft];
     if(cat.needsNCO) cat.customPriorityHelper=[...priorityHelperDraft];
     else delete cat.customPriorityHelper;
-    document.querySelectorAll('.shiftEditItem').forEach((row,i)=>{
-      cat.shifts[i].start=row.querySelector('.se-start').value;
-      cat.shifts[i].end=row.querySelector('.se-end').value;
-      cat.shifts[i].count=Math.max(1, Number(row.querySelector('.se-count').value)||1);
-      cat.shifts[i].label=row.querySelector('.se-label').value.trim();
-      cat.shifts[i].restUntil=row.querySelector('.se-rest').value;
-      cat.shifts[i].minNCO=Math.max(0, Number(row.querySelector('.se-minnco').value)||0);
-    });
+    const draftShifts = readShiftDraftValues();
+    if(editScope==='today'){
+      if(!state.dailyShiftOverrides[currentDate]) state.dailyShiftOverrides[currentDate]={};
+      state.dailyShiftOverrides[currentDate][cat.id] = draftShifts;
+    } else {
+      cat.shifts.length = 0;
+      draftShifts.forEach(d=>cat.shifts.push(d));
+    }
     saveState(); modal.remove(); render();
   };
   function shiftEditRow(s,i){
@@ -3175,7 +3286,7 @@ function runDailyCheck(){
   const seen=new Set();
   state.categories.filter(c=>c.enforceRest).forEach(cat=>{
     const dayAssign=(state.assign[currentDate]||{})[cat.id]||{};
-    cat.shifts.forEach(s=>{
+    effectiveShifts(cat, currentDate).forEach(s=>{
       (dayAssign[s.id]||[]).forEach(pid=>{
         if(!pid) return;
         const issues=restIssues(pid,currentDate,cat.id,s);
@@ -3198,13 +3309,13 @@ function runDailyCheck(){
   const mealCat = state.categories.find(c=>c.needsNCO);
   if(mealCat){
     const dayAssign=(state.assign[currentDate]||{})[mealCat.id]||{};
-    const allPeople = mealCat.shifts.flatMap(s=>dayAssign[s.id]||[]).filter(Boolean);
+    const allPeople = effectiveShifts(mealCat, currentDate).flatMap(s=>dayAssign[s.id]||[]).filter(Boolean);
     const hasNCO = allPeople.some(pid=>['士官','軍官'].includes(rankCategory(personRank(pid))));
     if(allPeople.length && !hasNCO) out.push(`⚠️ ${mealCat.name}：當日尚無「士官」以上人員帶隊`);
   }
   state.categories.filter(c=>c.preferLowRank).forEach(cat=>{
     const dayAssign=(state.assign[currentDate]||{})[cat.id]||{};
-    cat.shifts.forEach(s=>{
+    effectiveShifts(cat, currentDate).forEach(s=>{
       (dayAssign[s.id]||[]).forEach(pid=>{
         if(pid && rankCategory(personRank(pid))==='軍官') out.push(`⚠️ ${cat.name} ${s.label||s.start+'-'+s.end}：${personName(pid)} 為軍官，建議改排較低階`);
       });
@@ -3212,7 +3323,7 @@ function runDailyCheck(){
   });
   state.categories.filter(c=>c.needsNCO).forEach(cat=>{
     const dayAssign=(state.assign[currentDate]||{})[cat.id]||{};
-    cat.shifts.forEach(s=>{
+    effectiveShifts(cat, currentDate).forEach(s=>{
       (dayAssign[s.id]||[]).forEach(pid=>{
         if(pid && rankCategory(personRank(pid))==='軍官') out.push(`⚠️ ${cat.name} ${s.label||s.start+'-'+s.end}：${personName(pid)} 為軍官，盡量避免安排軍官擔任打飯班`);
       });
@@ -3220,7 +3331,7 @@ function runDailyCheck(){
   });
   state.categories.forEach(cat=>{
     const dayAssign=(state.assign[currentDate]||{})[cat.id]||{};
-    cat.shifts.forEach(s=>{
+    effectiveShifts(cat, currentDate).forEach(s=>{
       (dayAssign[s.id]||[]).forEach(pid=>{
         if(!pid) return;
         const busy = isPersonUnavailable(pid, currentDate, toMin(s.start), wrapEndMin(toMin(s.start), toMin(s.end)), {catId:cat.id, shiftId:s.id});
@@ -3467,7 +3578,7 @@ function isPersonBusyForMiscEdit(personId, date, s, eRaw, excludeEntryId){
   const dayAssign = state.assign[date]||{};
   for(const cat of state.categories){
     const catAssign = dayAssign[cat.id]||{};
-    for(const sft of cat.shifts){
+    for(const sft of effectiveShifts(cat, date)){
       if((catAssign[sft.id]||[]).includes(personId) && windowsOverlapOnce(s,e,toMin(sft.start),toMin(sft.end))) return true;
     }
   }
@@ -3497,7 +3608,7 @@ function miscEditBusyReasons(personId, date, s, eRaw, excludeEntryId){
   const dayAssign = state.assign[date]||{};
   state.categories.forEach(cat=>{
     const catAssign = dayAssign[cat.id]||{};
-    cat.shifts.forEach(sft=>{
+    effectiveShifts(cat, date).forEach(sft=>{
       if((catAssign[sft.id]||[]).includes(personId) && windowsOverlapOnce(s,e,toMin(sft.start),toMin(sft.end))){
         out.push(`勤務中：${cat.name} ${sft.label||sft.start+'-'+sft.end}`);
       }
