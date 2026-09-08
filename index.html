@@ -100,7 +100,7 @@ textarea{min-height:50px;resize:vertical;}
     <div class="row" style="gap:6px;align-items:center">
       <button class="ghost small" id="undoBtn" title="復原上一步" style="display:none">↩️</button>
       <button class="ghost small" id="redoBtn" title="取消復原（重做）" style="display:none">↪️</button>
-      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v21</span></h1>
+      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v22</span></h1>
     </div>
     <div class="row" style="gap:6px;align-items:center">
       <select id="timeStepSelect" style="font-size:11px;padding:3px 6px;width:auto">
@@ -3430,6 +3430,115 @@ function openMiscPresetModal(editIndex){
    in the 排班 tab's per-role misc card), instead of jumping up to the
    "新增項目" form at the top. Only one entry can be inline-edited at a time. */
 let miscInlineEditId=null;
+/* same availability check as isPersonUnavailable, but ignores the misc
+   entry currently being edited — otherwise a person already assigned to
+   that entry's own time slot would show up flagged 🚫 against themselves */
+function isPersonBusyForMiscEdit(personId, date, s, eRaw, excludeEntryId){
+  const e = wrapEndMin(s, eRaw);
+  const person = state.personnel.find(p=>p.id===personId);
+  if(person){
+    const lt = personLongTerm(person);
+    if(lt.mode==='allday') return true;
+    if(lt.mode==='range' && lt.start && lt.end && windowsOverlapRecurring(s,e,toMin(lt.start),toMin(lt.end))) return true;
+  }
+  for(const u of (state.unavail[date]||[]).filter(u=>u.personId===personId)){
+    if(u.allDay) return true;
+    if(windowsOverlapOnce(s,e,toMin(u.start),toMin(u.end))) return true;
+  }
+  for(const w of personCompRestWindows(personId, date)){
+    if(windowsOverlapRecurring(s,e,toMin(w.start),toMin(w.end))) return true;
+  }
+  const dayAssign = state.assign[date]||{};
+  for(const cat of state.categories){
+    const catAssign = dayAssign[cat.id]||{};
+    for(const sft of cat.shifts){
+      if((catAssign[sft.id]||[]).includes(personId) && windowsOverlapOnce(s,e,toMin(sft.start),toMin(sft.end))) return true;
+    }
+  }
+  for(const mm of (state.misc[date]||[])){
+    if(mm.id===excludeEntryId) continue;
+    if(mm.start && mm.end && (mm.personIds||[]).includes(personId) && windowsOverlapOnce(s,e,toMin(mm.start),toMin(mm.end))) return true;
+    if(mm.restUntil && mm.end && (mm.personIds||[]).includes(personId) && windowsOverlapRecurring(s,e,toMin(mm.end),toMin(mm.restUntil))) return true;
+  }
+  return false;
+}
+function miscEditBusyReasons(personId, date, s, eRaw, excludeEntryId){
+  const e = wrapEndMin(s, eRaw);
+  const out=[];
+  const person = state.personnel.find(p=>p.id===personId);
+  if(person){
+    const lt = personLongTerm(person);
+    if(lt.mode==='allday') out.push('長期事故：全天不可排');
+    else if(lt.mode==='range' && lt.start && lt.end && windowsOverlapRecurring(s,e,toMin(lt.start),toMin(lt.end))) out.push(`長期事故：每天 ${lt.start}-${lt.end} 不可排`);
+  }
+  (state.unavail[date]||[]).filter(u=>u.personId===personId).forEach(u=>{
+    const hit = u.allDay || windowsOverlapOnce(s,e,toMin(u.start),toMin(u.end));
+    if(hit) out.push(`${u.allDay? '全天':`${u.start}-${u.end}`}${u.reason? '（'+u.reason+'）':'（未註記原因）'}`);
+  });
+  for(const w of personCompRestWindows(personId, date)){
+    if(windowsOverlapRecurring(s,e,toMin(w.start),toMin(w.end))) out.push(`補休中（${w.catName} ${w.label} 後，至 ${w.end}）`);
+  }
+  const dayAssign = state.assign[date]||{};
+  state.categories.forEach(cat=>{
+    const catAssign = dayAssign[cat.id]||{};
+    cat.shifts.forEach(sft=>{
+      if((catAssign[sft.id]||[]).includes(personId) && windowsOverlapOnce(s,e,toMin(sft.start),toMin(sft.end))){
+        out.push(`勤務中：${cat.name} ${sft.label||sft.start+'-'+sft.end}`);
+      }
+    });
+  });
+  (state.misc[date]||[]).forEach(mm=>{
+    if(mm.id===excludeEntryId) return;
+    if(!(mm.personIds||[]).includes(personId)) return;
+    if(mm.start && mm.end && windowsOverlapOnce(s,e,toMin(mm.start),toMin(mm.end))) out.push(`勤務中：${mm.role}${mm.start&&mm.end?` (${mm.start}-${mm.end})`:''}`);
+    else if(mm.restUntil && mm.end && windowsOverlapRecurring(s,e,toMin(mm.end),toMin(mm.restUntil))) out.push(`補休中（${mm.role} 後，至 ${mm.restUntil}）`);
+  });
+  return [...new Set(out)];
+}
+/* the searchable, sorted (available-first) person checkbox list used by the
+   freeform (no defined roles) branch of the inline 其他勤務 editor — reads
+   the entry's OWN current start/end select values (so changing the time
+   live-updates who's flagged busy) and applies the entry's preset
+   requirements (license/EMT/skill) the same way the top "新增項目" form does */
+function inlineMiscPeopleListHTML(m, searchFilter){
+  const preset = presetForEntry(m);
+  const startEl = document.getElementById('inlineStart-'+m.id), endEl = document.getElementById('inlineEnd-'+m.id);
+  const startVal = startEl? startEl.value : m.start;
+  const endVal = endEl? endEl.value : m.end;
+  const hasTime = !!(startVal && endVal);
+  const s = hasTime? toMin(startVal) : null;
+  const eRaw = hasTime? toMin(endVal) : null;
+  const checkedIds = new Set(m.personIds||[]);
+  const container = document.getElementById('inlineMiscPeopleList-'+m.id);
+  if(container){
+    container.querySelectorAll('.inline-misc-person-cb').forEach(cb=>{
+      if(cb.checked) checkedIds.add(cb.value); else checkedIds.delete(cb.value);
+    });
+  }
+  let list=[...state.personnel];
+  if(searchFilter) list = list.filter(p=>p.name.includes(searchFilter));
+  if(!list.length) return `<div class="empty">找不到符合的人員</div>`;
+  const withInfo = list.map(p=>{
+    const reasons=[];
+    if(hasTime && isPersonBusyForMiscEdit(p.id, currentDate, s, eRaw, m.id)){
+      miscEditBusyReasons(p.id, currentDate, s, eRaw, m.id).forEach(r=>reasons.push(r));
+    }
+    if(preset) driverQualificationIssues(p, preset).forEach(r=>reasons.push(r));
+    return {p, checked:checkedIds.has(p.id), reasons};
+  });
+  withInfo.sort((a,b)=>{
+    const ba=a.reasons.length>0?1:0, bb=b.reasons.length>0?1:0;
+    if(ba!==bb) return ba-bb;
+    return rankPriorityIndex(a.p.rank,preset)-rankPriorityIndex(b.p.rank,preset) || groupIndex(a.p.group)-groupIndex(b.p.group);
+  });
+  return withInfo.map(({p,checked,reasons})=>{
+    const busy = reasons.length>0;
+    return `<label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0;${busy?'color:var(--danger)':''}">
+      <input type="checkbox" class="inline-misc-person-cb" value="${p.id}" style="width:auto" ${checked?'checked':''}>
+      ${esc(p.name)}（${p.group||'未分組'}·${p.rank}${personBadges(p)}）${busy? ` 🚫不可排（${[...new Set(reasons)].join('・')}）`:''}
+    </label>`;
+  }).join('');
+}
 function miscEntryEditorHTML(m){
   const preset = presetForEntry(m);
   let rolesHtml;
@@ -3451,13 +3560,12 @@ function miscEntryEditorHTML(m){
     }).join('');
   } else {
     rolesHtml = `
-      <div class="hint" style="margin-bottom:4px">人員（可複選）</div>
-      <div style="max-height:220px;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:8px;margin-bottom:8px">
-        ${state.personnel.map(p=>`
-          <label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0">
-            <input type="checkbox" class="inline-misc-person-cb" value="${p.id}" style="width:auto" ${(m.personIds||[]).includes(p.id)?'checked':''}>
-            ${esc(p.name)}（${p.group||'未分組'}·${p.rank}${personBadges(p)}）
-          </label>`).join('')}
+      <div class="row wrap" style="margin-bottom:6px">
+        <div class="grow"><label>搜尋姓名</label><input type="text" id="inlineMiscSearch-${m.id}" placeholder="輸入姓名關鍵字"></div>
+      </div>
+      <div class="hint" style="margin-bottom:4px">人員（可複選，可排的人在最上面，🚫不可排的人排到最下面並標示原因）</div>
+      <div id="inlineMiscPeopleList-${m.id}" style="max-height:260px;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:8px;margin-bottom:8px">
+        ${inlineMiscPeopleListHTML(m, '')}
       </div>
       <label style="display:flex;align-items:center;gap:6px;font-size:13px;margin-bottom:8px">
         <input type="checkbox" id="inlineSkipAutoFill-${m.id}" style="width:auto" ${m.skipAutoFill?'checked':''}> 🔒此項目本次不自動排人
@@ -3480,6 +3588,21 @@ function miscEntryEditorHTML(m){
   </div>`;
 }
 function wireMiscInlineEditors(){
+  if(miscInlineEditId){
+    const m = (state.misc[currentDate]||[]).find(mm=>mm.id===miscInlineEditId);
+    if(m && !m.roles){
+      const searchInput = document.getElementById('inlineMiscSearch-'+m.id);
+      const refreshList = ()=>{
+        const val = searchInput? searchInput.value.trim() : '';
+        const container = document.getElementById('inlineMiscPeopleList-'+m.id);
+        if(container) container.innerHTML = inlineMiscPeopleListHTML(m, val);
+      };
+      if(searchInput) searchInput.oninput = refreshList;
+      const startSel = document.getElementById('inlineStart-'+m.id), endSel = document.getElementById('inlineEnd-'+m.id);
+      if(startSel) startSel.addEventListener('change', refreshList);
+      if(endSel) endSel.addEventListener('change', refreshList);
+    }
+  }
   document.querySelectorAll('[data-inline-save]').forEach(btn=>{
     btn.onclick=()=>{
       const id = btn.dataset.inlineSave;
