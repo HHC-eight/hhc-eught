@@ -1972,46 +1972,72 @@ function isExpanded(key){ return !!collapseState[key]; }
    containerId's rows must each have data-drag-idx="{i}" and a child with
    data-drag-handle. onReorder is called after each swap and on release,
    so the caller can re-render the list with the new order. */
+/* touch-based drag-to-reorder for priority lists — native HTML5 drag/drop
+   doesn't work reliably on mobile Safari, so this tracks touch position
+   directly. IMPORTANT: the dragged row's own DOM node is never replaced
+   mid-gesture (only its CSS transform changes) — re-rendering the list on
+   every step, as an earlier version did, destroys the element the touch is
+   targeting and breaks the continuous touchmove stream, which is exactly
+   what made dragging feel like it only moved one row at a time. Instead,
+   rows are visually shifted with transforms while dragging, and the real
+   array + a single clean re-render only happen once, on release.
+   containerId's rows must each have data-drag-idx="{i}" (0-based, matching
+   arr's order at the moment this is called) and a child with
+   data-drag-handle. onReorder is called once, after the drop, so the caller
+   can re-render the list with the new order. */
 function wireDragReorder(containerId, arr, onReorder){
   const container = document.getElementById(containerId);
   if(!container) return;
-  let dragIdx = null;
-  container.querySelectorAll('[data-drag-idx]').forEach(row=>{
+  const rows = [...container.querySelectorAll('[data-drag-idx]')];
+  if(!rows.length) return;
+  const rowHeight = rows[0].getBoundingClientRect().height;
+  rows.forEach((row, originalIdx)=>{
     const handle = row.querySelector('[data-drag-handle]');
     if(!handle) return;
     handle.style.touchAction='none';
+    let startY=0, dragging=false, currentSlot=originalIdx;
+    const shiftRow = (r, slots)=>{ r.style.transform = slots? `translateY(${slots*rowHeight}px)` : ''; };
     handle.addEventListener('touchstart', (e)=>{
-      dragIdx = Number(row.dataset.dragIdx);
-      row.style.opacity='0.5';
+      dragging=true;
+      startY = e.touches[0].clientY;
+      currentSlot = originalIdx;
+      row.style.transition='none';
+      row.style.zIndex='5';
+      row.style.position='relative';
+      row.style.boxShadow='0 4px 10px rgba(0,0,0,.5)';
+      rows.forEach(r=>{ if(r!==row) r.style.transition='transform .12s ease'; });
       e.preventDefault();
     }, {passive:false});
     handle.addEventListener('touchmove', (e)=>{
-      if(dragIdx===null) return;
+      if(!dragging) return;
       e.preventDefault();
-      const touch = e.touches[0];
-      const rows = [...container.querySelectorAll('[data-drag-idx]')];
-      for(const r of rows){
-        const rect = r.getBoundingClientRect();
-        if(touch.clientY >= rect.top && touch.clientY <= rect.bottom){
-          const overIdx = Number(r.dataset.dragIdx);
-          if(overIdx !== dragIdx){
-            const [item] = arr.splice(dragIdx,1);
-            arr.splice(overIdx,0,item);
-            dragIdx = overIdx;
-            onReorder();
+      const deltaY = e.touches[0].clientY - startY;
+      row.style.transform = `translateY(${deltaY}px)`;
+      const rawSlot = originalIdx + Math.round(deltaY / rowHeight);
+      const targetSlot = Math.max(0, Math.min(rows.length-1, rawSlot));
+      if(targetSlot !== currentSlot){
+        rows.forEach((r,i)=>{
+          if(r===row) return;
+          if(targetSlot > currentSlot){
+            shiftRow(r, (i > currentSlot && i <= targetSlot) ? -1 : 0);
+          } else {
+            shiftRow(r, (i >= targetSlot && i < currentSlot) ? 1 : 0);
           }
-          break;
-        }
+        });
+        currentSlot = targetSlot;
       }
     }, {passive:false});
-    handle.addEventListener('touchend', ()=>{
-      dragIdx=null;
+    const finish = ()=>{
+      if(!dragging) return;
+      dragging=false;
+      const [item] = arr.splice(originalIdx, 1);
+      arr.splice(currentSlot, 0, item);
+      row.style.transform=''; row.style.zIndex=''; row.style.position=''; row.style.boxShadow='';
+      rows.forEach(r=>{ r.style.transform=''; r.style.transition=''; });
       onReorder();
-    });
-    handle.addEventListener('touchcancel', ()=>{
-      dragIdx=null;
-      onReorder();
-    });
+    };
+    handle.addEventListener('touchend', finish);
+    handle.addEventListener('touchcancel', finish);
   });
 }
 function collapsibleCardHTML(key, title, innerHtml, extraButtons){
