@@ -100,7 +100,7 @@ textarea{min-height:50px;resize:vertical;}
     <div class="row" style="gap:6px;align-items:center">
       <button class="ghost small" id="undoBtn" title="復原上一步" style="display:none">↩️</button>
       <button class="ghost small" id="redoBtn" title="取消復原（重做）" style="display:none">↪️</button>
-      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v22</span></h1>
+      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v25</span></h1>
     </div>
     <div class="row" style="gap:6px;align-items:center">
       <select id="timeStepSelect" style="font-size:11px;padding:3px 6px;width:auto">
@@ -361,6 +361,21 @@ function driverQualificationIssues(person, preset){
 function validateMiscEntry(entry){
   if(!entry.roles){
     if(!(entry.personIds&&entry.personIds.length) && !entry.skipAutoFill){
+      const preset = presetForEntry(entry);
+      const sMin = entry.start? toMin(entry.start) : null;
+      const eMinRaw = entry.end? toMin(entry.end) : null;
+      const hasTime = sMin!==null && eMinRaw!==null;
+      const availableCandidates = state.personnel.filter(p=>
+        !(hasTime && isPersonUnavailable(p.id, currentDate, sMin, wrapEndMin(sMin, eMinRaw)))
+      );
+      const qualifiedCandidates = preset? availableCandidates.filter(p=>driverQualificationIssues(p, preset).length===0) : availableCandidates;
+      if(availableCandidates.length && preset && !qualifiedCandidates.length){
+        const reqParts=[];
+        if((preset.requiredLicenses||[]).length) reqParts.push('駕照：'+preset.requiredLicenses.join('或'));
+        if(preset.requiredMedCert) reqParts.push('救護證照(EMT或醫生證書)');
+        if((preset.requiredSkills||[]).length) reqParts.push('專長：'+preset.requiredSkills.join('、'));
+        return [`沒有符合需求（${reqParts.join('；')}）的人員可派，可手動指定或到「常用項目」調整資格要求`];
+      }
       return [`目前未指派（自動排班找不到符合資格且有空的人，可能都在忙其他勤務或休假，可手動指定或稍後再試）`];
     }
     return [];
@@ -922,15 +937,16 @@ function autoAssignMiscForDate(date){
       if(!alreadyHasSomeone && !entry.skipAutoFill){
         const sMin = entry.start? toMin(entry.start) : null;
         const eMinRaw = entry.end? toMin(entry.end) : null;
+        const presetForSort = presetForEntry(entry);
         const candidates = state.personnel.filter(p=>
-          !(sMin!==null && eMinRaw!==null && isPersonUnavailable(p.id, date, sMin, wrapEndMin(sMin, eMinRaw)))
+          !(sMin!==null && eMinRaw!==null && isPersonUnavailable(p.id, date, sMin, wrapEndMin(sMin, eMinRaw))) &&
+          driverQualificationIssues(p, presetForSort).length===0
         );
         if(candidates.length){
           candidates.sort((a,b)=>{
             const skillMatch = p=> (p.skills||[]).includes(entry.role) ? 0 : 1;
             const sa=skillMatch(a), sb=skillMatch(b);
             if(sa!==sb) return sa-sb;
-            const presetForSort = presetForEntry(entry);
             return rankPriorityIndex(a.rank,presetForSort)-rankPriorityIndex(b.rank,presetForSort) || groupIndex(a.group)-groupIndex(b.group);
           });
           entry.personIds[0]=candidates[0].id;
@@ -3917,11 +3933,7 @@ function renderMisc(){
           });
           collapseState['miscToday']=true;
           autoAssignMiscForDate(currentDate);
-          currentTab='schedule';
-          collapseState['displayOrder']=true;
           saveState(); render();
-          const el=document.getElementById('displayOrderList');
-          if(el) el.scrollIntoView({block:'center'});
         });
         return;
       }
@@ -3988,14 +4000,8 @@ function renderMisc(){
     miscEditingId=null;
     if(wasNewEntry){
       autoAssignMiscForDate(currentDate);
-      currentTab='schedule';
-      collapseState['displayOrder']=true;
     }
     saveState(); render();
-    if(wasNewEntry){
-      const el=document.getElementById('displayOrderList');
-      if(el) el.scrollIntoView({block:'center'});
-    }
   };
   if(document.getElementById('mCancelEdit')){
     document.getElementById('mCancelEdit').onclick=()=>{
