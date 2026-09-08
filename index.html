@@ -336,7 +336,7 @@ let currentTab='people';
 let currentDate = todayStr();
 /* persists the 人員 roster's search/filter selections across re-renders
    (e.g. saving an edit shouldn't reset what you were looking at) */
-let pplFilterState = {kw:'', group:'', license:[], medCert:[]};
+let pplFilterState = {kw:'', group:'', license:[], medCert:[], skills:[]};
 
 function todayStr(){
   const d=new Date(); const p=n=>String(n).padStart(2,'0');
@@ -1014,22 +1014,47 @@ function renderPeople(){
         </div>
       </div>
       <div class="row wrap" style="margin-bottom:8px">
-        <div class="grow"><label>駕照篩選(可複選)</label>
-          <select id="pplLicenseFilter" multiple size="4">
-            <option value="小型車" ${pplFilterState.license.includes('小型車')?'selected':''}>小型車</option>
-            <option value="大型車" ${pplFilterState.license.includes('大型車')?'selected':''}>大型車</option>
-            <option value="大客車" ${pplFilterState.license.includes('大客車')?'selected':''}>大客車</option>
-            <option value="__none" ${pplFilterState.license.includes('__none')?'selected':''}>未登記駕照</option>
-          </select>
-        </div>
-        <div class="grow"><label>EMT篩選(可複選)</label>
-          <select id="pplMedCertFilter" multiple size="5">
-            ${MEDCERT_OPTIONS.map(c=>`<option value="${c}" ${pplFilterState.medCert.includes(c)?'selected':''}>${c}</option>`).join('')}
-            <option value="__none" ${pplFilterState.medCert.includes('__none')?'selected':''}>未登記救護證照</option>
-          </select>
+        <div class="grow">
+          <label>駕照篩選(可複選，不選代表不篩選)</label>
+          <div class="row wrap" style="gap:10px">
+            ${['小型車','大型車','大客車'].map(l=>`
+              <label style="display:flex;align-items:center;gap:6px;font-size:13px">
+                <input type="checkbox" class="ppl-license-cb" value="${l}" style="width:auto" ${pplFilterState.license.includes(l)?'checked':''}> ${l}
+              </label>`).join('')}
+            <label style="display:flex;align-items:center;gap:6px;font-size:13px">
+              <input type="checkbox" class="ppl-license-cb" value="__none" style="width:auto" ${pplFilterState.license.includes('__none')?'checked':''}> 未登記駕照
+            </label>
+          </div>
         </div>
       </div>
-      <div class="hint" style="margin-bottom:8px">駕照/EMT篩選可以按住Ctrl(電腦)或直接點多個選項(手機)一次選多個；不選任何項目代表不篩選。</div>
+      <div class="row wrap" style="margin-bottom:8px">
+        <div class="grow">
+          <label>EMT篩選(可複選，不選代表不篩選)</label>
+          <div class="row wrap" style="gap:10px">
+            ${MEDCERT_OPTIONS.map(c=>`
+              <label style="display:flex;align-items:center;gap:6px;font-size:13px">
+                <input type="checkbox" class="ppl-medcert-cb" value="${esc(c)}" style="width:auto" ${pplFilterState.medCert.includes(c)?'checked':''}> ${esc(c)}
+              </label>`).join('')}
+            <label style="display:flex;align-items:center;gap:6px;font-size:13px">
+              <input type="checkbox" class="ppl-medcert-cb" value="__none" style="width:auto" ${pplFilterState.medCert.includes('__none')?'checked':''}> 未登記救護證照
+            </label>
+          </div>
+        </div>
+      </div>
+      <div class="row wrap" style="margin-bottom:8px">
+        <div class="grow">
+          <label>特殊專長篩選(可複選，不選代表不篩選)</label>
+          <div class="row wrap" style="gap:10px">
+            ${state.skillOptions.map(s=>`
+              <label style="display:flex;align-items:center;gap:6px;font-size:13px">
+                <input type="checkbox" class="ppl-skill-cb" value="${esc(s)}" style="width:auto" ${pplFilterState.skills.includes(s)?'checked':''}> ${esc(s)}
+              </label>`).join('')}
+            <label style="display:flex;align-items:center;gap:6px;font-size:13px">
+              <input type="checkbox" class="ppl-skill-cb" value="__none" style="width:auto" ${pplFilterState.skills.includes('__none')?'checked':''}> 未登記專長
+            </label>
+          </div>
+        </div>
+      </div>
       ${groups.length===0 && state.personnel.length===0 ? `<div class="empty">尚未新增人員</div>` : ''}
       <div id="pplListArea">${renderPeopleGroups(groups)}</div>
     </div>
@@ -1059,9 +1084,10 @@ function renderPeople(){
   function applyPeopleFilter(){
     const kw=document.getElementById('pplSearch').value.trim();
     const gf=document.getElementById('pplGroupFilter').value;
-    const lf=[...document.getElementById('pplLicenseFilter').selectedOptions].map(o=>o.value);
-    const mf=[...document.getElementById('pplMedCertFilter').selectedOptions].map(o=>o.value);
-    pplFilterState = {kw, group:gf, license:lf, medCert:mf};
+    const lf=[...document.querySelectorAll('.ppl-license-cb:checked')].map(cb=>cb.value);
+    const mf=[...document.querySelectorAll('.ppl-medcert-cb:checked')].map(cb=>cb.value);
+    const sf=[...document.querySelectorAll('.ppl-skill-cb:checked')].map(cb=>cb.value);
+    pplFilterState = {kw, group:gf, license:lf, medCert:mf, skills:sf};
     const filterFn = p=>{
       if(kw && !p.name.includes(kw)) return false;
       if(gf==='__none' && p.group) return false;
@@ -1074,6 +1100,10 @@ function renderPeople(){
         const matchMed = mf.includes('__none')? !p.medCert : false;
         if(!matchMed && !mf.includes(p.medCert)) return false;
       }
+      if(sf.length){
+        const matchSkill = sf.includes('__none')? !(p.skills&&p.skills.length) : (p.skills||[]).some(s=>sf.includes(s));
+        if(!matchSkill) return false;
+      }
       return true;
     };
     const area=document.getElementById('pplListArea');
@@ -1081,23 +1111,23 @@ function renderPeople(){
     area.innerHTML = html || `<div class="empty">找不到符合的人員</div>`;
     wirePeopleListButtons();
     const filteredTotal = state.personnel.filter(filterFn).length;
-    const isFiltering = kw || gf || lf.length || mf.length;
+    const isFiltering = kw || gf || lf.length || mf.length || sf.length;
     document.getElementById('pplCountLabel').textContent = isFiltering
       ? `名冊（篩選出 ${filteredTotal} / 共 ${state.personnel.length} 人）`
       : `名冊（${state.personnel.length}人）`;
   }
   document.getElementById('pplSearch').oninput=applyPeopleFilter;
   document.getElementById('pplGroupFilter').onchange=applyPeopleFilter;
-  document.getElementById('pplLicenseFilter').onchange=applyPeopleFilter;
-  document.getElementById('pplMedCertFilter').onchange=applyPeopleFilter;
-  if(pplFilterState.kw || pplFilterState.group || pplFilterState.license.length || pplFilterState.medCert.length){
+  document.querySelectorAll('.ppl-license-cb, .ppl-medcert-cb, .ppl-skill-cb').forEach(cb=>{
+    cb.onchange=applyPeopleFilter;
+  });
+  if(pplFilterState.kw || pplFilterState.group || pplFilterState.license.length || pplFilterState.medCert.length || pplFilterState.skills.length){
     applyPeopleFilter();
   }
   document.getElementById('pplClearFilter').onclick=()=>{
     document.getElementById('pplSearch').value='';
     document.getElementById('pplGroupFilter').value='';
-    [...document.getElementById('pplLicenseFilter').options].forEach(o=>o.selected=false);
-    [...document.getElementById('pplMedCertFilter').options].forEach(o=>o.selected=false);
+    document.querySelectorAll('.ppl-license-cb, .ppl-medcert-cb, .ppl-skill-cb').forEach(cb=>cb.checked=false);
     applyPeopleFilter();
   };
   document.getElementById('npLongTermMode').onchange=(e)=>{
