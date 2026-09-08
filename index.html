@@ -22,7 +22,7 @@
 }
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
 html,body{margin:0;padding:0;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"PingFang TC","Noto Sans TC",Segoe UI,sans-serif;}
-body{padding-bottom:78px;}
+body{padding-bottom:calc(96px + env(safe-area-inset-bottom));}
 h1,h2,h3{font-weight:600;margin:0 0 10px;}
 h1{font-size:17px;letter-spacing:.5px;}
 h2{font-size:14px;color:var(--accent);}
@@ -32,7 +32,7 @@ h3{font-size:13px;color:var(--dim);font-weight:500;}
 .unit-banner-badge{width:18px;height:18px;border-radius:50%;background:var(--accent2);color:#0d130a;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;flex-shrink:0;}
 .unit-banner-text{font-size:12px;letter-spacing:2.5px;color:var(--accent2);font-weight:600;}
 .topbar-main{padding:12px 14px;display:flex;align-items:center;justify-content:space-between;}
-.container{padding:12px 12px 24px;max-width:640px;margin:0 auto;}
+.container{padding:12px 12px 40px;max-width:640px;margin:0 auto;}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:8px;}
 .row{display:flex;gap:8px;align-items:center;}
 .row.wrap{flex-wrap:wrap;}
@@ -100,7 +100,7 @@ textarea{min-height:50px;resize:vertical;}
     <div class="row" style="gap:6px;align-items:center">
       <button class="ghost small" id="undoBtn" title="復原上一步" style="display:none">↩️</button>
       <button class="ghost small" id="redoBtn" title="取消復原（重做）" style="display:none">↪️</button>
-      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v19</span></h1>
+      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v20</span></h1>
     </div>
     <div class="row" style="gap:6px;align-items:center">
       <select id="timeStepSelect" style="font-size:11px;padding:3px 6px;width:auto">
@@ -842,14 +842,6 @@ function minAdjacentGap(personId, date, cat, shift){
 function autoAssignDay(date){
   if(!state.assign[date]) state.assign[date]={};
   const assignCount={};
-  // Flatten every (category, shift) into one list and sort by REAL chronological
-  // order across ALL categories (using the same shared anchor as the rest-rule
-  // check) before assigning anything. This matters because a comp-rest window
-  // or a rest-rule conflict is only visible to later checks once the earlier
-  // shift that created it has actually been assigned — processing category by
-  // category (rather than by real time) could assign an evening shift before
-  // an earlier same-day shift purely because of category order, silently
-  // missing the conflict between them.
   const allSlots=[];
   state.categories.forEach(cat=>{
     if(!state.assign[date][cat.id]) state.assign[date][cat.id]={};
@@ -869,25 +861,15 @@ function autoAssignDay(date){
           !arr.includes(p.id) && !rankExcludedFromCategory(p.rank,cat) &&
           !isPersonUnavailable(p.id, date, sMin, eMin, {catId:cat.id, shiftId:s.id})
         );
-        // for rest-enforced (衛哨) categories: only pick someone who won't
-        // violate the 6h rule, didn't stand this exact shift yesterday, and
-        // whose resulting 補休 window won't collide with something they're
-        // already committed to (其他勤務 or a non-rest-enforced category)
         const candidates = cat.enforceRest
           ? rawCandidates.filter(p=>restIssues(p.id,date,cat.id,s).length===0 && !assignedSameShiftYesterday(p.id,date,cat.id,s.id) && !wouldRestWindowConflict(p.id,date,s,{catId:cat.id,shiftId:s.id}) && !prepGapConflict(p.id,date,cat,s))
           : rawCandidates;
         if(candidates.length){
         candidates.sort((a,b)=>{
-          // fairness first — whoever has fewer shifts today wins, so the
-          // schedule doesn't cram one person into many slots while others
-          // sit idle
           const aCnt=assignCount[a.id]||0, bCnt=assignCount[b.id]||0;
           if(aCnt!==bCnt) return aCnt-bCnt;
           const aDuty=dutySortIndex(a.rank,cat,idx,s), bDuty=dutySortIndex(b.rank,cat,idx,s);
           if(aDuty!==bDuty) return aDuty-bDuty;
-          // among equally-fair, equally-prioritized candidates, prefer
-          // whoever ends up with the bigger breathing room around this
-          // shift rather than always landing right at the 6h minimum
           const aGap=minAdjacentGap(a.id,date,cat,s), bGap=minAdjacentGap(b.id,date,cat,s);
           if(aGap!==bGap) return bGap-aGap;
           return rankIndex(a.rank)-rankIndex(b.rank);
@@ -904,28 +886,12 @@ function autoAssignDay(date){
   saveState();
 }
 
-/* Handles 其他勤務 (misc) as part of "auto-assign for the day":
-   1) any preset marked 固定項目 (fixed) that has no entry yet for this date
-      gets one created automatically (e.g. 消防車/救護車 that happen every day)
-   2) every misc entry for the date with structured roles (駕駛/車長/話務) that
-      still has an empty slot gets a person filled in, using the same
-      license/rank/medCert eligibility rules as the manual dropdowns.
-   Freeform entries (no defined roles, like 技工/督伙/查哨) get ONE generically-
-   eligible (available) person filled in if nobody has been picked yet. */
-/* 採買 and 愛心便當 are usually the same vehicle run — when auto-assigning,
-   reuse the same 駕駛/車長 pair across both if they're still eligible & free */
 const MISC_SIBLING_ROLE={'採買':'愛心便當','愛心便當':'採買'};
 function autoAssignMiscForDate(date){
   if(!state.misc[date]) state.misc[date]=[];
   state.miscPresets.filter(p=>p.fixed).forEach(preset=>{
     const roles = preset.roles;
     const times = presetTimes(preset);
-    // single-time presets (採買/消防車/etc) only need ONE entry a day — if
-    // the user already made one (even with a custom time they typed in
-    // themselves instead of the preset default), don't create a second,
-    // empty duplicate alongside it. Multi-time presets like 查哨 still need
-    // an exact time match, since several distinct time-slot instances of
-    // the same role name are supposed to coexist.
     if(times.length===1){
       const exists = state.misc[date].some(m=>m.role===preset.role);
       if(!exists){
@@ -951,9 +917,6 @@ function autoAssignMiscForDate(date){
   });
   state.misc[date].forEach(entry=>{
     if(!entry.roles){
-      // freeform entries (技工/督伙/查哨/etc): if nobody has been picked at
-      // all yet, fill in one generically-eligible (just available) person —
-      // there's no defined role structure to reason about beyond that
       if(!entry.personIds) entry.personIds=[];
       const alreadyHasSomeone = entry.personIds.some(id=>id);
       if(!alreadyHasSomeone && !entry.skipAutoFill){
@@ -964,8 +927,6 @@ function autoAssignMiscForDate(date){
         );
         if(candidates.length){
           candidates.sort((a,b)=>{
-            // prefer someone with the matching specialty skill for this duty
-            // (e.g. 技工 for a 技工 entry) before falling back to normal order
             const skillMatch = p=> (p.skills||[]).includes(entry.role) ? 0 : 1;
             const sa=skillMatch(a), sb=skillMatch(b);
             if(sa!==sb) return sa-sb;
@@ -980,8 +941,8 @@ function autoAssignMiscForDate(date){
     if(!entry.personIds) entry.personIds=entry.roles.map(()=>undefined);
     const preset=presetForEntry(entry);
     entry.roles.forEach((r,i)=>{
-      if(entry.personIds[i]) return; // already assigned
-      if(entry.lockedSlots && entry.lockedSlots[i]) return; // intentionally left blank this time
+      if(entry.personIds[i]) return;
+      if(entry.lockedSlots && entry.lockedSlots[i]) return;
       const needsMed = preset? preset.requiredMedCert : false;
       let eligibleFn;
       if(r==='駕駛'){
@@ -1003,9 +964,6 @@ function autoAssignMiscForDate(date){
       );
       if(candidates.length){
         candidates.sort((a,b)=>rankPriorityIndex(a.rank,preset)-rankPriorityIndex(b.rank,preset) || groupIndex(a.group)-groupIndex(b.group));
-        // 採買 and 愛心便當 are treated as the same run — if the paired duty
-        // already has someone in this exact role and they're still a valid
-        // candidate here too, reuse them instead of picking someone new
         let chosen = candidates[0];
         const siblingRole = MISC_SIBLING_ROLE[entry.role];
         if(siblingRole){
@@ -1422,8 +1380,6 @@ function renderPeople(){
     if(state.skillOptions.includes(name)){ showAlert('這個技能類別已經存在'); return; }
     state.skillOptions.push(name);
     saveState();
-    // add the checkbox to the list live (unchecked by default) without
-    // losing whatever the user already typed for the new person's other fields
     const list=document.getElementById('npSkillsList');
     const label=document.createElement('label');
     label.style.cssText='display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0';
@@ -1617,16 +1573,9 @@ function computeDayListFiltered(){
     return true;
   });
 }
-/* the day list drops the multi-day-leave "buffer" entries — the partial-day
-   前一天18:00(or 榮譽假12:00) and 後一天07:30 records that exist purely to
-   block prep/rest time — since those aren't a meaningful "on leave today"
-   entry to show in a plain list; the actual all-day leave record (and every
-   non-leave reason) still shows normally */
 function dayListBaseEntries(){
   return (state.unavail[currentDate]||[]).filter(u=> !isLeaveBufferEntry(u));
 }
-/* per-排組 breakdown of who's on 休假 today — collapsed by group, each
-   showing a count + 官/士/兵 summary, expand to see the actual names */
 function renderLeaveGroupSummary(date){
   const entries = (state.unavail[date]||[]).filter(u=>!isLeaveBufferEntry(u) && isLeaveReason(u.reason));
   const personIds = [...new Set(entries.map(u=>u.personId))];
@@ -1650,16 +1599,7 @@ function renderLeaveGroupSummary(date){
   }).join('');
   return html;
 }
-/* someone counts as "on leave" (休假) specifically when their reason is
-   休假-related — an all-day 不可排 entry for another reason (e.g. a mission,
-   sick leave for the day, hospital, whatever text was typed) does NOT mean
-   they're on leave, it just means they're occupied with something else, so
-   they still belong in 在勤人員 (they're on-base, just not free) */
 function isLeaveReason(reason){ return !!reason && reason.includes('假'); }
-/* a leave-buffer entry (day-before 18:00/12:00, day-after 07:30 partial-day
-   block) is identified primarily by its TIME SHAPE, not by leaveId or exact
-   reason text, so it's still caught for older records or ones created a
-   different way than the current leave form */
 function isLeaveBufferEntry(u){
   if(u.allDay) return false;
   return (u.start==='18:00' && u.end==='24:00') || (u.start==='12:00' && u.end==='24:00') || (u.start==='00:00' && u.end==='07:30');
@@ -1669,13 +1609,6 @@ function onDutyList(date){
   return state.personnel.filter(p=>!onLeaveIds.has(p.id))
     .sort((a,b)=>groupIndex(a.group)-groupIndex(b.group) || rankIndex(a.rank)-rankIndex(b.rank));
 }
-/* what a given person is doing that day — 衛哨/勤務類別 shifts plus 其他勤務
-   duties, in a short readable line; empty if nothing assigned */
-/* 外散宿 (off-base overnight) eligibility for one person on one date —
-   disqualified if they're assigned any 22:00-06:00-ish sentry shift (when
-   state.outingExcludeOvernightSentry is on) or any role within a 其他勤務
-   entry whose preset name is in state.outingExcludedMiscRoles */
-/* 例假日 (weekly rest day) or 國定假日 (specific holiday date) */
 function isHolidayDate(date){
   const d = new Date(date+'T00:00:00');
   const dow = d.getDay();
@@ -1683,9 +1616,6 @@ function isHolidayDate(date){
   if((state.holidayDates||[]).includes(date)) return true;
   return false;
 }
-/* 外散宿 is blocked entirely for the date itself if it's a holiday, or for
-   the weekday immediately before one (nobody goes home the night before a
-   holiday starts) */
 function outingBlackoutForDate(date){
   if(isHolidayDate(date)) return true;
   if(isHolidayDate(nextDateStr(date))) return true;
@@ -1700,8 +1630,6 @@ function isEligibleForOuting(personId, date){
       for(const sft of cat.shifts){
         if(!(catAssign[sft.id]||[]).includes(personId)) continue;
         const sMin=toMin(sft.start);
-        // shift starts sometime in the 22:00-06:00 window (covers the
-        // standard 2hr overnight sentry blocks: 22-24,00-02,02-04,04-06)
         if(sMin>=22*60 || sMin<6*60) return false;
       }
     }
@@ -1713,10 +1641,6 @@ function isEligibleForOuting(personId, date){
   }
   return true;
 }
-/* fixed-date Taiwan public holidays (lunar-calendar ones like 春節/清明/端午/
-   中秋 move every year, so those are left for the user to add manually via
-   the date picker — this only covers the ones that fall on the same date
-   every year) */
 const COMMON_HOLIDAYS_FIXED = [
   {m:1,d:1,name:'元旦'}, {m:2,d:28,name:'和平紀念日'}, {m:4,d:4,name:'兒童節'},
   {m:5,d:1,name:'勞動節'}, {m:9,d:3,name:'軍人節'}, {m:10,d:10,name:'國慶日'},
@@ -1741,11 +1665,6 @@ function outingEligibleList(date, filterFn){
 }
 function personDutySummary(personId, date){
   const parts=[];
-  // leave-buffer notes: this person isn't formally "on leave" for the whole
-  // day, but they do have a partial-day leave window today (going on leave
-  // this evening, or just back from leave this morning) — surface that here
-  // instead of it disappearing along with the buffer entries the day list
-  // now hides. Matched by time shape so this doesn't miss older records.
   (state.unavail[date]||[]).filter(u=>u.personId===personId && isLeaveBufferEntry(u)).forEach(u=>{
     if(u.end==='24:00') parts.push(`今日${u.start}休假${u.start==='12:00'?'（榮譽假）':''}`);
     else if(u.start==='00:00' && u.end==='07:30') parts.push(`今日${u.end}收假`);
@@ -1793,7 +1712,6 @@ function renderUnavail(){
     return true;
   });
   const longTerm = state.personnel.filter(p=>personLongTerm(p).mode!=='off');
-  // active multi-day leave blocks, gathered across all dates by leaveId
   const leaveBlocks={};
   Object.keys(state.unavail).forEach(d=>{
     (state.unavail[d]||[]).forEach(u=>{
@@ -2359,12 +2277,6 @@ function personOptions(selected, groupFilter){
   if(!sorted.length) return `<option value="">（此排組無人員）</option>`;
   return sorted.map(p=>`<option value="${p.id}" ${p.id===selected?'selected':''}>${esc(p.name)}（${p.group||'未分組'}·${p.rank}${p.license? '·🚗'+esc(p.license):''}${p.medCert? '·⛑️'+esc(p.medCert):''}${(p.skills&&p.skills.length)? '·🔧'+p.skills.map(esc).join('/'):''}${personLongTerm(p).mode!=='off'?'·🚫長期':''}）</option>`).join('');
 }
-/* same as personOptions, but people for whom eligibleFn(p) is true are
-   sorted to the top of the list (still shown either way, just reordered) —
-   used for 車長/駕駛 selects so a valid candidate is easy to find */
-/* options for the 事故登載 picker: anyone already carrying an all-day
-   incident/leave for this date is pushed to the very bottom, so the people
-   still needing registration stay at the top of the list */
 function personOptionsForIncident(selected, groupFilter, date){
   if(!state.personnel.length) return `<option value="">（尚無人員）</option>`;
   let list=[...state.personnel];
@@ -2378,10 +2290,6 @@ function personOptionsForIncident(selected, groupFilter, date){
   });
   return list.map(p=>`<option value="${p.id}" ${p.id===selected?'selected':''}>${esc(p.name)}（${p.group||'未分組'}·${p.rank}${p.license? '·🚗'+esc(p.license):''}${p.medCert? '·⛑️'+esc(p.medCert):''}${(p.skills&&p.skills.length)? '·🔧'+p.skills.map(esc).join('/'):''}${hasAllDay(p)?'　✅已登記全天':''}）</option>`).join('');
 }
-/* checkbox-list version for the 事故登載 form — lets you register the same
-   incident for several people at once, not just one at a time. People
-   already carrying an all-day incident for this date sort to the bottom
-   and are marked, same as the single-select version. */
 function uaPeopleCheckboxesHTML(groupFilter, date, searchFilter){
   if(!state.personnel.length) return `<div class="empty">尚無人員</div>`;
   let list=[...state.personnel];
@@ -2419,20 +2327,12 @@ function weekdayLabel(dateStr){
   const d=new Date(dateStr+'T00:00:00');
   return WEEKDAY_CH[d.getDay()];
 }
-/* the roster for a given "date" actually spans from 22:00 the PREVIOUS
-   calendar day through 22:00 of the labeled date itself (e.g. picking
-   "9/8" covers 9/7 22:00 → 9/8 22:00) — so the exported text shows both
-   boundary dates, matching how the unit's own paper roster is headed. */
 function dutyDateRangeLabel(date){
   const prev=prevDateStr(date);
   return `${fmtDateShort(prev)}（${weekdayLabel(prev)}）-${fmtDateShort(date)}（${weekdayLabel(date)}）`;
 }
 function esc(s){ return (s||'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
-/* Custom alert/confirm/prompt — some preview/webview environments block the
-   native window.alert/confirm/prompt dialogs (they throw instead of showing
-   anything), so every interactive confirmation in this app uses these
-   in-page modals instead. */
 function showAlert(message){
   const modal=document.createElement('div');
   modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:80;display:flex;align-items:center;justify-content:center;padding:20px;';
@@ -2444,9 +2344,6 @@ function showAlert(message){
   document.body.appendChild(modal);
   document.getElementById('alertOk').onclick=()=>modal.remove();
 }
-/* wires a modal's close button to warn before discarding unsaved changes —
-   any input/select/checkbox interaction inside the modal marks it dirty;
-   closing with no changes made just closes immediately as before */
 function wireCloseConfirm(modal, closeBtn){
   let dirty = false;
   modal.querySelectorAll('input, select').forEach(el=>{
@@ -2502,37 +2399,8 @@ function showPrompt(message, defaultValue, onSubmit){
 /* ---- STATS TAB (stage 1) ---- */
 let queryFilterState={time:'08:00',group:'',rank:''}; // persists across re-renders until explicitly cleared
 let hourlyBarsExpanded=false; // collapsed by default — 24 rows is a lot of scrolling
-// general-purpose expand/collapse state for long list sections across the
-// app — collapsed by default, stays expanded once opened until toggled
-// closed again (persists across re-renders for the session)
 let collapseState={};
 function isExpanded(key){ return !!collapseState[key]; }
-/* touch-based drag-to-reorder for priority lists — native HTML5 drag/drop
-   doesn't work reliably on mobile Safari, so this tracks touch position
-   directly: while dragging a row's handle, whichever row the finger is
-   currently over gets swapped into the dragged row's position in `arr`.
-   containerId's rows must each have data-drag-idx="{i}" and a child with
-   data-drag-handle. onReorder is called after each swap and on release,
-   so the caller can re-render the list with the new order. */
-/* touch-based drag-to-reorder for priority lists AND full variable-height
-   cards alike — native HTML5 drag/drop doesn't work reliably on mobile
-   Safari, so this tracks touch position directly. IMPORTANT: the dragged
-   row's own DOM node is never replaced mid-gesture (only its CSS transform
-   changes) — re-rendering the list on every step, as an earlier version
-   did, destroys the element the touch is targeting and breaks the
-   continuous touchmove stream, which is exactly what made dragging feel
-   like it only moved one row at a time. Instead, rows are visually shifted
-   with transforms while dragging, and the real array + a single clean
-   re-render only happen once, on release.
-   Rows can be different heights (e.g. a 9-slot category card next to a
-   1-line misc card) — this measures each row's own height/position up
-   front and uses the dragged row's ORIGINAL top+height plus its live
-   displacement to figure out which row it's currently over, rather than
-   assuming every row is the same size.
-   containerId's rows must each have data-drag-idx="{i}" (0-based, matching
-   arr's order at the moment this is called) and a child with
-   data-drag-handle. onReorder is called once, after the drop, so the caller
-   can re-render the list with the new order. */
 function wireDragReorder(containerId, arr, onReorder){
   const container = document.getElementById(containerId);
   if(!container) return;
@@ -2562,7 +2430,6 @@ function wireDragReorder(containerId, arr, onReorder){
       e.preventDefault();
       const deltaY = e.touches[0].clientY - startY;
       row.style.transform = `translateY(${deltaY}px)`;
-      // dragged row's current visual center, in original-layout coordinates
       const draggedCenter = tops[originalIdx] + heights[originalIdx]/2 + deltaY;
       let target = 0;
       for(let i=0;i<rows.length;i++){
@@ -2604,10 +2471,6 @@ document.addEventListener('click', (e)=>{
   const btn = e.target.closest('[data-collapse-toggle]');
   if(btn){ collapseState[btn.dataset.collapseToggle] = !collapseState[btn.dataset.collapseToggle]; render(); }
 });
-/* groups a day's 休假/事故 entries by reason (大項) into collapsible
-   sub-sections, each showing the person list plus a 官/士/兵 breakdown —
-   dedupes so someone with multiple time-slot entries under one reason only
-   counts once */
 function renderIncidentBreakdown(date){
   const list = state.unavail[date]||[];
   if(!list.length) return `<div class="card"><div class="empty">此日無人登記</div></div>`;
@@ -2626,9 +2489,6 @@ function renderIncidentBreakdown(date){
     return collapsibleCardHTML('incident-'+reason, `${esc(reason)}（共${people.length}人・${breakdown.軍官}官${breakdown.士官}士${breakdown.士兵}兵）`, inner);
   }).join('');
 }
-/* per-排組 headcount broken into 官/士/兵, with an overall total row — a
-   lightweight statistics-only replacement for the old 人員區分 section,
-   which duplicated the full roster (already browsable/editable in 人員頁) */
 function renderGroupRankStats(){
   if(!state.personnel.length) return `<div class="empty">尚未新增人員</div>`;
   const groups = [...new Set(state.personnel.map(p=>p.group).filter(Boolean))].sort((a,b)=>groupIndex(a)-groupIndex(b));
@@ -2653,7 +2513,6 @@ function renderGroupRankStats(){
 }
 function renderStats(){
   const groups = [...new Set(state.personnel.map(p=>p.group).filter(Boolean))].sort((a,b)=>groupIndex(a)-groupIndex(b));
-  // hourly availability (00-23), plus a per-hour rank breakdown for the bar annotation
   const hours=[...Array(24).keys()];
   function hourBreakdown(h){
     const s=h*60, e=(h+1)*60;
@@ -2767,8 +2626,6 @@ function renderStats(){
     const absentAll = rankBreakdown(state.personnel.filter(p=>isPersonUnavailable(p.id,currentDate,qMin,qMin+1)));
     const presentAll = {軍官:totalAll.軍官-absentAll.軍官, 士官:totalAll.士官-absentAll.士官, 士兵:totalAll.士兵-absentAll.士兵};
     const fmtRank=c=>`${c.軍官}官${c.士官}士${c.士兵}兵`;
-    // for anyone unavailable at this moment, collect WHY (leave/incident,
-    // long-term block, comp-rest, or an actual duty they're standing)
     const busyList = state.personnel
       .filter(groupMatch)
       .filter(p=>isPersonUnavailable(p.id,currentDate,qMin,qMin+1))
@@ -2886,9 +2743,6 @@ function renderSchedule(){
   document.getElementById('exportText').onclick=()=>openTextShareModal('文字班表', generateScheduleText(currentDate));
 }
 
-/* build a plain-text roster in the style of a typical unit duty-roster post
-   (🌟衛哨勤務🌟 header, 🔶 sections for post-standing duties, ———勤務——— for
-   the rest) so it can be pasted straight into a chat app. */
 function generateScheduleText(date){
   const lines=[];
   lines.push('🌟衛哨勤務🌟');
@@ -2904,14 +2758,11 @@ function generateScheduleText(date){
     });
   });
   lines.push('———勤務———');
-  // non-衛哨 categories (like 打飯班) and today's 其他勤務 entries share one
-  // unified export order — matched to their preset's sortOrder so dragging
-  // the combined list in 排班分頁 controls exactly where each one lands here
   const nonRestCats = orderedCategories().filter(c=>!c.enforceRest && !c.excludeFromExport)
     .map(c=>({kind:'cat', ref:c, sortOrder:c.sortOrder??999}));
   const miscEntries = (state.misc[date]||[]).filter(m=>{
     const preset = state.miscPresets.find(p=>p.role===m.role);
-    return !preset || !preset.excludeFromExport; // no matching preset (one-off/custom) always included
+    return !preset || !preset.excludeFromExport;
   }).map(m=>{
     const preset = state.miscPresets.find(p=>p.role===m.role);
     return {kind:'misc', ref:m, sortOrder: preset? (preset.sortOrder??999) : 999};
@@ -2937,8 +2788,6 @@ function generateScheduleText(date){
   return lines.join('\n');
 }
 
-/* generic share/copy modal for any plain-text output (reused by both the
-   JSON backup export and the text-roster export) */
 function openTextShareModal(title, text){
   const fileName = title.replace(/\s+/g,'')+'-'+todayStr()+'.txt';
   const modal=document.createElement('div');
@@ -2974,8 +2823,6 @@ function openTextShareModal(title, text){
   };
 }
 
-/* human-readable priority order for a category, shown on its schedule card
-   so the ranking logic used by the dropdown/auto-assign is visible per table */
 function normalizePriorityArray(arr){
   const result = [...arr];
   RANK_DEFS.forEach(r=>{ if(!result.includes(r.rank)) result.push(r.rank); });
@@ -3000,13 +2847,6 @@ function categoryPriorityLabel(cat){
   }
   return `優先順序：${(cat.customPriority || RANK_DEFS.map(r=>r.rank)).join('→')}`;
 }
-/* the combined, sortOrder-driven list of everything that renders as a card
-   in the 排班 tab: every category plus one group per distinct role present
-   in today's 其他勤務 entries (grouped so 查哨's five time-slots, say, stay
-   together as one draggable card rather than five). Built as its own
-   function — not just reading combinedOrderList() — because it needs
-   TODAY's actual misc entries, not just the presets, and skips misc roles
-   with nothing scheduled today. */
 function buildScheduleCardItems(){
   const dayMisc = state.misc[currentDate]||[];
   const miscByRole = {};
@@ -3050,10 +2890,6 @@ function wireScheduleCardsDrag(){
     };
   });
 }
-/* a misc-duty card for the 排班 tab — one card per distinct role with
-   entries today (e.g. all five 查哨 time-slots share one card), styled and
-   wired the same way as 其他勤務 分頁's own list (edit/delete per entry) so
-   this doesn't diverge into a second implementation to maintain */
 function renderMiscDutyCard(role, entries, preset, dragIdx){
   const title = `<span data-drag-handle style="cursor:grab;padding-right:6px;color:var(--dim)">⠿</span>🗂 ${esc(role)}`;
   const extraButtons = preset? `<label style="display:flex;align-items:center;gap:3px;font-size:11px"><input type="checkbox" class="card-exclude-cb" data-exclude-kind="misc" data-exclude-id="${esc(role)}" style="width:auto" ${preset.excludeFromExport?'checked':''}>不匯出</label>` : '';
@@ -3139,7 +2975,6 @@ function wireCategoryEvents(){
       if(!state.assign[currentDate][catId]) state.assign[currentDate][catId]={};
       if(!state.assign[currentDate][catId][shiftId]) state.assign[currentDate][catId][shiftId]=[];
       state.assign[currentDate][catId][shiftId][idx]=sel.value||undefined;
-      // compact array (remove trailing undefined holes issues) - keep as is, undefined ok
       saveState(); render();
     };
   });
@@ -3207,7 +3042,7 @@ function openCategoryEditor(catId){
     const expanded = sec.style.display!=='none';
     sec.style.display = expanded? 'none':'block';
     document.getElementById('priToggle').textContent = expanded? '▼ 展開':'▲ 收合';
-    if(!expanded) rerenderPriorityLists(); // re-measure now that it's actually visible (was 0×0 while hidden)
+    if(!expanded) rerenderPriorityLists();
   };
   let priorityDraft = normalizePriorityArray(cat.customPriority || defaultPriorityArray(cat));
   let priorityHelperDraft = cat.needsNCO ? normalizePriorityArray(cat.customPriorityHelper || defaultHelperPriorityArray()) : null;
@@ -3221,7 +3056,7 @@ function openCategoryEditor(catId){
   function arrForList(listId){
     if(listId==='lead') return priorityDraft;
     if(listId==='helper') return priorityHelperDraft;
-    return priorityDraft; // 'main'
+    return priorityDraft;
   }
   function rerenderPriorityLists(){
     if(cat.needsNCO){
@@ -3319,7 +3154,6 @@ function openCategoryEditor(catId){
 
 function runDailyCheck(){
   const out=[];
-  // rest issues across enforceRest categories, per person (dedupe)
   const seen=new Set();
   state.categories.filter(c=>c.enforceRest).forEach(cat=>{
     const dayAssign=(state.assign[currentDate]||{})[cat.id]||{};
@@ -3343,7 +3177,6 @@ function runDailyCheck(){
       });
     });
   });
-  // meal NCO check
   const mealCat = state.categories.find(c=>c.needsNCO);
   if(mealCat){
     const dayAssign=(state.assign[currentDate]||{})[mealCat.id]||{};
@@ -3351,7 +3184,6 @@ function runDailyCheck(){
     const hasNCO = allPeople.some(pid=>['士官','軍官'].includes(rankCategory(personRank(pid))));
     if(allPeople.length && !hasNCO) out.push(`⚠️ ${mealCat.name}：當日尚無「士官」以上人員帶隊`);
   }
-  // low rank preference summary
   state.categories.filter(c=>c.preferLowRank).forEach(cat=>{
     const dayAssign=(state.assign[currentDate]||{})[cat.id]||{};
     cat.shifts.forEach(s=>{
@@ -3360,7 +3192,6 @@ function runDailyCheck(){
       });
     });
   });
-  // avoid officers in meal duty
   state.categories.filter(c=>c.needsNCO).forEach(cat=>{
     const dayAssign=(state.assign[currentDate]||{})[cat.id]||{};
     cat.shifts.forEach(s=>{
@@ -3369,7 +3200,6 @@ function runDailyCheck(){
       });
     });
   });
-  // general conflicts: assigned during leave / long-term / comp-rest / double-booked elsewhere
   state.categories.forEach(cat=>{
     const dayAssign=(state.assign[currentDate]||{})[cat.id]||{};
     cat.shifts.forEach(s=>{
@@ -3389,16 +3219,11 @@ function runDailyCheck(){
 }
 
 /* ---- MISC TAB (簡易勤務，如採買/技工/查哨等免時段的項目) ---- */
-let miscSelectedRoles=null; // set by clicking a preset with structured roles (車長/駕駛 etc)
-let miscFreeformFilterState={search:'',group:''}; // for the freeform 人員 checkbox list
+let miscSelectedRoles=null;
+let miscFreeformFilterState={search:'',group:''};
 let miscFreeformCheckedIds=new Set();
-let miscEditingId=null; // set while editing an existing 其他勤務 entry instead of creating a new one
+let miscEditingId=null;
 let adhocQueryState={time:'10:00',officer:0,nco:0,enlisted:0,hasRun:false,results:null};
-/* ad-hoc "I need N officers / M NCO / K enlisted starting at this time"
-   query — for each rank category, lists who's free at that moment sorted
-   by how long they'd stay free, and separately flags anyone whose free
-   window is cut short by an upcoming commitment (so you know who needs to
-   be released early) */
 function runAdhocQuery(){
   const {time, officer, nco, enlisted} = adhocQueryState;
   const qMin = toMin(time);
@@ -3407,10 +3232,9 @@ function runAdhocQuery(){
   state.personnel.forEach(p=>{
     const cat = rankCategory(p.rank);
     if(!cat) return;
-    if(isPersonUnavailable(p.id, currentDate, qMin, qMin+1)) return; // not free at the requested moment at all
+    if(isPersonUnavailable(p.id, currentDate, qMin, qMin+1)) return;
     const freeMin = freeDurationFrom(p.id, currentDate, qMin);
     const freeUntilMin = qMin+freeMin;
-    // what's the next thing they're committed to right after this free window ends (if the day continues)?
     let nextCommitment = null;
     if(freeUntilMin < 1440){
       const reasons = unavailabilityReasonsInRange(p.id, currentDate, freeUntilMin, Math.min(freeUntilMin+1,1440));
@@ -3419,7 +3243,7 @@ function runAdhocQuery(){
     byCategory[cat].push({p, freeMin, freeUntilMin, nextCommitment});
   });
   Object.keys(byCategory).forEach(cat=>{
-    byCategory[cat].sort((a,b)=>b.freeMin-a.freeMin); // longest available first
+    byCategory[cat].sort((a,b)=>b.freeMin-a.freeMin);
   });
   adhocQueryState.results = {wanted, byCategory};
   adhocQueryState.hasRun = true;
@@ -3433,7 +3257,7 @@ function renderAdhocQueryResult(){
     if(!wanted[cat]) return '';
     const candidates = byCategory[cat];
     const enough = candidates.length >= wanted[cat];
-    const shown = candidates.slice(0, Math.max(wanted[cat]*2, wanted[cat])); // show a few extra as backup options
+    const shown = candidates.slice(0, Math.max(wanted[cat]*2, wanted[cat]));
     return `<div style="margin-bottom:10px">
       <div class="${enough?'hint':'badge-issue'}" style="margin-bottom:4px">${enough?'':'⚠️ '}需要${cat} ${wanted[cat]} 人，目前有空的共 ${candidates.length} 人</div>
       ${shown.length? shown.map(({p,freeMin,freeUntilMin,nextCommitment})=>`
@@ -3461,7 +3285,7 @@ function miscPeopleCheckboxesHTML(groupFilter, searchFilter){
   }).join('');
 }
 let miscSelectedPresetRole=null;
-let miscSelectedRestUntil=''; // 補休至 carried from the clicked preset
+let miscSelectedRestUntil='';
 function openMiscPresetModal(editIndex){
   const editing = typeof editIndex==='number';
   const existing = editing? state.miscPresets[editIndex] : null;
@@ -3525,7 +3349,7 @@ function openMiscPresetModal(editIndex){
     const expanded = sec.style.display!=='none';
     sec.style.display = expanded? 'none':'block';
     document.getElementById('mpPriToggle').textContent = expanded? '▼ 展開':'▲ 收合';
-    if(!expanded) renderRankPriorityList(); // re-measure now that it's visible
+    if(!expanded) renderRankPriorityList();
   };
   let rankPriorityDraft = normalizePriorityArray(existing&&existing.rankPriority? existing.rankPriority : RANK_DEFS.map(r=>r.rank));
   function renderRankPriorityList(){
@@ -3717,8 +3541,6 @@ function renderMisc(){
     const e0 = hasTime? toMin(endVal) : null;
     const presetForForm = state.miscPresets.find(p=>p.role===miscSelectedPresetRole);
     if(!miscSelectedRoles){
-      // freeform checkbox list — recompute each person's status and rebuild
-      // the whole list sorted (available first, 🚫不可排 pushed to the bottom)
       const container = document.getElementById('mPeopleList');
       if(!container) return;
       const rows = [...container.querySelectorAll('[data-misc-person-row]')];
@@ -3792,9 +3614,6 @@ function renderMisc(){
         const text = baseText + (busy? ` 🚫不可排（${[...new Set(reasons)].join('・')}）`:'');
         return {value:o.value, text, busy, selected:o.value===currentVal};
       });
-      // move anyone flagged 🚫不可排 to the bottom — sort is stable, so the
-      // license/rank priority order already established is kept within
-      // each group (available first, unavailable last)
       withBusy.sort((a,b)=>(a.busy?1:0)-(b.busy?1:0));
       let html = placeholder? `<option value="">${placeholder.textContent}</option>` : '';
       html += withBusy.map(o=>`<option value="${o.value}" ${o.selected?'selected':''} style="${o.busy?'color:var(--danger)':''}">${esc(o.text)}</option>`).join('');
@@ -3855,13 +3674,10 @@ function renderMisc(){
   }
   app.querySelectorAll('[data-preset]').forEach(b=>{
     b.onclick=(ev)=>{
-      if(ev.target.closest('[data-edit-preset]')) return; // let the edit ✎ handle itself
+      if(ev.target.closest('[data-edit-preset]')) return;
       const mp = state.miscPresets[Number(b.dataset.preset)];
       const times = presetTimes(mp);
       if(times.length>1){
-        // multi-time preset (e.g. 查哨 at five different times) — create one
-        // entry per time slot directly instead of trying to populate a
-        // single start/end form that couldn't represent all of them
         showConfirm(`要一次建立「${mp.role}」的全部 ${times.length} 個時段嗎？（${times.map(t=>t.start+'-'+t.end).join('、')}）`, ()=>{
           if(!state.misc[currentDate]) state.misc[currentDate]=[];
           times.forEach(t=>{
@@ -3870,9 +3686,9 @@ function renderMisc(){
               state.misc[currentDate].push({id:uid(), role:mp.role, start:t.start, end:t.end, restUntil:mp.restUntil||'', roles:mp.roles?[...mp.roles]:undefined, personIds: mp.roles? mp.roles.map(()=>undefined):[]});
             }
           });
-          collapseState['miscToday']=true; // auto-expand so the newly created entries are visible
-          autoAssignMiscForDate(currentDate); // fill them in right away instead of leaving them blank
-          currentTab='schedule'; // jump over so you can immediately drag the new item(s) into place
+          collapseState['miscToday']=true;
+          autoAssignMiscForDate(currentDate);
+          currentTab='schedule';
           collapseState['displayOrder']=true;
           saveState(); render();
           const el=document.getElementById('displayOrderList');
@@ -3880,7 +3696,7 @@ function renderMisc(){
         });
         return;
       }
-      collapseState['miscAddForm']=true; // auto-expand so the populated fields are visible
+      collapseState['miscAddForm']=true;
       miscSelectedRoles = mp.roles||null;
       miscSelectedPresetRole = mp.role;
       miscSelectedRestUntil = mp.restUntil||'';
@@ -3942,8 +3758,8 @@ function renderMisc(){
     miscSelectedRestUntil='';
     miscEditingId=null;
     if(wasNewEntry){
-      autoAssignMiscForDate(currentDate); // fill the slots the user didn't pick, right away
-      currentTab='schedule'; // jump over so you can immediately drag the new item into place
+      autoAssignMiscForDate(currentDate);
+      currentTab='schedule';
       collapseState['displayOrder']=true;
     }
     saveState(); render();
