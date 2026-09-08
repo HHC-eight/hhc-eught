@@ -1965,6 +1965,55 @@ let hourlyBarsExpanded=false; // collapsed by default — 24 rows is a lot of sc
 // closed again (persists across re-renders for the session)
 let collapseState={};
 function isExpanded(key){ return !!collapseState[key]; }
+/* touch-based drag-to-reorder for priority lists — native HTML5 drag/drop
+   doesn't work reliably on mobile Safari, so this tracks touch position
+   directly: while dragging a row's handle, whichever row the finger is
+   currently over gets swapped into the dragged row's position in `arr`.
+   containerId's rows must each have data-drag-idx="{i}" and a child with
+   data-drag-handle. onReorder is called after each swap and on release,
+   so the caller can re-render the list with the new order. */
+function wireDragReorder(containerId, arr, onReorder){
+  const container = document.getElementById(containerId);
+  if(!container) return;
+  let dragIdx = null;
+  container.querySelectorAll('[data-drag-idx]').forEach(row=>{
+    const handle = row.querySelector('[data-drag-handle]');
+    if(!handle) return;
+    handle.style.touchAction='none';
+    handle.addEventListener('touchstart', (e)=>{
+      dragIdx = Number(row.dataset.dragIdx);
+      row.style.opacity='0.5';
+      e.preventDefault();
+    }, {passive:false});
+    handle.addEventListener('touchmove', (e)=>{
+      if(dragIdx===null) return;
+      e.preventDefault();
+      const touch = e.touches[0];
+      const rows = [...container.querySelectorAll('[data-drag-idx]')];
+      for(const r of rows){
+        const rect = r.getBoundingClientRect();
+        if(touch.clientY >= rect.top && touch.clientY <= rect.bottom){
+          const overIdx = Number(r.dataset.dragIdx);
+          if(overIdx !== dragIdx){
+            const [item] = arr.splice(dragIdx,1);
+            arr.splice(overIdx,0,item);
+            dragIdx = overIdx;
+            onReorder();
+          }
+          break;
+        }
+      }
+    }, {passive:false});
+    handle.addEventListener('touchend', ()=>{
+      dragIdx=null;
+      onReorder();
+    });
+    handle.addEventListener('touchcancel', ()=>{
+      dragIdx=null;
+      onReorder();
+    });
+  });
+}
 function collapsibleCardHTML(key, title, innerHtml, extraButtons){
   const expanded = isExpanded(key);
   return `<div class="card">
@@ -2446,12 +2495,11 @@ function openCategoryEditor(catId){
   let priorityDraft = normalizePriorityArray(cat.customPriority || defaultPriorityArray(cat));
   let priorityHelperDraft = cat.needsNCO ? normalizePriorityArray(cat.customPriorityHelper || defaultHelperPriorityArray()) : null;
   function renderPriorityListHTML(listId, arr){
-    return arr.map((r,i)=>`
-      <div class="row" style="margin-bottom:4px">
+    return `<div id="priContainer_${listId}">${arr.map((r,i)=>`
+      <div class="row" style="margin-bottom:4px" data-drag-idx="${i}">
+        <span data-drag-handle style="cursor:grab;padding:4px 8px;font-size:16px;color:var(--dim)">⠿</span>
         <span class="grow">${i+1}. ${r}</span>
-        <button class="ghost small" data-pri-up="${listId}:${i}" ${i===0?'disabled':''}>▲</button>
-        <button class="ghost small" data-pri-down="${listId}:${i}" ${i===arr.length-1?'disabled':''}>▼</button>
-      </div>`).join('');
+      </div>`).join('')}</div>`;
   }
   function arrForList(listId){
     if(listId==='lead') return priorityDraft;
@@ -2468,24 +2516,13 @@ function openCategoryEditor(catId){
     wirePriorityButtons();
   }
   function wirePriorityButtons(){
-    document.querySelectorAll('[data-pri-up]').forEach(b=>{
-      b.onclick=()=>{
-        const [listId,idxStr]=b.dataset.priUp.split(':');
-        const idx=Number(idxStr), arr=arForListSafe(listId);
-        if(idx>0){ [arr[idx-1],arr[idx]]=[arr[idx],arr[idx-1]]; }
-        rerenderPriorityLists();
-      };
-    });
-    document.querySelectorAll('[data-pri-down]').forEach(b=>{
-      b.onclick=()=>{
-        const [listId,idxStr]=b.dataset.priDown.split(':');
-        const idx=Number(idxStr), arr=arForListSafe(listId);
-        if(idx<arr.length-1){ [arr[idx+1],arr[idx]]=[arr[idx],arr[idx+1]]; }
-        rerenderPriorityLists();
-      };
-    });
+    if(cat.needsNCO){
+      wireDragReorder('priContainer_lead', priorityDraft, rerenderPriorityLists);
+      wireDragReorder('priContainer_helper', priorityHelperDraft, rerenderPriorityLists);
+    } else {
+      wireDragReorder('priContainer_main', priorityDraft, rerenderPriorityLists);
+    }
   }
-  function arForListSafe(listId){ return arrForList(listId); }
   rerenderPriorityLists();
   document.getElementById('priReset').onclick=()=>{
     priorityDraft = defaultPriorityArray(cat);
@@ -2701,26 +2738,12 @@ function openMiscPresetModal(editIndex){
   document.body.appendChild(modal);
   let rankPriorityDraft = normalizePriorityArray(existing&&existing.rankPriority? existing.rankPriority : RANK_DEFS.map(r=>r.rank));
   function renderRankPriorityList(){
-    document.getElementById('mpRankPriorityList').innerHTML = rankPriorityDraft.map((r,i)=>`
-      <div class="row" style="margin-bottom:4px">
+    document.getElementById('mpRankPriorityList').innerHTML = `<div id="mpRankPriContainer">${rankPriorityDraft.map((r,i)=>`
+      <div class="row" style="margin-bottom:4px" data-drag-idx="${i}">
+        <span data-drag-handle style="cursor:grab;padding:4px 8px;font-size:16px;color:var(--dim)">⠿</span>
         <span class="grow">${i+1}. ${r}</span>
-        <button class="ghost small" data-rankpri-up="${i}" ${i===0?'disabled':''}>▲</button>
-        <button class="ghost small" data-rankpri-down="${i}" ${i===rankPriorityDraft.length-1?'disabled':''}>▼</button>
-      </div>`).join('');
-    document.querySelectorAll('[data-rankpri-up]').forEach(b=>{
-      b.onclick=()=>{
-        const idx=Number(b.dataset.rankpriUp);
-        if(idx>0){ [rankPriorityDraft[idx-1],rankPriorityDraft[idx]]=[rankPriorityDraft[idx],rankPriorityDraft[idx-1]]; }
-        renderRankPriorityList();
-      };
-    });
-    document.querySelectorAll('[data-rankpri-down]').forEach(b=>{
-      b.onclick=()=>{
-        const idx=Number(b.dataset.rankpriDown);
-        if(idx<rankPriorityDraft.length-1){ [rankPriorityDraft[idx+1],rankPriorityDraft[idx]]=[rankPriorityDraft[idx],rankPriorityDraft[idx+1]]; }
-        renderRankPriorityList();
-      };
-    });
+      </div>`).join('')}</div>`;
+    wireDragReorder('mpRankPriContainer', rankPriorityDraft, renderRankPriorityList);
   }
   renderRankPriorityList();
   document.getElementById('mpRankPriorityReset').onclick=()=>{
