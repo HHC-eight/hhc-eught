@@ -95,7 +95,7 @@ textarea{min-height:50px;resize:vertical;}
     <span class="unit-banner-text">陸軍第八軍團 本部連</span>
   </div>
   <div class="topbar-main">
-    <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v6</span></h1>
+    <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v7</span></h1>
     <div class="row" style="gap:6px;align-items:center">
       <select id="timeStepSelect" style="font-size:11px;padding:3px 6px;width:auto">
         <option value="5">5分間隔</option>
@@ -395,6 +395,13 @@ if(!state.timeStepMinutes) state.timeStepMinutes=10;
    (駕駛/車長/etc within that item) — both are user-editable afterwards. */
 if(state.outingExcludeOvernightSentry===undefined) state.outingExcludeOvernightSentry=true;
 if(!state.outingExcludedMiscRoles) state.outingExcludedMiscRoles=['消防車','救護車','話務'];
+/* 例假日 (weekly rest day, e.g. Sunday) and 國定假日 (specific holiday dates)
+   both block 外散宿 entirely for that date — and so does the weekday right
+   before one of those holidays, since nobody goes home the night before a
+   holiday starts. holidayWeekdays: array of 0(Sun)-6(Sat); holidayDates:
+   array of "YYYY-MM-DD" specific dates. */
+if(!state.holidayWeekdays) state.holidayWeekdays=[];
+if(!state.holidayDates) state.holidayDates=[];
 /* 事故/請假 (uses a preset reason list or a custom typed one) */
 /* 衛哨 (安全士官/橋哨/指管) rule: the same person should not stand the same
    time-slot two days running — check whether they held this exact shift
@@ -976,6 +983,49 @@ function openDatePickerModal(){
     modal.remove(); render();
   };
 }
+function openHolidayDateModal(){
+  const [y,m,d] = currentDate.split('-').map(Number);
+  const minguoYear = y-1911;
+  const modal=document.createElement('div');
+  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:90;display:flex;align-items:center;justify-content:center;padding:20px;';
+  const yearOpts = []; for(let yy=minguoYear-1; yy<=minguoYear+3; yy++) yearOpts.push(yy);
+  const daysInMonth = (yy,mm)=> new Date(yy+1911, mm, 0).getDate();
+  modal.innerHTML = `
+    <div style="background:var(--panel);max-width:320px;width:100%;border-radius:10px;padding:16px;border:1px solid var(--line);">
+      <h2 style="margin:0 0 10px">新增國定假日（民國）</h2>
+      <div class="row wrap" style="margin-bottom:12px">
+        <div class="grow"><label>年</label><select id="hdYear">${yearOpts.map(yy=>`<option value="${yy}" ${yy===minguoYear?'selected':''}>民國${yy}年</option>`).join('')}</select></div>
+        <div class="grow"><label>月</label><select id="hdMonth">${Array.from({length:12},(_,i)=>i+1).map(mm=>`<option value="${mm}" ${mm===m?'selected':''}>${mm}月</option>`).join('')}</select></div>
+        <div class="grow"><label>日</label><select id="hdDay">${Array.from({length:daysInMonth(minguoYear,m)},(_,i)=>i+1).map(dd=>`<option value="${dd}" ${dd===d?'selected':''}>${dd}日</option>`).join('')}</select></div>
+      </div>
+      <div class="row wrap">
+        <button class="ghost grow" id="hdCancel">取消</button>
+        <button class="primary grow" id="hdOk">新增</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+  function refreshDayOptions(){
+    const yy=Number(document.getElementById('hdYear').value), mm=Number(document.getElementById('hdMonth').value);
+    const daySel=document.getElementById('hdDay');
+    const curDay=Number(daySel.value)||1;
+    const maxDay=daysInMonth(yy,mm);
+    daySel.innerHTML = Array.from({length:maxDay},(_,i)=>i+1).map(dd=>`<option value="${dd}" ${dd===Math.min(curDay,maxDay)?'selected':''}>${dd}日</option>`).join('');
+  }
+  document.getElementById('hdYear').onchange=refreshDayOptions;
+  document.getElementById('hdMonth').onchange=refreshDayOptions;
+  document.getElementById('hdCancel').onclick=()=>modal.remove();
+  document.getElementById('hdOk').onclick=()=>{
+    const yy=Number(document.getElementById('hdYear').value)+1911;
+    const mm=Number(document.getElementById('hdMonth').value);
+    const dd=Number(document.getElementById('hdDay').value);
+    const p=n=>String(n).padStart(2,'0');
+    const dateStr = `${yy}-${p(mm)}-${p(dd)}`;
+    if(!state.holidayDates) state.holidayDates=[];
+    if(!state.holidayDates.includes(dateStr)) state.holidayDates.push(dateStr);
+    saveState();
+    modal.remove(); render();
+  };
+}
 refreshGlobalDate();
 document.getElementById('exportBtn').addEventListener('click', openExportModal);
 function openExportModal(){
@@ -1465,7 +1515,24 @@ function onDutyList(date){
    disqualified if they're assigned any 22:00-06:00-ish sentry shift (when
    state.outingExcludeOvernightSentry is on) or any role within a 其他勤務
    entry whose preset name is in state.outingExcludedMiscRoles */
+/* 例假日 (weekly rest day) or 國定假日 (specific holiday date) */
+function isHolidayDate(date){
+  const d = new Date(date+'T00:00:00');
+  const dow = d.getDay();
+  if((state.holidayWeekdays||[]).includes(dow)) return true;
+  if((state.holidayDates||[]).includes(date)) return true;
+  return false;
+}
+/* 外散宿 is blocked entirely for the date itself if it's a holiday, or for
+   the weekday immediately before one (nobody goes home the night before a
+   holiday starts) */
+function outingBlackoutForDate(date){
+  if(isHolidayDate(date)) return true;
+  if(isHolidayDate(nextDateStr(date))) return true;
+  return false;
+}
 function isEligibleForOuting(personId, date){
+  if(outingBlackoutForDate(date)) return false;
   if(state.outingExcludeOvernightSentry){
     const dayAssign = state.assign[date]||{};
     for(const cat of state.categories){
@@ -1696,7 +1763,8 @@ function renderUnavail(){
     `) : ''}
     ${collapsibleCardHTML('onDuty', `${minguoLabel(currentDate)} 在勤人員（非休假，含當日勤務）（${onDutyList(currentDate).length}人）`, renderOnDutyList(currentDate))}
     ${collapsibleCardHTML('outing', `${minguoLabel(currentDate)} 可外散宿人員（18:00→次日07:30）（${outingEligibleList(currentDate).length}人）`, `
-      <div class="hint" style="margin-bottom:8px">已排當天22:00-06:00衛哨，或已排下方勾選項目（任一角色）的人不列入；已休假的人也不列入（不需要外散宿）。</div>
+      <div class="hint" style="margin-bottom:8px">已排當天22:00-06:00衛哨，或已排下方勾選項目（任一角色）的人不列入；已休假的人也不列入（不需要外散宿）。例假日、國定假日、以及假日前一天（平日）當天完全不開放外散宿。</div>
+      ${outingBlackoutForDate(currentDate)? `<div class="badge-issue" style="margin-bottom:8px">🚫 今天是${isHolidayDate(currentDate)?'例假日/國定假日':'假日前一天'}，當天不開放外散宿</div>`:''}
       <div class="row wrap" style="margin-bottom:8px">
         <label style="display:flex;align-items:center;gap:6px;font-size:13px">
           <input type="checkbox" id="outingOvernightCb" style="width:auto" ${state.outingExcludeOvernightSentry?'checked':''}> 22:00-06:00衛哨排除外散宿
@@ -1708,6 +1776,20 @@ function renderUnavail(){
             <input type="checkbox" class="outing-role-cb" value="${esc(mp.role)}" style="width:auto" ${(state.outingExcludedMiscRoles||[]).includes(mp.role)?'checked':''}> ${esc(mp.role)}
           </label>`).join('')}
       </div>
+      <div class="divider"></div>
+      <h3>例假日（每週固定休假日，複選）</h3>
+      <div class="row wrap" style="gap:10px;margin-bottom:8px">
+        ${['日','一','二','三','四','五','六'].map((d,i)=>`
+          <label style="display:flex;align-items:center;gap:6px;font-size:13px">
+            <input type="checkbox" class="outing-weekday-cb" value="${i}" style="width:auto" ${(state.holidayWeekdays||[]).includes(i)?'checked':''}> 週${d}
+          </label>`).join('')}
+      </div>
+      <h3>國定假日（個別日期，民國）</h3>
+      <div class="row wrap" style="margin-bottom:6px">
+        ${(state.holidayDates||[]).length? state.holidayDates.slice().sort().map(d=>`
+          <span class="pill-btn">${minguoLabel(d)} <span data-del-holiday="${d}" style="color:var(--danger);margin-left:3px;cursor:pointer">✕</span></span>`).join('') : `<span class="muted" style="font-size:12px">尚未新增</span>`}
+      </div>
+      <button class="ghost small" id="addHolidayBtn" style="margin-bottom:8px">＋新增國定假日</button>
       <div class="divider"></div>
       ${outingEligibleList(currentDate).length? outingEligibleList(currentDate).map(p=>`<div class="muted">・${esc(p.name)}（${p.group||'未分組'}·${p.rank}）</div>`).join('') : `<div class="empty">今天沒有人符合外散宿資格</div>`}
     `)}
@@ -1785,6 +1867,21 @@ function renderUnavail(){
         saveState(); render();
       };
     });
+    document.querySelectorAll('.outing-weekday-cb').forEach(cb=>{
+      cb.onchange=()=>{
+        state.holidayWeekdays=[...document.querySelectorAll('.outing-weekday-cb:checked')].map(x=>Number(x.value));
+        saveState(); render();
+      };
+    });
+    document.querySelectorAll('[data-del-holiday]').forEach(x=>{
+      x.onclick=()=>{
+        state.holidayDates=(state.holidayDates||[]).filter(d=>d!==x.dataset.delHoliday);
+        saveState(); render();
+      };
+    });
+    document.getElementById('addHolidayBtn').onclick=()=>{
+      openHolidayDateModal();
+    };
   }
   function refreshDayList(){
     document.getElementById('dayListItems').innerHTML = renderDayListItemsHTML();
