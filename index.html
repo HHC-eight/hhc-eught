@@ -106,6 +106,11 @@ textarea{min-height:50px;resize:vertical;}
     <button class="ghost small time-step-btn" data-step="15">15分</button>
     <button class="ghost small time-step-btn" data-step="30">30分</button>
   </div>
+  <div class="row wrap" style="padding:0 14px 8px;gap:6px;align-items:center">
+    <span class="muted" style="font-size:11px">日期：</span>
+    <input type="date" id="globalDateSel" style="padding:4px 8px;font-size:12px;width:auto">
+    <span class="muted" id="globalDateMinguo" style="font-size:11px"></span>
+  </div>
 </div>
 
 <div class="container" id="app"></div>
@@ -342,6 +347,12 @@ let pplFilterState = {kw:'', group:'', license:[], medCert:[], skills:[]};
 function todayStr(){
   const d=new Date(); const p=n=>String(n).padStart(2,'0');
   return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`;
+}
+/* 民國(Minguo/ROC) calendar label for a YYYY-MM-DD date string — Taiwan's
+   civil calendar counts years from 1912 as year 1, so year = Gregorian - 1911 */
+function minguoLabel(dateStr){
+  const [y,m,d]=dateStr.split('-').map(Number);
+  return `民國${y-1911}年${m}月${d}日`;
 }
 function prevDateStr(dateStr){
   const d=new Date(dateStr+'T00:00:00');
@@ -895,6 +906,16 @@ document.querySelectorAll('.time-step-btn').forEach(b=>{
   });
 });
 refreshTimeStepButtons();
+function refreshGlobalDate(){
+  document.getElementById('globalDateSel').value = currentDate;
+  document.getElementById('globalDateMinguo').textContent = minguoLabel(currentDate);
+}
+document.getElementById('globalDateSel').addEventListener('change', (e)=>{
+  currentDate = e.target.value;
+  refreshGlobalDate();
+  render();
+});
+refreshGlobalDate();
 document.getElementById('exportBtn').addEventListener('click', openExportModal);
 function openExportModal(){
   const dataStr = JSON.stringify(state, null, 2);
@@ -952,6 +973,7 @@ function openExportModal(){
 function render(){
   const scrollY = window.scrollY;
   document.querySelectorAll('.tabs button').forEach(b=>b.classList.toggle('active', b.dataset.tab===currentTab));
+  refreshGlobalDate();
   if(currentTab==='people') renderPeople();
   else if(currentTab==='unavail') renderUnavail();
   else if(currentTab==='stats') renderStats();
@@ -1232,7 +1254,7 @@ function openPersonEditor(personId){
     </div>
   `;
   document.body.appendChild(modal);
-  document.getElementById('closeModal').onclick=()=>modal.remove();
+  wireCloseConfirm(modal, document.getElementById('closeModal'));
   document.getElementById('epAddSkillType').onclick=()=>{
     const name=document.getElementById('epNewSkillName').value.trim();
     if(!name){ showAlert('請輸入技能類別名稱'); return; }
@@ -1379,10 +1401,6 @@ function renderUnavail(){
     });
   });
   app.innerHTML = `
-    <div class="card">
-      <label>日期</label>
-      <input type="date" id="dateSel" value="${currentDate}">
-    </div>
     ${longTerm.length? collapsibleCardHTML('longTerm', `長期事故（自動套用於每一天，免重複登記）（${longTerm.length}人）`, `
       ${longTerm.map(p=>`<div class="muted">・${esc(p.name)}（${p.group||'未分組'}·${p.rank}）：${longTermLabel(p)}</div>`).join('')}
       <div class="hint">要修改或恢復可排，到「人員」分頁點該人「編輯」調整長期事故設定。</div>
@@ -1521,8 +1539,7 @@ function renderUnavail(){
         </div>`;
       }).join('')}
     `) : ''}
-    <div class="card">
-      <div class="section-title"><h2 style="margin:0" id="dayListHeader">${fmtDate(currentDate)} 名單（篩選出 ${filteredList.length} / 共 ${list.length}）</h2><button class="ghost small" id="dayListClearFilter">清除篩選</button></div>
+    ${collapsibleCardHTML('dayList', `<span id="dayListHeader">${fmtDate(currentDate)} 名單（篩選出 ${filteredList.length} / 共 ${list.length}）</span>`, `
       ${list.length? `
       <div class="row wrap" style="margin-bottom:8px">
         <div class="grow"><label>搜尋姓名</label><input type="text" id="dayListSearch" placeholder="輸入姓名關鍵字" value="${esc(dayListFilterState.search)}"></div>
@@ -1545,14 +1562,13 @@ function renderUnavail(){
         <button class="ghost small danger" id="clearDayBtn" style="align-self:flex-end">清空此類別</button>
       </div>`:''}
       <div id="dayListItems">${renderDayListItemsHTML()}</div>
-    </div>
+    `, `<button class="ghost small" id="dayListClearFilter">清除篩選</button>`)}
     <div class="card">
-      <button class="primary" id="autoAssignBtn" style="width:100%">🪄 事故登記完成，自動排今日勤務</button>
-      <div class="hint">會依目前登記的請假/長期事故/補休，自動把「排班」分頁中還空著的班別補上，已經手動排好的不會被覆蓋。排完會直接跳到「排班」分頁讓你檢查。</div>
+      <button class="ghost" id="goToScheduleBtn" style="width:100%">➡️ 前往「排班」分頁執行自動補空缺</button>
+      <div class="hint">自動排班功能已整合到「排班」分頁最上面的按鈕，點這裡直接跳過去。</div>
     </div>
     <div class="hint">💡 範例格式：柏凱：0800-1200不能、或全天不能 — 上面登記後會自動整理成這種清單。若是長期全天無法排的人員，建議改到「人員」分頁設定「長期全天不可排」，不用每天在這裡重複登記。</div>
   `;
-  document.getElementById('dateSel').onchange=(e)=>{ currentDate=e.target.value; render(); };
   function refreshUaCheckboxes(){
     document.getElementById('uaPeopleList').innerHTML = uaPeopleCheckboxesHTML(uaFilterState.group||undefined, currentDate, uaFilterState.search||undefined);
     wireUaCheckboxes();
@@ -1803,10 +1819,9 @@ function renderUnavail(){
     lvCheckedIds.clear();
     saveState(); render();
   };
-  document.getElementById('autoAssignBtn').onclick=()=>{
-    autoAssignDay(currentDate);
-    autoAssignMiscForDate(currentDate);
+  document.getElementById('goToScheduleBtn').onclick=()=>{
     currentTab='schedule';
+    window.scrollTo(0,0);
     render();
   };
   app.querySelectorAll('[data-del-ua]').forEach(b=>{
@@ -1918,6 +1933,23 @@ function showAlert(message){
     </div>`;
   document.body.appendChild(modal);
   document.getElementById('alertOk').onclick=()=>modal.remove();
+}
+/* wires a modal's close button to warn before discarding unsaved changes —
+   any input/select/checkbox interaction inside the modal marks it dirty;
+   closing with no changes made just closes immediately as before */
+function wireCloseConfirm(modal, closeBtn){
+  let dirty = false;
+  modal.querySelectorAll('input, select').forEach(el=>{
+    el.addEventListener('input', ()=>{ dirty=true; }, {once:true});
+    el.addEventListener('change', ()=>{ dirty=true; });
+  });
+  closeBtn.onclick=()=>{
+    if(dirty){
+      showConfirm('有尚未儲存的修改，確定要放棄並關閉嗎？', ()=>modal.remove());
+    } else {
+      modal.remove();
+    }
+  };
 }
 function showConfirm(message, onConfirm){
   const modal=document.createElement('div');
@@ -2082,10 +2114,6 @@ function renderStats(){
   });
   const maxCount = Math.max(1,...counts);
   app.innerHTML = `
-    <div class="card">
-      <label>日期</label>
-      <input type="date" id="dateSel" value="${currentDate}">
-    </div>
     ${collapsibleCardHTML('queryForm', '指定時間查詢', `
       <div class="row wrap" style="margin-bottom:8px">
         <div class="grow"><label>時間</label><select id="queryTime">${timeOptions().map(t=>`<option ${t===queryFilterState.time?'selected':''}>${t}</option>`).join('')}</select></div>
@@ -2152,7 +2180,6 @@ function renderStats(){
         (state.unavail[currentDate]||[]).map(u=>`<div class="muted">・${esc(personName(u.personId))}：${u.allDay?'全天不能':(u.start+'-'+u.end+' 不能')}</div>`).join('')}
     </div>
   `;
-  document.getElementById('dateSel').onchange=(e)=>{ currentDate=e.target.value; render(); };
   document.getElementById('queryClearFilter').onclick=()=>{
     queryFilterState={time:'08:00',group:'',rank:''};
     document.getElementById('queryResult').innerHTML='';
@@ -2238,9 +2265,8 @@ function renderSchedule(){
   const missingDefaults = defaults.filter(d=>!state.categories.some(c=>c.id===d.id));
   app.innerHTML = `
     <div class="card">
-      <label>日期</label>
-      <input type="date" id="dateSel" value="${currentDate}">
-      <div class="hint">此日期代表勤務「結束日」：實際勤務時段是 ${dutyDateRangeLabel(currentDate)}（前一天22:00開始，到選定日期22:00結束）。</div>    </div>
+      <div class="hint">此日期代表勤務「結束日」：實際勤務時段是 ${dutyDateRangeLabel(currentDate)}（前一天22:00開始，到選定日期22:00結束）。</div>
+    </div>
     <div class="card">
       <button class="primary" id="autoAssignBtn2" style="width:100%">🪄 自動補空缺（不覆蓋已排的）</button>
     </div>
@@ -2255,9 +2281,24 @@ function renderSchedule(){
         <h2 style="margin:0">勤務類別</h2>
         <button class="ghost small" id="addCat">＋新增類別</button>
       </div>
-      <button class="ghost danger" id="clearAllScheduleBtn" style="width:100%;margin-bottom:8px">🗑️ 一鍵清空當日所有排班</button>
       <div class="hint">安全士官／橋哨／指管：前後兩班（衛哨對衛哨）需間隔≥6小時、單日累計上限6小時（系統自動檢查，違反會標紅；此規則不含準備時間，純粹以衛哨排定時間計算）。每班衛哨開始前需空30分鐘準備：若前一段時間還在忙其他勤務（如採買、打飯班），系統會擋下並標紅，避免像「採買到08:00、緊接著08:00-12:00衛哨」這種沒時間準備的排法。橋哨／指管優先排下士，其次其他士兵/士官。打飯班早/午/晚每班2人＝1位帶隊士官（優先下士→中士→上士）＋1位士兵，盡量避免安排軍官；整天固定2人優先排訓練役，沒有訓練役才依二兵→一兵→上兵遞補。下拉選單已依此優先順序排序，越上面越優先。有設定「補休至」的班別（例：22:00-06:00 各節衛哨補休至08:00、06-08衛哨與早餐打飯班補休至08:30、午餐打飯班補休至15:30），下班後系統會自動把該員在補休時段內標示為不可排，也會檢查補休時段有沒有跟已排的其他勤務衝突，可到各類別「編輯」調整補休時間。</div>
       <div class="hint">下拉選單中的 🚫不可排 已同時涵蓋：休假/事故、長期事故、補休、以及當天其他勤務的重複指派。</div>
+    `)}
+    ${collapsibleCardHTML('clearSchedule', '清空排班（選擇要清空的項目）', `
+      <div class="row wrap" style="gap:10px;margin-bottom:8px">
+        ${orderedCategories().map(cat=>`
+          <label style="display:flex;align-items:center;gap:6px;font-size:13px">
+            <input type="checkbox" class="clear-target-cb" value="${cat.id}" style="width:auto"> ${esc(cat.name)}
+          </label>`).join('')}
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px">
+          <input type="checkbox" class="clear-target-cb" value="__misc" style="width:auto"> 其他勤務
+        </label>
+      </div>
+      <div class="row wrap" style="margin-bottom:8px">
+        <button class="ghost small" id="clearTargetSelectAll">全選</button>
+        <button class="ghost small" id="clearTargetClearAll">清空勾選</button>
+      </div>
+      <button class="ghost danger" id="clearSelectedBtn" style="width:100%">🗑️ 清空所選項目</button>
     `)}
     ${orderedCategories().map(cat=>renderCategoryCard(cat)).join('')}
     <div class="card">
@@ -2268,11 +2309,26 @@ function renderSchedule(){
       <div id="dailyCheckOut"></div>
     </div>
   `;
-  document.getElementById('dateSel').onchange=(e)=>{ currentDate=e.target.value; render(); };
   document.getElementById('autoAssignBtn2').onclick=()=>{ autoAssignDay(currentDate); autoAssignMiscForDate(currentDate); render(); };
-  document.getElementById('clearAllScheduleBtn').onclick=()=>{
-    showConfirm(`確定要清空「${currentDate}」當天所有已排的班表嗎？（安全士官/橋哨/指管/打飯班等所有類別都會一起清空，此動作無法復原）`, ()=>{
-      state.assign[currentDate] = {};
+  document.getElementById('clearTargetSelectAll').onclick=()=>{
+    document.querySelectorAll('.clear-target-cb').forEach(cb=>cb.checked=true);
+  };
+  document.getElementById('clearTargetClearAll').onclick=()=>{
+    document.querySelectorAll('.clear-target-cb').forEach(cb=>cb.checked=false);
+  };
+  document.getElementById('clearSelectedBtn').onclick=()=>{
+    const targets=[...document.querySelectorAll('.clear-target-cb:checked')].map(cb=>cb.value);
+    if(!targets.length){ showAlert('請至少勾選一個要清空的項目'); return; }
+    const catNames = targets.filter(t=>t!=='__misc').map(id=>{
+      const c=state.categories.find(cc=>cc.id===id);
+      return c? c.name : id;
+    });
+    const labelParts = [...catNames, targets.includes('__misc')?'其他勤務':null].filter(Boolean);
+    showConfirm(`確定要清空「${currentDate}」當天的：${labelParts.join('、')} 嗎？此動作無法復原。`, ()=>{
+      targets.forEach(t=>{
+        if(t==='__misc'){ state.misc[currentDate] = []; }
+        else { if(state.assign[currentDate]) delete state.assign[currentDate][t]; }
+      });
       saveState(); render();
     });
   };
@@ -2568,7 +2624,7 @@ function openCategoryEditor(catId){
   document.getElementById('addShift').onclick=()=>{
     cat.shifts.push(sh('08:00','12:00')); shiftEditRowRerender();
   };
-  document.getElementById('closeModal').onclick=()=>modal.remove();
+  wireCloseConfirm(modal, document.getElementById('closeModal'));
   document.getElementById('saveCat').onclick=()=>{
     cat.name=document.getElementById('catName').value.trim()||cat.name;
     cat.enforceRest=document.getElementById('catRest').checked;
@@ -2803,7 +2859,7 @@ function openMiscPresetModal(editIndex){
     timesDraft.push({start:'06:00',end:'07:00'});
     renderTimesList();
   };
-  document.getElementById('closeMiscPresetModal').onclick=()=>modal.remove();
+  wireCloseConfirm(modal, document.getElementById('closeMiscPresetModal'));
   if(editing){
     document.getElementById('deleteMiscPreset').onclick=()=>{
       showConfirm(`確定要刪除常用項目「${existing.role}」嗎？`, ()=>{
@@ -2837,10 +2893,6 @@ function openMiscPresetModal(editIndex){
 function renderMisc(){
   const list = state.misc[currentDate]||[];
   app.innerHTML = `
-    <div class="card">
-      <label>日期</label>
-      <input type="date" id="dateSel" value="${currentDate}">
-    </div>
     ${collapsibleCardHTML('miscPresets', '常用項目（點一下自動帶入名稱、時間與角色）', `
       <div class="row wrap">
         ${state.miscPresets.map((mp,i)=>({mp,i})).sort((a,b)=>(b.mp.fixed?1:0)-(a.mp.fixed?1:0)).map(({mp,i})=>`<span class="pill-btn" style="cursor:pointer" data-preset="${i}">${mp.fixed?'📌':''}${esc(mp.role)} ${presetTimes(mp).map(t=>t.start+'-'+t.end).join('、')} <span data-edit-preset="${i}" style="margin-left:4px">✎</span></span>`).join('')}
@@ -2918,7 +2970,6 @@ function renderMisc(){
     `)}
     <div class="hint">此區用於不需6小時規則的項目，如：技工、採買、愛心便當、消防車、救護車、話務、督伙、開關門、健身房簽到等，依你們單位每日需要自行新增，也可以直接點上方常用項目快速帶入。採買/愛心便當/消防車/救護車需分別指定駕駛與車長：消防車駕駛需大型車或大客車駕照，救護車駕駛需小型車/大型車/大客車其中一種且救護車車長與駕駛都需具備EMT-1/EMT-2/EMT-P或醫生證書，其餘車輛駕駛至少需小型車駕照；車長需士官以上且階級高於駕駛，選單會把符合資格的人排到最上面。話務需至少小型車駕照。</div>
   `;
-  document.getElementById('dateSel').onchange=(e)=>{ currentDate=e.target.value; render(); };
   function wireMiscCheckboxes(){
     document.querySelectorAll('.misc-person-cb').forEach(cb=>{
       cb.onchange=()=>{
