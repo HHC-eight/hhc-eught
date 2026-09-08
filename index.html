@@ -97,7 +97,7 @@ textarea{min-height:50px;resize:vertical;}
   <div class="topbar-main">
     <div class="row" style="gap:6px;align-items:center">
       <button class="ghost small" id="undoBtn" title="復原上一步" style="display:none">↩️</button>
-      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v8</span></h1>
+      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v9</span></h1>
     </div>
     <div class="row" style="gap:6px;align-items:center">
       <select id="timeStepSelect" style="font-size:11px;padding:3px 6px;width:auto">
@@ -653,7 +653,11 @@ function unavailabilityReasonsInRange(personId, date, s, e){
     if(m.start && m.end && windowsOverlapOnce(s,e,toMin(m.start),toMin(m.end))) out.push(`勤務中：${m.role}${m.start&&m.end?` (${m.start}-${m.end})`:''}`);
     else if(m.restUntil && m.end && windowsOverlapRecurring(s,e,toMin(m.end),toMin(m.restUntil))) out.push(`補休中（${m.role} 後，至 ${m.restUntil}）`);
   });
-  return out.length? out : ['不可排（原因不明）'];
+  // de-dupe: duplicate underlying records (e.g. someone accidentally
+  // registered twice) shouldn't repeat the exact same reason text over and
+  // over in the displayed list
+  const deduped = [...new Set(out)];
+  return deduped.length? deduped : ['不可排（原因不明）'];
 }
 function freeDurationFrom(personId, date, queryMin){
   if(isPersonUnavailable(personId, date, queryMin, queryMin+1)) return 0;
@@ -855,7 +859,26 @@ function autoAssignMiscForDate(date){
   if(!state.misc[date]) state.misc[date]=[];
   state.miscPresets.filter(p=>p.fixed).forEach(preset=>{
     const roles = preset.roles;
-    presetTimes(preset).forEach(t=>{
+    const times = presetTimes(preset);
+    // single-time presets (採買/消防車/etc) only need ONE entry a day — if
+    // the user already made one (even with a custom time they typed in
+    // themselves instead of the preset default), don't create a second,
+    // empty duplicate alongside it. Multi-time presets like 查哨 still need
+    // an exact time match, since several distinct time-slot instances of
+    // the same role name are supposed to coexist.
+    if(times.length===1){
+      const exists = state.misc[date].some(m=>m.role===preset.role);
+      if(!exists){
+        const t=times[0];
+        state.misc[date].push({
+          id:uid(), role:preset.role, start:t.start, end:t.end, restUntil:preset.restUntil||'',
+          roles: roles?[...roles]:undefined,
+          personIds: roles? roles.map(()=>undefined) : []
+        });
+      }
+      return;
+    }
+    times.forEach(t=>{
       const exists = state.misc[date].some(m=>m.role===preset.role && m.start===t.start && m.end===t.end);
       if(!exists){
         state.misc[date].push({
@@ -1853,7 +1876,7 @@ function renderUnavail(){
         <button class="ghost small danger" id="clearDayBtn" style="align-self:flex-end">清空此類別</button>
       </div>`:''}
       <div id="dayListItems">${renderDayListItemsHTML()}</div>
-    `, `<button class="ghost small" id="dayListClearFilter">清除篩選</button>`)}
+    `, `<button class="ghost small" id="dedupUnavailBtn">移除重複紀錄</button><button class="ghost small" id="dayListClearFilter">清除篩選</button>`)}
     <div class="card">
       <button class="ghost" id="goToScheduleBtn" style="width:100%">➡️ 前往「排班」分頁執行自動補空缺</button>
       <div class="hint">自動排班功能已整合到「排班」分頁最上面的按鈕，點這裡直接跳過去。</div>
@@ -1943,6 +1966,20 @@ function renderUnavail(){
   document.getElementById('dayListClearFilter').onclick=()=>{
     dayListFilterState={search:'',group:''};
     render();
+  };
+  document.getElementById('dedupUnavailBtn').onclick=()=>{
+    let removed=0;
+    Object.keys(state.unavail).forEach(d=>{
+      const seen=new Set();
+      state.unavail[d] = state.unavail[d].filter(u=>{
+        const key=[u.personId,u.allDay,u.start,u.end,u.reason,u.leaveId||''].join('|');
+        if(seen.has(key)){ removed++; return false; }
+        seen.add(key);
+        return true;
+      });
+    });
+    showAlert(removed? `已移除 ${removed} 筆重複紀錄（所有日期）。` : '沒有找到重複紀錄。');
+    saveState(); render();
   };
   if(document.getElementById('clearDayBtn')){
     document.getElementById('clearDayBtn').onclick=()=>{
@@ -2906,6 +2943,7 @@ function openCategoryEditor(catId){
       <h3>班別時段</h3>
       <div id="shiftEditList">${cat.shifts.map((s,i)=>shiftEditRow(s,i)).join('')}</div>
       <button class="ghost small" id="addShift">＋新增班別</button>
+      ${['safety','bridge','control','meal'].includes(cat.id)? `<button class="ghost small" id="restoreShiftsBtn">↺ 恢復預設班別設定</button>`:''}
       <div class="divider"></div>
       <button class="primary" id="saveCat" style="width:100%">儲存</button>
     </div>
@@ -2961,6 +2999,17 @@ function openCategoryEditor(catId){
   document.getElementById('addShift').onclick=()=>{
     cat.shifts.push(sh('08:00','12:00')); shiftEditRowRerender();
   };
+  if(document.getElementById('restoreShiftsBtn')){
+    document.getElementById('restoreShiftsBtn').onclick=()=>{
+      showConfirm('確定要把班別時段還原成系統預設嗎？目前編輯中尚未儲存的班別調整會被取代（已經存檔的排班紀錄不會受影響）。', ()=>{
+        const defaultCat = defaultCategories().find(d=>d.id===cat.id);
+        if(defaultCat){
+          cat.shifts = defaultCat.shifts.map(s=>({...s, id:uid()}));
+          shiftEditRowRerender();
+        }
+      });
+    };
+  }
   wireCloseConfirm(modal, document.getElementById('closeModal'));
   document.getElementById('saveCat').onclick=()=>{
     cat.name=document.getElementById('catName').value.trim()||cat.name;
@@ -3288,7 +3337,7 @@ function renderMisc(){
       <button class="primary" id="mAdd" style="width:100%">${miscEditingId? '儲存修改':'新增'}</button>
       ${miscEditingId? `<button class="ghost small" id="mCancelEdit" style="width:100%;margin-top:6px">取消編輯</button>`:''}
     `)}
-    ${collapsibleCardHTML('miscToday', `${fmtDate(currentDate)} 其他勤務（${list.length}筆）`, `
+    ${collapsibleCardHTML('miscToday', `${fmtDate(currentDate)} 其他勤務（${list.length}筆・共${new Set(list.flatMap(m=>(m.personIds||[]).filter(Boolean))).size}人）`, `
       ${list.length===0? `<div class="empty">尚未新增</div>` : list.map(m=>{
         const issues = validateMiscEntry(m);
         const peopleLabel = m.roles
@@ -3351,7 +3400,7 @@ function renderMisc(){
         const busy = reasons.length>0;
         return `<label data-misc-person-row="${pid}" style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0;${busy?'color:var(--danger)':''}">
           <input type="checkbox" class="misc-person-cb" value="${pid}" style="width:auto" ${checked?'checked':''}>
-          ${esc(person.name)}（${person.group||'未分組'}·${person.rank}${personBadges(person)}）${busy? ` 🚫不可排（${reasons.join('・')}）`:''}
+          ${esc(person.name)}（${person.group||'未分組'}·${person.rank}${personBadges(person)}）${busy? ` 🚫不可排（${[...new Set(reasons)].join('・')}）`:''}
         </label>`;
       }).join('');
       wireMiscCheckboxes();
@@ -3394,7 +3443,7 @@ function renderMisc(){
         }
         const busy = reasons.length>0;
         const baseText = o.textContent.replace(/\s*🚫不可排(（[^）]*）)?$/,'');
-        const text = baseText + (busy? ` 🚫不可排（${reasons.join('・')}）`:'');
+        const text = baseText + (busy? ` 🚫不可排（${[...new Set(reasons)].join('・')}）`:'');
         return {value:o.value, text, busy, selected:o.value===currentVal};
       });
       // move anyone flagged 🚫不可排 to the bottom — sort is stable, so the
