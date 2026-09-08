@@ -1232,7 +1232,28 @@ document.getElementById('importFile').addEventListener('change', (e)=>{
 let reverseFilterState={search:'',group:''}; // persists across re-renders until explicitly cleared
 let reverseCheckedIds=new Set(); // survives filter changes — checking someone, then filtering them out of view, keeps them checked
 let dayListFilterState={search:'',group:''}; // for the day's incident/leave list
-let uaFilterState={group:''}; // for the single-entry 人員事故登載 form's group filter
+let uaFilterState={search:'',group:''}; // for the single-entry 人員事故登載 form's filters
+let uaCheckedIds=new Set(); // survives filter changes, same as reverseCheckedIds
+let lvFilterState={search:'',group:''}; // for the 新增人員休假 form's filters
+let lvCheckedIds=new Set();
+function lvPeopleCheckboxesHTML(groupFilter, searchFilter){
+  if(!state.personnel.length) return `<div class="empty">尚無人員</div>`;
+  let list=[...state.personnel];
+  if(groupFilter) list = groupFilter==='__none'? list.filter(p=>!p.group) : list.filter(p=>p.group===groupFilter);
+  if(searchFilter) list = list.filter(p=>p.name.includes(searchFilter));
+  if(!list.length) return `<div class="empty">找不到符合的人員</div>`;
+  const rGroups=[...new Set(list.map(p=>p.group).filter(Boolean))].sort((a,b)=>groupIndex(a)-groupIndex(b));
+  const rList = rGroups.length? rGroups : [''];
+  return rList.map(g=>{
+    const members=list.filter(p=>p.group===g).sort((a,b)=>rankIndex(a.rank)-rankIndex(b.rank));
+    if(!members.length) return '';
+    return `<h3>${g?esc(g):'未分組'}</h3>` + members.map(p=>`
+      <label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0">
+        <input type="checkbox" class="lv-person-cb" value="${p.id}" style="width:auto" ${lvCheckedIds.has(p.id)?'checked':''}>
+        ${esc(p.name)}（${p.group||'未分組'}·${p.rank}）${longTermLabel(p)? ` <span class="warn">🚫${esc(longTermLabel(p))}</span>`:''}
+      </label>`).join('');
+  }).join('');
+}
 function renderReverseCheckboxes(){
   if(!state.personnel.length) return `<div class="empty">尚未新增人員</div>`;
   const {search:kw, group:gf} = reverseFilterState;
@@ -1285,6 +1306,7 @@ function renderUnavail(){
     <div class="card">
       <h2>人員事故登載（單日或指定時段，可多人多日）</h2>
       <div class="row wrap" style="margin-bottom:8px">
+        <div class="grow"><label>搜尋姓名</label><input type="text" id="uaSearch" placeholder="輸入姓名關鍵字" value="${esc(uaFilterState.search)}"></div>
         <div class="grow"><label>排組篩選</label>
           <select id="uaGroupFilter">
             <option value="" ${!uaFilterState.group?'selected':''}>（全部）</option>
@@ -1292,13 +1314,13 @@ function renderUnavail(){
             <option value="__none" ${uaFilterState.group==='__none'?'selected':''}>未分組</option>
           </select>
         </div>
-        <button class="ghost small" id="uaClearFilter" style="align-self:flex-end">清除篩選</button>
       </div>
       <div class="row wrap" style="margin-bottom:6px">
-        <button class="ghost small" id="uaSelectAll">全選</button>
-        <button class="ghost small" id="uaClearAll">清空</button>
+        <button class="ghost small" id="uaSelectAll">全選(篩選範圍)</button>
+        <button class="ghost small" id="uaClearAll">清空(篩選範圍)</button>
+        <button class="ghost small" id="uaClearFilter">清除篩選</button>
       </div>
-      <div id="uaPeopleList" style="max-height:220px;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:8px;margin-bottom:8px">${uaPeopleCheckboxesHTML(uaFilterState.group||undefined, currentDate)}</div>
+      <div id="uaPeopleList" style="max-height:220px;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:8px;margin-bottom:8px">${uaPeopleCheckboxesHTML(uaFilterState.group||undefined, currentDate, uaFilterState.search)}</div>
       <div class="row wrap" style="margin-bottom:8px">
         <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text)">
           <input type="checkbox" id="uaAllDay" style="width:auto"> 全天不能排
@@ -1366,12 +1388,23 @@ function renderUnavail(){
       <div class="hint">被自動標記的人之後仍可到下面「單筆登記」用「刪除」移除，或另外針對個人改登記更明確的事故原因（例：從「反向登記」改成「出車」）。</div>
     </div>
     <div class="card">
-      <h2>新增人員休假（連續多天）</h2>
+      <h2>新增人員休假（連續多天，可多人）</h2>
       <div class="row wrap" style="margin-bottom:8px">
-        <div class="grow"><label>姓名</label>
-          <select id="lvPerson">${personOptions()}</select>
+        <div class="grow"><label>搜尋姓名</label><input type="text" id="lvSearch" placeholder="輸入姓名關鍵字" value="${esc(lvFilterState.search)}"></div>
+        <div class="grow"><label>排組篩選</label>
+          <select id="lvGroupFilter">
+            <option value="" ${!lvFilterState.group?'selected':''}>（全部）</option>
+            ${[...new Set(state.personnel.map(p=>p.group).filter(Boolean))].sort((a,b)=>groupIndex(a)-groupIndex(b)).map(g=>`<option value="${esc(g)}" ${lvFilterState.group===g?'selected':''}>${esc(g)}</option>`).join('')}
+            <option value="__none" ${lvFilterState.group==='__none'?'selected':''}>未分組</option>
+          </select>
         </div>
       </div>
+      <div class="row wrap" style="margin-bottom:6px">
+        <button class="ghost small" id="lvSelectAll">全選(篩選範圍)</button>
+        <button class="ghost small" id="lvClearAll">清空(篩選範圍)</button>
+        <button class="ghost small" id="lvClearFilter">清除篩選</button>
+      </div>
+      <div id="lvPeopleList" style="max-height:220px;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:8px;margin-bottom:8px">${lvPeopleCheckboxesHTML(lvFilterState.group||undefined, lvFilterState.search||undefined)}</div>
       <div class="row wrap" style="margin-bottom:8px">
         <div class="grow"><label>休假第一天</label><input type="date" id="lvStart" value="${currentDate}"></div>
         <div class="grow"><label>休假最後一天</label><input type="date" id="lvEnd" value="${currentDate}"></div>
@@ -1435,20 +1468,38 @@ function renderUnavail(){
     <div class="hint">💡 範例格式：柏凱：0800-1200不能、或全天不能 — 上面登記後會自動整理成這種清單。若是長期全天無法排的人員，建議改到「人員」分頁設定「長期全天不可排」，不用每天在這裡重複登記。</div>
   `;
   document.getElementById('dateSel').onchange=(e)=>{ currentDate=e.target.value; render(); };
+  function refreshUaCheckboxes(){
+    document.getElementById('uaPeopleList').innerHTML = uaPeopleCheckboxesHTML(uaFilterState.group||undefined, currentDate, uaFilterState.search||undefined);
+    wireUaCheckboxes();
+  }
+  function wireUaCheckboxes(){
+    document.querySelectorAll('.ua-person-cb').forEach(cb=>{
+      cb.onchange=()=>{
+        if(cb.checked) uaCheckedIds.add(cb.value);
+        else uaCheckedIds.delete(cb.value);
+      };
+    });
+  }
+  wireUaCheckboxes();
+  document.getElementById('uaSearch').oninput=(e)=>{
+    uaFilterState.search=e.target.value.trim();
+    refreshUaCheckboxes();
+  };
   document.getElementById('uaGroupFilter').onchange=(e)=>{
     uaFilterState.group=e.target.value;
-    document.getElementById('uaPeopleList').innerHTML = uaPeopleCheckboxesHTML(e.target.value||undefined, currentDate);
+    refreshUaCheckboxes();
   };
   document.getElementById('uaClearFilter').onclick=()=>{
-    uaFilterState={group:''};
+    uaFilterState={search:'',group:''};
+    document.getElementById('uaSearch').value='';
     document.getElementById('uaGroupFilter').value='';
-    document.getElementById('uaPeopleList').innerHTML = uaPeopleCheckboxesHTML(undefined, currentDate);
+    refreshUaCheckboxes();
   };
   document.getElementById('uaSelectAll').onclick=()=>{
-    document.querySelectorAll('.ua-person-cb').forEach(cb=>cb.checked=true);
+    document.querySelectorAll('.ua-person-cb').forEach(cb=>{ cb.checked=true; uaCheckedIds.add(cb.value); });
   };
   document.getElementById('uaClearAll').onclick=()=>{
-    document.querySelectorAll('.ua-person-cb').forEach(cb=>cb.checked=false);
+    document.querySelectorAll('.ua-person-cb').forEach(cb=>{ cb.checked=false; uaCheckedIds.delete(cb.value); });
   };
   if(document.getElementById('dayListSearch')){
     document.getElementById('dayListSearch').oninput=(e)=>{ dayListFilterState.search=e.target.value.trim(); render(); };
@@ -1532,7 +1583,7 @@ function renderUnavail(){
     });
   };
   document.getElementById('uaAdd').onclick=()=>{
-    const personIds=[...document.querySelectorAll('.ua-person-cb:checked')].map(cb=>cb.value);
+    const personIds=[...uaCheckedIds];
     if(!personIds.length){ showAlert('請至少勾選一位人員'); return; }
     const allDay=document.getElementById('uaAllDay').checked;
     const start=document.getElementById('uaStart').value, end=document.getElementById('uaEnd').value;
@@ -1551,10 +1602,44 @@ function renderUnavail(){
         state.unavail[d].push({id:uid(),personId,allDay,start,end,reason});
       });
     });
+    uaCheckedIds.clear();
     saveState(); render();
   };
   document.getElementById('uaMultiDay').onchange=(e)=>{
     document.getElementById('uaMultiDayRow').style.display = e.target.checked? 'flex':'none';
+  };
+  function refreshLvCheckboxes(){
+    document.getElementById('lvPeopleList').innerHTML = lvPeopleCheckboxesHTML(lvFilterState.group||undefined, lvFilterState.search||undefined);
+    wireLvCheckboxes();
+  }
+  function wireLvCheckboxes(){
+    document.querySelectorAll('.lv-person-cb').forEach(cb=>{
+      cb.onchange=()=>{
+        if(cb.checked) lvCheckedIds.add(cb.value);
+        else lvCheckedIds.delete(cb.value);
+      };
+    });
+  }
+  wireLvCheckboxes();
+  document.getElementById('lvSearch').oninput=(e)=>{
+    lvFilterState.search=e.target.value.trim();
+    refreshLvCheckboxes();
+  };
+  document.getElementById('lvGroupFilter').onchange=(e)=>{
+    lvFilterState.group=e.target.value;
+    refreshLvCheckboxes();
+  };
+  document.getElementById('lvClearFilter').onclick=()=>{
+    lvFilterState={search:'',group:''};
+    document.getElementById('lvSearch').value='';
+    document.getElementById('lvGroupFilter').value='';
+    refreshLvCheckboxes();
+  };
+  document.getElementById('lvSelectAll').onclick=()=>{
+    document.querySelectorAll('.lv-person-cb').forEach(cb=>{ cb.checked=true; lvCheckedIds.add(cb.value); });
+  };
+  document.getElementById('lvClearAll').onclick=()=>{
+    document.querySelectorAll('.lv-person-cb').forEach(cb=>{ cb.checked=false; lvCheckedIds.delete(cb.value); });
   };
   function updateLeavePreview(){
     const s=document.getElementById('lvStart').value, e=document.getElementById('lvEnd').value;
@@ -1576,8 +1661,8 @@ function renderUnavail(){
   document.getElementById('lvOverride').onchange=updateLeavePreview;
   updateLeavePreview();
   document.getElementById('lvAdd').onclick=()=>{
-    const personId=document.getElementById('lvPerson').value;
-    if(!personId){ showAlert('請先到「人員」分頁新增人員'); return; }
+    const personIds=[...lvCheckedIds];
+    if(!personIds.length){ showAlert('請至少勾選一位人員'); return; }
     const s=document.getElementById('lvStart').value, e=document.getElementById('lvEnd').value;
     if(!s||!e||s>e){ showAlert('請確認休假日期範圍正確'); return; }
     const honor=document.getElementById('lvHonor').checked;
@@ -1586,19 +1671,22 @@ function renderUnavail(){
     if(days>5 && !override){ showAlert(`休假天數共${days}天，超過5天上限，如有特殊核准請勾選「特殊情況」再新增。`); return; }
     const bufferDays=daysBetweenInclusive(prevDateStr(s), nextDateStr(e));
     const honorApplies = honor && (bufferDays<=5 || override);
-    const leaveId=uid();
     const firstRoster=prevDateStr(s);
     const lastRoster=nextDateStr(e);
     const firstStart = honorApplies? '12:00':'18:00';
     const reasonLabel = honorApplies? '榮譽假':'休假';
-    if(!state.unavail[firstRoster]) state.unavail[firstRoster]=[];
-    state.unavail[firstRoster].push({id:uid(),personId,allDay:false,start:firstStart,end:'24:00',reason:reasonLabel,leaveId,leaveStart:s,leaveEnd:e});
-    dateRangeList(s,e).forEach(d=>{
-      if(!state.unavail[d]) state.unavail[d]=[];
-      state.unavail[d].push({id:uid(),personId,allDay:true,start:'',end:'',reason:reasonLabel,leaveId,leaveStart:s,leaveEnd:e});
+    personIds.forEach(personId=>{
+      const leaveId=uid(); // each person gets their own leaveId so 目前登記的休假 groups them separately
+      if(!state.unavail[firstRoster]) state.unavail[firstRoster]=[];
+      state.unavail[firstRoster].push({id:uid(),personId,allDay:false,start:firstStart,end:'24:00',reason:reasonLabel,leaveId,leaveStart:s,leaveEnd:e});
+      dateRangeList(s,e).forEach(d=>{
+        if(!state.unavail[d]) state.unavail[d]=[];
+        state.unavail[d].push({id:uid(),personId,allDay:true,start:'',end:'',reason:reasonLabel,leaveId,leaveStart:s,leaveEnd:e});
+      });
+      if(!state.unavail[lastRoster]) state.unavail[lastRoster]=[];
+      state.unavail[lastRoster].push({id:uid(),personId,allDay:false,start:'00:00',end:'07:30',reason:reasonLabel,leaveId,leaveStart:s,leaveEnd:e});
     });
-    if(!state.unavail[lastRoster]) state.unavail[lastRoster]=[];
-    state.unavail[lastRoster].push({id:uid(),personId,allDay:false,start:'00:00',end:'07:30',reason:reasonLabel,leaveId,leaveStart:s,leaveEnd:e});
+    lvCheckedIds.clear();
     saveState(); render();
   };
   document.getElementById('autoAssignBtn').onclick=()=>{
@@ -1655,11 +1743,12 @@ function personOptionsForIncident(selected, groupFilter, date){
    incident for several people at once, not just one at a time. People
    already carrying an all-day incident for this date sort to the bottom
    and are marked, same as the single-select version. */
-function uaPeopleCheckboxesHTML(groupFilter, date){
+function uaPeopleCheckboxesHTML(groupFilter, date, searchFilter){
   if(!state.personnel.length) return `<div class="empty">尚無人員</div>`;
   let list=[...state.personnel];
   if(groupFilter) list = groupFilter==='__none'? list.filter(p=>!p.group) : list.filter(p=>p.group===groupFilter);
-  if(!list.length) return `<div class="empty">此排組無人員</div>`;
+  if(searchFilter) list = list.filter(p=>p.name.includes(searchFilter));
+  if(!list.length) return `<div class="empty">找不到符合的人員</div>`;
   const hasAllDay = p => (state.unavail[date]||[]).some(u=>u.personId===p.id && u.allDay);
   list.sort((a,b)=>{
     const aa=hasAllDay(a)?1:0, bb=hasAllDay(b)?1:0;
@@ -1668,7 +1757,7 @@ function uaPeopleCheckboxesHTML(groupFilter, date){
   });
   return list.map(p=>`
     <label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0">
-      <input type="checkbox" class="ua-person-cb" value="${p.id}" style="width:auto">
+      <input type="checkbox" class="ua-person-cb" value="${p.id}" style="width:auto" ${uaCheckedIds.has(p.id)?'checked':''}>
       ${esc(p.name)}（${p.group||'未分組'}·${p.rank}）${hasAllDay(p)?' <span class="warn">✅已登記全天</span>':''}
     </label>`).join('');
 }
