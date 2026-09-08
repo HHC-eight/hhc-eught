@@ -45,6 +45,7 @@ input[type=text],input[type=date],select,textarea{
   padding:9px 8px;border-radius:6px;font-size:14px;font-family:inherit;
 }
 select{-webkit-appearance:none;appearance:none;}
+input[type=checkbox]{width:22px !important;height:22px !important;min-width:22px;accent-color:var(--accent);cursor:pointer;flex-shrink:0;}
 button{
   border:1px solid var(--line);background:var(--panel2);color:var(--text);
   padding:9px 12px;border-radius:6px;font-size:13px;cursor:pointer;font-family:inherit;
@@ -111,7 +112,7 @@ textarea{min-height:50px;resize:vertical;}
 
 <div class="tabs">
   <button data-tab="people">👤 人員</button>
-  <button data-tab="unavail">🚫 請假/管制</button>
+  <button data-tab="unavail">🚫 休假/事故</button>
   <button data-tab="stats">📊 統計</button>
   <button data-tab="schedule">📋 排班</button>
   <button data-tab="misc">🗂 其他勤務</button>
@@ -1384,6 +1385,15 @@ function renderUnavail(){
       <div class="row wrap" id="reverseReasonCustomRow" style="margin-bottom:8px;display:none">
         <div class="grow"><label>原因內容</label><input type="text" id="reverseReasonCustom" placeholder="請輸入原因"></div>
       </div>
+      <div class="row wrap" style="margin-bottom:8px">
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text)">
+          <input type="checkbox" id="reverseMultiDay" style="width:auto"> 連續多日（例：9/8-9/9 都套用同一份反向登記，會套用到上面勾選的每一位人員）
+        </label>
+      </div>
+      <div class="row wrap" id="reverseMultiDayRow" style="margin-bottom:8px;display:none">
+        <div class="grow"><label>起始日</label><input type="date" id="reverseRangeStart" value="${currentDate}"></div>
+        <div class="grow"><label>結束日</label><input type="date" id="reverseRangeEnd" value="${currentDate}"></div>
+      </div>
       <button class="primary" id="reverseApply" style="width:100%">套用反向登記</button>
       <div class="hint">被自動標記的人之後仍可到下面「單筆登記」用「刪除」移除，或另外針對個人改登記更明確的事故原因（例：從「反向登記」改成「出車」）。</div>
     </div>
@@ -1563,6 +1573,9 @@ function renderUnavail(){
   document.getElementById('reverseReasonPreset').onchange=(e)=>{
     document.getElementById('reverseReasonCustomRow').style.display = e.target.value==='__custom'? 'flex':'none';
   };
+  document.getElementById('reverseMultiDay').onchange=(e)=>{
+    document.getElementById('reverseMultiDayRow').style.display = e.target.checked? 'flex':'none';
+  };
   document.getElementById('reverseApply').onclick=()=>{
     if(!state.personnel.length) return;
     const checkedIds = [...reverseCheckedIds];
@@ -1570,13 +1583,23 @@ function renderUnavail(){
     const others = state.personnel.filter(p=>!checkedIds.includes(p.id));
     const preset=document.getElementById('reverseReasonPreset').value;
     const reason = preset==='__custom'? (document.getElementById('reverseReasonCustom').value.trim()||'反向登記') : (preset||'反向登記');
-    showConfirm(`確定要把「${currentDate}」除了勾選的 ${checkedIds.length} 人以外，其餘 ${others.length} 人都標記為當天全天休假（原因：${reason}）嗎？`, ()=>{
-      if(!state.unavail[currentDate]) state.unavail[currentDate]=[];
-      others.forEach(p=>{
-        const already = state.unavail[currentDate].some(u=>u.personId===p.id);
-        if(!already){
-          state.unavail[currentDate].push({id:uid(),personId:p.id,allDay:true,start:'',end:'',reason});
-        }
+    const multi=document.getElementById('reverseMultiDay').checked;
+    let dates=[currentDate];
+    if(multi){
+      const rs=document.getElementById('reverseRangeStart').value, re=document.getElementById('reverseRangeEnd').value;
+      if(!rs||!re||rs>re){ showAlert('請確認連續多日的日期範圍正確'); return; }
+      dates=dateRangeList(rs,re);
+    }
+    const dateLabel = multi? `${dates[0]} ~ ${dates[dates.length-1]}（共${dates.length}天）` : currentDate;
+    showConfirm(`確定要把「${dateLabel}」除了勾選的 ${checkedIds.length} 人以外，其餘 ${others.length} 人都標記為全天休假（原因：${reason}）嗎？`, ()=>{
+      dates.forEach(d=>{
+        if(!state.unavail[d]) state.unavail[d]=[];
+        others.forEach(p=>{
+          const already = state.unavail[d].some(u=>u.personId===p.id);
+          if(!already){
+            state.unavail[d].push({id:uid(),personId:p.id,allDay:true,start:'',end:'',reason});
+          }
+        });
       });
       reverseCheckedIds.clear();
       saveState(); render();
@@ -1925,7 +1948,7 @@ function renderStats(){
           <div style="width:28px;text-align:right;font-size:12px">${counts[i]}</div>
         </div>`;
       }).join('')}
-      <div class="hint">此數字已包含請假/管制、長期事故、補休、以及當天已排定的勤務。長條內的文字是該時段有空人員的官/士/兵人數。</div>
+      <div class="hint">此數字已包含休假/事故、長期事故、補休、以及當天已排定的勤務。長條內的文字是該時段有空人員的官/士/兵人數。</div>
       ` : `<div class="hint">點「展開」查看每小時空閒人數長條圖（含官/士/兵細分）。</div>`}
     </div>
     <div class="card">
@@ -2052,7 +2075,7 @@ function renderSchedule(){
       <button class="primary" id="autoAssignBtn2" style="width:100%;margin-bottom:8px">🪄 自動補空缺（不覆蓋已排的）</button>
       <button class="ghost danger" id="clearAllScheduleBtn" style="width:100%;margin-bottom:8px">🗑️ 一鍵清空當日所有排班</button>
       <div class="hint">安全士官／橋哨／指管：前後兩班（衛哨對衛哨）需間隔≥6小時、單日累計上限6小時（系統自動檢查，違反會標紅；此規則不含準備時間，純粹以衛哨排定時間計算）。每班衛哨開始前需空30分鐘準備：若前一段時間還在忙其他勤務（如採買、打飯班），系統會擋下並標紅，避免像「採買到08:00、緊接著08:00-12:00衛哨」這種沒時間準備的排法。橋哨／指管優先排下士，其次其他士兵/士官。打飯班早/午/晚每班2人＝1位帶隊士官（優先下士→中士→上士）＋1位士兵，盡量避免安排軍官；整天固定2人優先排訓練役，沒有訓練役才依二兵→一兵→上兵遞補。下拉選單已依此優先順序排序，越上面越優先。有設定「補休至」的班別（例：22:00-06:00 各節衛哨補休至08:00、06-08衛哨與早餐打飯班補休至08:30、午餐打飯班補休至15:30），下班後系統會自動把該員在補休時段內標示為不可排，也會檢查補休時段有沒有跟已排的其他勤務衝突，可到各類別「編輯」調整補休時間。</div>
-      <div class="hint">下拉選單中的 🚫不可排 已同時涵蓋：請假/管制、長期事故、補休、以及當天其他勤務的重複指派。</div>
+      <div class="hint">下拉選單中的 🚫不可排 已同時涵蓋：休假/事故、長期事故、補休、以及當天其他勤務的重複指派。</div>
     </div>
     ${orderedCategories().map(cat=>renderCategoryCard(cat)).join('')}
     <div class="card">
