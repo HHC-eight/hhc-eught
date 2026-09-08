@@ -568,6 +568,12 @@ function isPersonUnavailable(personId, date, s, e, excludeCatShift){
 }
 
 function personName(id){ const p=state.personnel.find(p=>p.id===id); return p?p.name:'—'; }
+/* the 🚗駕照·⛑️EMT·🔧專長 badge string used consistently across every person
+   dropdown/checkbox in the app, so qualifications are visible wherever
+   you're picking someone regardless of which UI widget it's rendered in */
+function personBadges(p){
+  return `${p.license? '·🚗'+esc(p.license):''}${p.medCert? '·⛑️'+esc(p.medCert):''}${(p.skills&&p.skills.length)? '·🔧'+p.skills.map(esc).join('/'):''}`;
+}
 /* for the ad-hoc "who's free right now, and for how long" query: steps forward
    in 15-minute increments from queryMin until the person becomes unavailable
    (leave, long-term, comp-rest, or an existing assignment) or the day ends */
@@ -1338,7 +1344,7 @@ function lvPeopleCheckboxesHTML(groupFilter, searchFilter){
     return `<h3>${g?esc(g):'未分組'}</h3>` + members.map(p=>`
       <label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0">
         <input type="checkbox" class="lv-person-cb" value="${p.id}" style="width:auto" ${lvCheckedIds.has(p.id)?'checked':''}>
-        ${esc(p.name)}（${p.group||'未分組'}·${p.rank}）${longTermLabel(p)? ` <span class="warn">🚫${esc(longTermLabel(p))}</span>`:''}
+        ${esc(p.name)}（${p.group||'未分組'}·${p.rank}${personBadges(p)}）${longTermLabel(p)? ` <span class="warn">🚫${esc(longTermLabel(p))}</span>`:''}
       </label>`).join('');
   }).join('');
 }
@@ -1357,7 +1363,7 @@ function renderReverseCheckboxes(){
     if(!members.length) return '';
     return `<h3>${g?esc(g):'未分組'}</h3>` + members.map(p=>`
       <label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0">
-        <input type="checkbox" data-reverse-check="${p.id}" style="width:auto" ${reverseCheckedIds.has(p.id)?'checked':''}> ${esc(p.name)}（${p.rank}）
+        <input type="checkbox" data-reverse-check="${p.id}" style="width:auto" ${reverseCheckedIds.has(p.id)?'checked':''}> ${esc(p.name)}（${p.rank}${personBadges(p)}）
       </label>`).join('');
   }).join('');
 }
@@ -1887,7 +1893,7 @@ function uaPeopleCheckboxesHTML(groupFilter, date, searchFilter){
   return list.map(p=>`
     <label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0">
       <input type="checkbox" class="ua-person-cb" value="${p.id}" style="width:auto" ${uaCheckedIds.has(p.id)?'checked':''}>
-      ${esc(p.name)}（${p.group||'未分組'}·${p.rank}）${hasAllDay(p)?' <span class="warn">✅已登記全天</span>':''}
+      ${esc(p.name)}（${p.group||'未分組'}·${p.rank}${personBadges(p)}）${hasAllDay(p)?' <span class="warn">✅已登記全天</span>':''}
     </label>`).join('');
 }
 function personOptionsPrioritized(selected, eligibleFn){
@@ -2757,7 +2763,7 @@ function miscPeopleCheckboxesHTML(groupFilter, searchFilter){
     return `<h3>${g?esc(g):'未分組'}</h3>` + members.map(p=>`
       <label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0" data-misc-person-row="${p.id}">
         <input type="checkbox" class="misc-person-cb" value="${p.id}" style="width:auto" ${miscFreeformCheckedIds.has(p.id)?'checked':''}>
-        ${esc(p.name)}（${p.group||'未分組'}·${p.rank}）
+        ${esc(p.name)}（${p.group||'未分組'}·${p.rank}${personBadges(p)}）
       </label>`).join('');
   }).join('');
 }
@@ -3014,7 +3020,7 @@ function renderMisc(){
         const busy = reasons.length>0;
         return `<label data-misc-person-row="${pid}" style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0;${busy?'color:var(--danger)':''}">
           <input type="checkbox" class="misc-person-cb" value="${pid}" style="width:auto" ${checked?'checked':''}>
-          ${esc(person.name)}（${person.group||'未分組'}·${person.rank}）${busy? ` 🚫不可排（${reasons.join('・')}）`:''}
+          ${esc(person.name)}（${person.group||'未分組'}·${person.rank}${personBadges(person)}）${busy? ` 🚫不可排（${reasons.join('・')}）`:''}
         </label>`;
       }).join('');
       wireMiscCheckboxes();
