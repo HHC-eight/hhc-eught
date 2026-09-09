@@ -110,7 +110,7 @@ textarea{min-height:50px;resize:vertical;}
     <div class="row" style="gap:6px;align-items:center">
       <button class="ghost small" id="undoBtn" title="復原上一步" disabled>↩️</button>
       <button class="ghost small" id="redoBtn" title="取消復原（重做）" disabled>↪️</button>
-      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v54</span></h1>
+      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v55</span></h1>
     </div>
     <div class="row" style="gap:6px;align-items:center">
       <select id="timeStepSelect" style="font-size:11px;padding:3px 6px;width:auto">
@@ -3452,6 +3452,93 @@ function uaPeopleCheckboxesHTML(groupFilter, date, searchFilter){
       ${esc(p.name)}（${p.group||'未分組'}·${p.rank}${personBadges(p)}）${hasAllDay(p)?' <span class="warn">✅已登記全天</span>':''}${isLongTermSuspended(p.id,date)? ' <span class="ok">🟢今日已暫停長期事故</span>':''}
     </label>`).join('');
 }
+/* combined, de-duplicated reasons someone can't take a given 駕駛/車長/話務
+   role — qualification issues (license/EMT/skill/rank/outranking) plus
+   ordinary time-availability issues, so the role-picker list (below) can
+   show one clean "🚫不可排（reason・reason）" line per person instead of
+   the old select's un-deduplicated, repeated text */
+function roleIneligibilityReasons(person, role, preset, driver, date, s, eRaw){
+  const reasons=[];
+  if(role==='駕駛'){
+    driverQualificationIssues(person, preset).forEach(r=>reasons.push(r));
+  } else if(role==='車長'){
+    if(!['士官','軍官'].includes(rankCategory(person.rank))) reasons.push('需為士官以上');
+    if(driver && rankIndex(person.rank)>=rankIndex(driver.rank)) reasons.push('階級須高於駕駛');
+    if(preset && preset.requiredMedCert && !person.medCert) reasons.push('需具備EMT或醫生證書');
+    ((preset&&preset.chiefRequiredSkills)||[]).forEach(sk=>{ if(!(person.skills||[]).includes(sk)) reasons.push(`需具備${sk}專長`); });
+  } else if(role.startsWith('話務')){
+    if(!person.license) reasons.push('需至少小型車駕照');
+  }
+  if(s!=null && eRaw!=null){
+    const e = wrapEndMin(s, eRaw);
+    if(isPersonUnavailable(person.id, date, s, e)){
+      unavailabilityReasonsInRange(person.id, date, s, e).forEach(r=>reasons.push(r));
+    }
+  }
+  return [...new Set(reasons)];
+}
+/* single-person picker rendered as a searchable tap-list — same look as
+   every other person-picker in the app (search box + eligible-first list,
+   🚫 + combined reason for anyone who can't take it) — instead of a native
+   <select>, which is what 駕駛/車長/話務 role assignment used to use.
+   Keeps a hidden input with `idPrefix` as its id holding the chosen
+   person id, so every existing call site that reads
+   `document.getElementById(idPrefix).value` keeps working unchanged. */
+function rolePickerHTML(idPrefix, selectedId, reasonsFn){
+  const list=[...state.personnel].sort((a,b)=>{
+    const ra=reasonsFn(a), rb=reasonsFn(b);
+    const pa=ra.length?1:0, pb=rb.length?1:0;
+    if(pa!==pb) return pa-pb;
+    return groupIndex(a.group)-groupIndex(b.group) || rankIndex(a.rank)-rankIndex(b.rank);
+  });
+  return `
+    <input type="hidden" id="${idPrefix}" value="${selectedId||''}">
+    <input type="text" class="role-picker-search" data-role-picker-search="${idPrefix}" placeholder="輸入姓名關鍵字" style="margin-bottom:6px">
+    <div class="role-picker-list" id="${idPrefix}-list" style="max-height:220px;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:8px">
+      ${rolePickerRows(idPrefix, list, selectedId, reasonsFn)}
+    </div>`;
+}
+function rolePickerRows(idPrefix, list, selectedId, reasonsFn){
+  const optOut = `<label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0">
+      <input type="radio" name="${idPrefix}-radio" class="role-picker-radio" data-role-picker="${idPrefix}" value="" ${!selectedId?'checked':''} style="width:auto"> （未指派）
+    </label>`;
+  if(!list.length) return optOut + `<div class="empty">找不到符合的人員</div>`;
+  return optOut + list.map(p=>{
+    const reasons = reasonsFn(p);
+    return `<label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0">
+      <input type="radio" name="${idPrefix}-radio" class="role-picker-radio" data-role-picker="${idPrefix}" value="${p.id}" ${p.id===selectedId?'checked':''} style="width:auto">
+      ${esc(p.name)}（${p.group||'未分組'}·${p.rank}${personBadges(p)}）${reasons.length? ` <span class="warn">🚫不可排（${reasons.map(esc).join('・')}）</span>`:''}
+    </label>`;
+  }).join('');
+}
+/* wires the hidden-input-sync for every role-picker radio on the page,
+   plus simple client-side name filtering for its search box (shows/hides
+   already-rendered rows rather than re-fetching — the rows already carry
+   everything needed to filter on name). changeCb(idPrefix, newValue), if
+   given, runs whatever used to be wired to the old <select>'s change
+   event (e.g. refreshing the 車長 picker's reasons when 駕駛 changes). */
+function wireRolePickers(changeCb){
+  document.querySelectorAll('.role-picker-radio').forEach(r=>{
+    r.onchange=()=>{
+      const idPrefix = r.dataset.rolePicker;
+      document.getElementById(idPrefix).value = r.value;
+      if(changeCb) changeCb(idPrefix, r.value);
+    };
+  });
+  document.querySelectorAll('[data-role-picker-search]').forEach(input=>{
+    input.oninput=()=>{
+      const idPrefix = input.dataset.rolePickerSearch;
+      const term = input.value.trim();
+      const listEl = document.getElementById(idPrefix+'-list');
+      if(!listEl) return;
+      listEl.querySelectorAll('label').forEach(label=>{
+        const radio = label.querySelector('input[type="radio"]');
+        if(radio && radio.value===''){ label.style.display='flex'; return; }
+        label.style.display = (!term || label.textContent.includes(term))? 'flex':'none';
+      });
+    };
+  });
+}
 function personOptionsPrioritized(selected, eligibleFn){
   if(!state.personnel.length) return `<option value="">（尚無人員）</option>`;
   const sorted=[...state.personnel].sort((a,b)=>{
@@ -5373,17 +5460,21 @@ function miscEntryEditorHTML(m){
   const preset = presetForEntry(m);
   let rolesHtml;
   if(m.roles){
+    const sMin = m.start? toMin(m.start) : null;
+    const eMinRaw = m.end? toMin(m.end) : null;
     rolesHtml = m.roles.map((r,i)=>{
-      let eligibleFn = ()=>true;
-      if(r==='駕駛') eligibleFn = p=>driverQualificationIssues(p, preset).length===0;
-      else if(r==='車長') eligibleFn = p=>chiefEligible(p, preset, null);
-      else if(r.startsWith('話務')) eligibleFn = p=>!!p.license;
+      let driver=null;
+      if(r==='車長'){
+        const driverIdx=m.roles.indexOf('駕駛');
+        if(driverIdx>-1) driver = state.personnel.find(p=>p.id===m.personIds[driverIdx]);
+      }
+      const reasonsFn = p=>roleIneligibilityReasons(p, r, preset, driver, currentDate, sMin, eMinRaw);
       return `<div class="row wrap" style="margin-bottom:6px">
         <div class="grow"><label>${esc(r)}</label>
-          <select data-inline-role-sel="${i}"><option value="">（未指派）</option>${personOptionsPrioritized(m.personIds[i], eligibleFn)}</select>
+          ${rolePickerHTML('inlineRoleSel-'+m.id+'-'+i, m.personIds[i]||'', reasonsFn)}
         </div>
         <label style="display:flex;align-items:center;gap:4px;font-size:12px;align-self:flex-end;padding-bottom:8px">
-          <input type="checkbox" data-inline-lock="${i}" style="width:auto" ${(m.lockedSlots&&m.lockedSlots[i])?'checked':''}> 🔒暫不排
+          <input type="checkbox" data-inline-lock="${m.id}-${i}" style="width:auto" ${(m.lockedSlots&&m.lockedSlots[i])?'checked':''}> 🔒暫不排
         </label>
       </div>`;
     }).join('');
@@ -5433,6 +5524,7 @@ function wireMiscInlineEditors(){
       });
     }
   }
+  wireRolePickers();
   document.querySelectorAll('[data-inline-save]').forEach(btn=>{
     btn.onclick=()=>{
       const id = btn.dataset.inlineSave;
@@ -5444,11 +5536,11 @@ function wireMiscInlineEditors(){
       m.end = getTimeSelectValue('inlineEnd-'+id);
       if(m.roles){
         m.personIds = m.roles.map((_,i)=>{
-          const sel=document.querySelector(`[data-inline-role-sel="${i}"]`);
-          return sel? sel.value : m.personIds[i];
+          const input=document.getElementById(`inlineRoleSel-${id}-${i}`);
+          return input? (input.value||undefined) : m.personIds[i];
         });
         m.lockedSlots = m.roles.map((_,i)=>{
-          const cb=document.querySelector(`[data-inline-lock="${i}"]`);
+          const cb=document.querySelector(`[data-inline-lock="${id}-${i}"]`);
           return cb? cb.checked : false;
         });
       } else {
@@ -5543,17 +5635,12 @@ function renderMisc(){
       ${miscSelectedRoles? `
         <div class="hint" style="margin-bottom:6px">此項目需分別指定：${miscSelectedRoles.join('、')}</div>
         ${miscSelectedRoles.map((r,i)=>{
-          let eligibleFn = ()=>false;
           const presetForForm = state.miscPresets.find(p=>p.role===miscSelectedPresetRole);
-          if(r==='駕駛'){
-            eligibleFn = p=>driverQualificationIssues(p, presetForForm).length===0;
-          } else if(r==='車長'){
-            eligibleFn = p=>chiefEligible(p, presetForForm, null);
-          }
+          const reasonsFn = p=>roleIneligibilityReasons(p, r, presetForForm, null, currentDate, null, null);
           return `
           <div class="row wrap" style="margin-bottom:8px">
             <div class="grow"><label>${esc(r)}</label>
-              <select id="mRoleSel${i}"><option value="">（未指派）</option>${personOptionsPrioritized(undefined, eligibleFn)}</select>
+              ${rolePickerHTML('mRoleSel'+i, '', reasonsFn)}
             </div>
             <label style="display:flex;align-items:center;gap:4px;font-size:12px;align-self:flex-end;padding-bottom:8px">
               <input type="checkbox" class="mp-lock-slot" data-lock-idx="${i}" style="width:auto"> 🔒暫不排
@@ -5687,51 +5774,29 @@ function renderMisc(){
       wireMiscCheckboxes();
       return;
     }
-    const selects = miscSelectedRoles.map((_,i)=>document.getElementById('mRoleSel'+i));
-    selects.forEach((sel,idx)=>{
-      if(!sel) return;
-      const r = miscSelectedRoles[idx];
+    miscSelectedRoles.forEach((r,idx)=>{
+      const listEl = document.getElementById('mRoleSel'+idx+'-list');
+      const hiddenInput = document.getElementById('mRoleSel'+idx);
+      if(!listEl || !hiddenInput) return;
+      const currentVal = hiddenInput.value;
       let driver=null;
-      if(r==='車長' && miscSelectedRoles){
+      if(r==='車長'){
         const driverIdx=miscSelectedRoles.indexOf('駕駛');
         if(driverIdx>-1){
-          const driverSel=document.getElementById('mRoleSel'+driverIdx);
-          driver = driverSel? state.personnel.find(p=>p.id===driverSel.value) : null;
+          const driverInput=document.getElementById('mRoleSel'+driverIdx);
+          driver = driverInput? state.personnel.find(p=>p.id===driverInput.value) : null;
         }
       }
-      const currentVal = sel.value;
-      const opts=[...sel.options];
-      const placeholder = opts.find(o=>!o.value);
-      const real = opts.filter(o=>o.value);
-      const withBusy = real.map(o=>{
-        const person = state.personnel.find(p=>p.id===o.value);
-        const reasons=[];
-        if(hasTime && isPersonUnavailable(o.value, currentDate, s, wrapEndMin(s, e0))){
-          unavailabilityReasonsInRange(o.value, currentDate, s, wrapEndMin(s, e0)).forEach(msg=>reasons.push(msg));
-        }
-        if(person){
-          if(r==='駕駛'){
-            driverQualificationIssues(person, presetForForm).forEach(m=>reasons.push(m));
-          } else if(r==='車長'){
-            if(!['士官','軍官'].includes(rankCategory(person.rank))) reasons.push('需士官以上');
-            if(driver && rankIndex(person.rank)>=rankIndex(driver.rank)) reasons.push('階級須高於駕駛');
-            if(presetForForm && presetForForm.requiredMedCert && !person.medCert) reasons.push('需具備EMT或醫生證書');
-          } else if(r && r.startsWith('話務')){
-            if(!person.license) reasons.push('需至少小型車駕照');
-          } else if(!r && presetForForm){
-            driverQualificationIssues(person, presetForForm).forEach(m=>reasons.push(m));
-          }
-        }
-        const busy = reasons.length>0;
-        const baseText = o.textContent.replace(/\s*🚫不可排(（[^）]*）)?$/,'');
-        const text = baseText + (busy? ` 🚫不可排（${[...new Set(reasons)].join('・')}）`:'');
-        return {value:o.value, text, busy, selected:o.value===currentVal};
+      const reasonsFn = p=>roleIneligibilityReasons(p, r, presetForForm, driver, currentDate, s, e0);
+      const sorted=[...state.personnel].sort((a,b)=>{
+        const ra=reasonsFn(a), rb=reasonsFn(b);
+        const pa=ra.length?1:0, pb=rb.length?1:0;
+        if(pa!==pb) return pa-pb;
+        return groupIndex(a.group)-groupIndex(b.group) || rankIndex(a.rank)-rankIndex(b.rank);
       });
-      withBusy.sort((a,b)=>(a.busy?1:0)-(b.busy?1:0));
-      let html = placeholder? `<option value="">${placeholder.textContent}</option>` : '';
-      html += withBusy.map(o=>`<option value="${o.value}" ${o.selected?'selected':''} style="${o.busy?'color:var(--danger)':''}">${esc(o.text)}</option>`).join('');
-      sel.innerHTML = html;
+      listEl.innerHTML = rolePickerRows('mRoleSel'+idx, sorted, currentVal, reasonsFn);
     });
+    wireRolePickers(()=>refreshPeopleFlags());
   }
   function updateNextDayHint(){
     const s=getTimeSelectValue('mStart'), e=getTimeSelectValue('mEnd');
@@ -5776,22 +5841,6 @@ function renderMisc(){
   }
   if(document.getElementById('mFreeform')){
     document.getElementById('mFreeform').onclick=()=>{ miscSelectedRoles=null; miscSelectedPresetRole=null; miscSelectedRestUntil=''; render(); };
-  }
-  if(miscSelectedRoles){
-    const driverIdx=miscSelectedRoles.indexOf('駕駛');
-    const chiefIdx=miscSelectedRoles.indexOf('車長');
-    if(driverIdx>-1 && chiefIdx>-1){
-      const driverSel=document.getElementById('mRoleSel'+driverIdx);
-      driverSel.addEventListener('change', ()=>{
-        const driver=state.personnel.find(p=>p.id===driverSel.value);
-        const chiefSel=document.getElementById('mRoleSel'+chiefIdx);
-        const curVal=chiefSel.value;
-        const presetForForm = state.miscPresets.find(p=>p.role===miscSelectedPresetRole);
-        const eligibleFn = p=>chiefEligible(p, presetForForm, driver);
-        chiefSel.innerHTML = `<option value="">（未指派）</option>` + personOptionsPrioritized(curVal, eligibleFn);
-        refreshPeopleFlags();
-      });
-    }
   }
   app.querySelectorAll('[data-preset]').forEach(b=>{
     b.onclick=(ev)=>{
