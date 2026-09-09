@@ -108,7 +108,7 @@ textarea{min-height:50px;resize:vertical;}
     <div class="row" style="gap:6px;align-items:center">
       <button class="ghost small" id="undoBtn" title="復原上一步" disabled>↩️</button>
       <button class="ghost small" id="redoBtn" title="取消復原（重做）" disabled>↪️</button>
-      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v37</span></h1>
+      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v38</span></h1>
     </div>
     <div class="row" style="gap:6px;align-items:center">
       <select id="timeStepSelect" style="font-size:11px;padding:3px 6px;width:auto">
@@ -1373,7 +1373,7 @@ function batchLtPeopleCheckboxesHTML(groupFilter, searchFilter){
   if(!list.length) return `<div class="empty">找不到符合的人員</div>`;
   const rGroups=[...new Set(list.map(p=>p.group).filter(Boolean))].sort((a,b)=>groupIndex(a)-groupIndex(b));
   const rList = rGroups.length? rGroups : [''];
-  return rList.map(g=>{
+  return personListSummaryHTML(list, state.personnel) + rList.map(g=>{
     const members=list.filter(p=>p.group===g).sort((a,b)=>rankIndex(a.rank)-rankIndex(b.rank));
     if(!members.length) return '';
     return `<h3>${g?esc(g):'未分組'}</h3>` + members.map(p=>`
@@ -1476,6 +1476,7 @@ function renderPeople(){
 `)}
     <div class="card">
       <div class="section-title"><h2 style="margin:0" id="pplCountLabel">名冊（${state.personnel.length}人）</h2><button class="ghost small" id="pplClearFilter">清除篩選</button></div>
+      <div id="pplSummary">${personListSummaryHTML(state.personnel, state.personnel)}</div>
       <div class="row wrap" style="margin-bottom:8px">
         <div class="grow"><label>搜尋姓名</label><input type="text" id="pplSearch" placeholder="輸入姓名關鍵字" value="${esc(pplFilterState.kw)}"></div>
         <div style="width:120px"><label>排組篩選</label>
@@ -1636,7 +1637,9 @@ function renderPeople(){
     const html=renderPeopleGroups(groups, filterFn);
     area.innerHTML = html || `<div class="empty">找不到符合的人員</div>`;
     wirePeopleListButtons();
-    const filteredTotal = state.personnel.filter(filterFn).length;
+    const filteredPeople = state.personnel.filter(filterFn);
+    document.getElementById('pplSummary').innerHTML = personListSummaryHTML(filteredPeople, state.personnel);
+    const filteredTotal = filteredPeople.length;
     const isFiltering = kw || gf || lf.length || mf.length || sf.length;
     document.getElementById('pplCountLabel').textContent = isFiltering
       ? `名冊（篩選出 ${filteredTotal} / 共 ${state.personnel.length} 人）`
@@ -1957,7 +1960,7 @@ function lvPeopleCheckboxesHTML(groupFilter, searchFilter){
   if(!list.length) return `<div class="empty">找不到符合的人員</div>`;
   const rGroups=[...new Set(list.map(p=>p.group).filter(Boolean))].sort((a,b)=>groupIndex(a)-groupIndex(b));
   const rList = rGroups.length? rGroups : [''];
-  return rList.map(g=>{
+  return personListSummaryHTML(list, state.personnel) + rList.map(g=>{
     const members=list.filter(p=>p.group===g).sort((a,b)=>rankIndex(a.rank)-rankIndex(b.rank));
     if(!members.length) return '';
     return `<h3>${g?esc(g):'未分組'}</h3>` + members.map(p=>`
@@ -1977,7 +1980,7 @@ function renderReverseCheckboxes(){
   if(!list.length) return `<div class="empty">找不到符合的人員</div>`;
   const rGroups=[...new Set(list.map(p=>p.group).filter(Boolean))].sort((a,b)=>groupIndex(a)-groupIndex(b));
   const rList = rGroups.length? rGroups : [''];
-  return rList.map(g=>{
+  return personListSummaryHTML(list, state.personnel) + rList.map(g=>{
     const members=list.filter(p=>p.group===g).sort((a,b)=>rankIndex(a.rank)-rankIndex(b.rank));
     if(!members.length) return '';
     return `<h3>${g?esc(g):'未分組'}</h3>` + members.map(p=>`
@@ -2413,14 +2416,14 @@ const COMMON_HOLIDAYS_FIXED = [
   {m:10,d:25,name:'台灣光復節'}, {m:12,d:25,name:'行憲紀念日'}
 ];
 let outingFilterState={search:'',group:''};
+function outingFilterFn(p){
+  if(outingFilterState.search && !p.name.includes(outingFilterState.search)) return false;
+  if(outingFilterState.group==='__none' && p.group) return false;
+  if(outingFilterState.group && outingFilterState.group!=='__none' && p.group!==outingFilterState.group) return false;
+  return true;
+}
 function renderOutingList(date){
-  const filterFn = p=>{
-    if(outingFilterState.search && !p.name.includes(outingFilterState.search)) return false;
-    if(outingFilterState.group==='__none' && p.group) return false;
-    if(outingFilterState.group && outingFilterState.group!=='__none' && p.group!==outingFilterState.group) return false;
-    return true;
-  };
-  const list = outingEligibleList(date, filterFn);
+  const list = outingEligibleList(date, outingFilterFn);
   return list.length? list.map(p=>`<div class="muted">・${esc(p.name)}（${p.group||'未分組'}·${p.rank}）</div>`).join('') : `<div class="empty">找不到符合條件的人</div>`;
 }
 function outingEligibleList(date, filterFn){
@@ -2452,6 +2455,57 @@ function personDutySummary(personId, date){
     }
   });
   return parts;
+}
+let onDutyFilterState={search:'',group:''};
+function onDutyItemsHTML(list, date){
+  if(!list.length) return `<div class="empty">找不到符合的人員</div>`;
+  return list.map(p=>{
+    const duties = personDutySummary(p.id, date);
+    return `<div class="row" style="margin-bottom:2px">
+      <span class="muted grow">・${esc(p.name)}（${p.group||'未分組'}·${p.rank}）：${duties.length? duties.map(esc).join('、') : '無排班'}</span>
+      <button class="ghost small" data-quick-incident="${p.id}">登記事故</button>
+    </div>`;
+  }).join('');
+}
+function onDutyCardHTML(){
+  const date=currentDate;
+  const fullList = onDutyList(date);
+  let list = fullList;
+  if(onDutyFilterState.search) list = list.filter(p=>p.name.includes(onDutyFilterState.search));
+  if(onDutyFilterState.group==='__none') list = list.filter(p=>!p.group);
+  else if(onDutyFilterState.group) list = list.filter(p=>p.group===onDutyFilterState.group);
+  const inner = `
+    <div class="row wrap" style="margin-bottom:8px">
+      <div class="grow"><label>搜尋姓名</label><input type="text" id="onDutySearch" placeholder="輸入姓名關鍵字" value="${esc(onDutyFilterState.search)}"></div>
+      <div style="width:120px"><label>排組篩選</label>
+        <select id="onDutyGroupFilter">
+          <option value="" ${!onDutyFilterState.group?'selected':''}>（全部）</option>
+          ${[...new Set(state.personnel.map(p=>p.group).filter(Boolean))].sort((a,b)=>groupIndex(a)-groupIndex(b)).map(g=>`<option value="${esc(g)}" ${onDutyFilterState.group===g?'selected':''}>${esc(g)}</option>`).join('')}
+          <option value="__none" ${onDutyFilterState.group==='__none'?'selected':''}>未分組</option>
+        </select>
+      </div>
+    </div>
+    <div id="onDutySummary">${personListSummaryHTML(list, fullList)}</div>
+    <div id="onDutyItems">${onDutyItemsHTML(list, date)}</div>
+  `;
+  return collapsibleCardHTML('onDuty', `${minguoLabel(date)} 在勤人員（非休假，含當日勤務）（${fullList.length}人）`, inner);
+}
+function wireOnDutyCardEvents(){
+  const searchEl = document.getElementById('onDutySearch');
+  if(!searchEl) return;
+  function refresh(){
+    const date=currentDate;
+    const fullList = onDutyList(date);
+    let list = fullList;
+    if(onDutyFilterState.search) list = list.filter(p=>p.name.includes(onDutyFilterState.search));
+    if(onDutyFilterState.group==='__none') list = list.filter(p=>!p.group);
+    else if(onDutyFilterState.group) list = list.filter(p=>p.group===onDutyFilterState.group);
+    document.getElementById('onDutySummary').innerHTML = personListSummaryHTML(list, fullList);
+    document.getElementById('onDutyItems').innerHTML = onDutyItemsHTML(list, date);
+    wireQuickIncidentButtons();
+  }
+  searchEl.oninput=(e)=>{ onDutyFilterState.search=e.target.value.trim(); refresh(); };
+  document.getElementById('onDutyGroupFilter').onchange=(e)=>{ onDutyFilterState.group=e.target.value; refresh(); };
 }
 function renderOnDutyList(date){
   const people = onDutyList(date);
@@ -2571,11 +2625,15 @@ function wireDayListCardEvents(){
   }
 }
 let longTermFilterState={search:'',group:''}; // for the 長期事故 card
-function longTermItemsHTML(){
+function longTermFilteredList(){
   let list = state.personnel.filter(p=>personLongTerm(p).mode!=='off');
   if(longTermFilterState.search) list = list.filter(p=>p.name.includes(longTermFilterState.search));
   if(longTermFilterState.group==='__none') list = list.filter(p=>!p.group);
   else if(longTermFilterState.group) list = list.filter(p=>p.group===longTermFilterState.group);
+  return list;
+}
+function longTermItemsHTML(){
+  const list = longTermFilteredList();
   if(!list.length) return `<div class="empty">找不到符合的人員</div>`;
   return list.map(p=>`<div class="muted">・${esc(p.name)}（${p.group||'未分組'}·${p.rank}）：${longTermLabel(p)}</div>`).join('');
 }
@@ -2601,6 +2659,7 @@ function renderUnavail(){
           </select>
         </div>
       </div>
+      <div id="longTermSummary">${personListSummaryHTML(longTermFilteredList(), longTerm)}</div>
       <div id="longTermItems">${longTermItemsHTML()}</div>
       <div class="hint">要修改或恢復可排，到「人員」分頁點該人「編輯」調整長期事故設定。</div>
     `) : '';
@@ -2802,6 +2861,7 @@ function renderUnavail(){
           </select>
         </div>
       </div>
+      <div id="outingSummary">${personListSummaryHTML(outingEligibleList(currentDate, outingFilterFn), outingEligibleList(currentDate))}</div>
       <div id="outingListArea">${renderOutingList(currentDate)}</div>
     `);
   const dayListHTML = dayListCardHTML();
@@ -2927,6 +2987,7 @@ function renderUnavail(){
       saveState(); render();
     };
     function refreshOutingList(){
+      document.getElementById('outingSummary').innerHTML = personListSummaryHTML(outingEligibleList(currentDate, outingFilterFn), outingEligibleList(currentDate));
       document.getElementById('outingListArea').innerHTML = renderOutingList(currentDate);
     }
     document.getElementById('outingSearch').oninput=(e)=>{ outingFilterState.search=e.target.value.trim(); refreshOutingList(); };
@@ -2936,6 +2997,7 @@ function renderUnavail(){
   wireReasonPoolDeleteButtons();
   if(document.getElementById('longTermSearch')){
     function refreshLongTermItems(){
+      document.getElementById('longTermSummary').innerHTML = personListSummaryHTML(longTermFilteredList(), longTerm);
       document.getElementById('longTermItems').innerHTML = longTermItemsHTML();
     }
     document.getElementById('longTermSearch').oninput=(e)=>{ longTermFilterState.search=e.target.value.trim(); refreshLongTermItems(); };
@@ -3193,7 +3255,7 @@ function uaPeopleCheckboxesHTML(groupFilter, date, searchFilter){
     if(aa!==bb) return aa-bb;
     return groupIndex(a.group)-groupIndex(b.group) || rankIndex(a.rank)-rankIndex(b.rank);
   });
-  return list.map(p=>`
+  return personListSummaryHTML(list, state.personnel) + list.map(p=>`
     <label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0">
       <input type="checkbox" class="ua-person-cb" value="${p.id}" style="width:auto" ${uaCheckedIds.has(p.id)?'checked':''}>
       ${esc(p.name)}（${p.group||'未分組'}·${p.rank}${personBadges(p)}）${hasAllDay(p)?' <span class="warn">✅已登記全天</span>':''}
@@ -3223,6 +3285,20 @@ function dutyDateRangeLabel(date){
   return `${fmtDateShort(prev)}（${weekdayLabel(prev)}）-${fmtDateShort(date)}（${weekdayLabel(date)}）`;
 }
 function esc(s){ return (s||'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+/* shared "篩選出 X / 共 Y 人・N官M士K兵" summary line — every person-list
+   table in the app (roster, checkbox pickers, on-duty/away lists, etc.)
+   uses this so the same at-a-glance headcount is available everywhere,
+   not just in the one or two places that happened to compute it before.
+   filteredList is whatever's currently visible after search/group
+   filtering; totalList is the unfiltered base set it was filtered from
+   (pass the same array for both if there's no meaningful "total" to
+   compare against, e.g. a list that's already scoped to one day). */
+function personListSummaryHTML(filteredList, totalList){
+  const bd={軍官:0,士官:0,士兵:0};
+  filteredList.forEach(p=>{ const k=rankCategory(p.rank); if(k) bd[k]++; });
+  const showTotal = totalList && totalList.length!==filteredList.length;
+  return `<div class="muted" style="margin-bottom:8px">${showTotal? `篩選出 ${filteredList.length} / 共 ${totalList.length} 人` : `共 ${filteredList.length} 人`}・${bd.軍官}官${bd.士官}士${bd.士兵}兵</div>`;
+}
 /* small reusable "manage this reason preset pool" widget — a row of pills
    with a ✕ to remove each one, used identically by the 長期事故 pool
    (state.longtermReasonOptions) and the 事故登載 pool
@@ -3334,13 +3410,15 @@ let queryFilterState={time:'08:00',group:'',rank:''}; // persists across re-rend
 let hourlyPeopleFilterState={search:'',group:''}; // shared filter for whichever hour row(s) are expanded
 function hourlyAvailablePeopleHTML(h){
   const s=h*60, e=(h+1)*60;
-  let list = state.personnel.filter(p=>!isPersonUnavailable(p.id,currentDate,s,e));
+  const available = state.personnel.filter(p=>!isPersonUnavailable(p.id,currentDate,s,e));
+  let list = available;
   if(hourlyPeopleFilterState.search) list=list.filter(p=>p.name.includes(hourlyPeopleFilterState.search));
   if(hourlyPeopleFilterState.group==='__none') list=list.filter(p=>!p.group);
   else if(hourlyPeopleFilterState.group) list=list.filter(p=>p.group===hourlyPeopleFilterState.group);
   list.sort((a,b)=>groupIndex(a.group)-groupIndex(b.group)||rankIndex(a.rank)-rankIndex(b.rank));
-  if(!list.length) return `<div class="empty">找不到符合的人員</div>`;
-  return list.map(p=>`<div class="muted">・${esc(p.name)}（${p.group||'未分組'}·${p.rank}）</div>`).join('');
+  const summary = personListSummaryHTML(list, available);
+  if(!list.length) return summary + `<div class="empty">找不到符合的人員</div>`;
+  return summary + list.map(p=>`<div class="muted">・${esc(p.name)}（${p.group||'未分組'}·${p.rank}）</div>`).join('');
 }
 let collapseState={};
 function isExpanded(key){ return !!collapseState[key]; }
@@ -3560,7 +3638,7 @@ function renderStats(){
       <div class="hint">此數字已包含休假/事故、長期事故、補休、以及當天已排定的勤務。點任一小時列可展開看有空名單，並能搜尋姓名、篩選排組。</div>
 `);
   const groupRankStatsHTML = collapsibleCardHTML('groupRankStats', '各排組人數統計（官/士/兵）', renderGroupRankStats());
-  const onDutyHTML = collapsibleCardHTML('onDuty', `${minguoLabel(currentDate)} 在勤人員（非休假，含當日勤務）（${onDutyList(currentDate).length}人）`, renderOnDutyList(currentDate));
+  const onDutyHTML = onDutyCardHTML();
   const notInCampHTML = notInCampCardHTML();
   const incidentHTML = collapsibleCardHTML('incidentBreakdown', `${minguoLabel(currentDate)} 其他事故/管制分類（點各項展開名單）`, renderIncidentBreakdown(currentDate));
   const cardDefs = [
@@ -3585,6 +3663,7 @@ function renderStats(){
     if(groupEl) groupEl.onchange=(e)=>{ hourlyPeopleFilterState.group=e.target.value; document.getElementById('hourPeopleList-'+h).innerHTML=hourlyAvailablePeopleHTML(h); };
   });
   wireNotInCampCardEvents();
+  wireOnDutyCardEvents();
   wireLeaveEditButtons();
   wireQuickIncidentButtons();
   document.getElementById('queryBtn').onclick=()=>{
@@ -4625,6 +4704,12 @@ function openAdhocAddModal(personId, defaultStart, defaultEnd){
     saveState(); modal.remove(); render();
   };
 }
+function miscFreeformFilteredList(){
+  let list=[...state.personnel];
+  if(miscFreeformFilterState.group) list = miscFreeformFilterState.group==='__none'? list.filter(p=>!p.group) : list.filter(p=>p.group===miscFreeformFilterState.group);
+  if(miscFreeformFilterState.search) list = list.filter(p=>p.name.includes(miscFreeformFilterState.search));
+  return list;
+}
 function miscPeopleCheckboxesHTML(groupFilter, searchFilter){
   if(!state.personnel.length) return `<div class="empty">尚無人員</div>`;
   let list=[...state.personnel];
@@ -5106,6 +5191,7 @@ function renderMisc(){
           <button class="ghost small" id="mClearFilter">清除篩選</button>
         </div>
         <div class="hint" style="margin-bottom:4px">人員（可複選，若已填時間會標示 🚫不可排 及原因）</div>
+        <div id="mPeopleSummary">${personListSummaryHTML(miscFreeformFilteredList(), state.personnel)}</div>
         <div id="mPeopleList" style="max-height:260px;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:8px;margin-bottom:8px">${miscPeopleCheckboxesHTML(miscFreeformFilterState.group||undefined, miscFreeformFilterState.search||undefined)}</div>
       `}
       <button class="primary" id="mAdd" style="width:100%">${miscEditingId? '儲存修改':'新增'}</button>
@@ -5240,6 +5326,7 @@ function renderMisc(){
   updateNextDayHint();
   if(document.getElementById('mSearch')){
     function refreshMiscCheckboxes(){
+      document.getElementById('mPeopleSummary').innerHTML = personListSummaryHTML(miscFreeformFilteredList(), state.personnel);
       document.getElementById('mPeopleList').innerHTML = miscPeopleCheckboxesHTML(miscFreeformFilterState.group||undefined, miscFreeformFilterState.search||undefined);
       wireMiscCheckboxes();
       refreshPeopleFlags();
