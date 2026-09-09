@@ -110,7 +110,7 @@ textarea{min-height:50px;resize:vertical;}
     <div class="row" style="gap:6px;align-items:center">
       <button class="ghost small" id="undoBtn" title="復原上一步" disabled>↩️</button>
       <button class="ghost small" id="redoBtn" title="取消復原（重做）" disabled>↪️</button>
-      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v47</span></h1>
+      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v48</span></h1>
     </div>
     <div class="row" style="gap:6px;align-items:center">
       <select id="timeStepSelect" style="font-size:11px;padding:3px 6px;width:auto">
@@ -4402,6 +4402,7 @@ function openCategoryEditor(catId){
   modal.innerHTML = `
     <div style="background:var(--panel);width:100%;max-height:88vh;overflow:auto;border-radius:12px 12px 0 0;padding:14px;">
       <div class="section-title"><h2 style="margin:0">編輯：${esc(cat.name)}</h2><div class="row" style="gap:4px"><button class="ghost small" id="duplicateCatBtn">📋 複製此類別</button><button class="ghost small" id="closeModal">關閉</button></div></div>
+      <button class="ghost small danger" id="deleteCatBtn" style="width:100%;margin-bottom:8px">🗑️ 刪除此類別</button>
       <label>類別名稱</label><input type="text" id="catName" value="${esc(cat.name)}" style="margin-bottom:8px">
       <div class="row wrap" style="margin-bottom:8px">
         <label style="display:flex;align-items:center;gap:6px;font-size:13px"><input type="checkbox" id="catRest" style="width:auto" ${cat.enforceRest?'checked':''}> 套用6小時規則</label>
@@ -4618,6 +4619,21 @@ function openCategoryEditor(catId){
       saveState();
       modal.remove();
       showAlert(`已建立「${newName}」，複製自「${cat.name}」的全部設定，可以再進去微調細節。`);
+      render();
+    });
+  };
+  document.getElementById('deleteCatBtn').onclick=()=>{
+    showConfirm(`確定要刪除「${cat.name}」這個類別嗎？會一併移除這個類別的預設班別設定、所有日期的專屬班別設定，以及所有日期已經排定的人員。如果刪錯了，可以用畫面左上角的復原（↩️）按鈕還原。`, ()=>{
+      state.categories = state.categories.filter(c=>c.id!==cat.id);
+      delete state.categoryShiftDefaults[cat.id];
+      Object.keys(state.dailyShiftOverrides).forEach(d=>{ delete state.dailyShiftOverrides[d][cat.id]; });
+      Object.keys(state.assign).forEach(d=>{ delete state.assign[d][cat.id]; });
+      Object.keys(state.dutyChanges).forEach(d=>{
+        state.dutyChanges[d] = (state.dutyChanges[d]||[]).filter(ch=>!(ch.source.kind==='cat' && ch.source.catId===cat.id));
+      });
+      saveState();
+      modal.remove();
+      showAlert(`已刪除「${cat.name}」。`);
       render();
     });
   };
