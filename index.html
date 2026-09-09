@@ -102,7 +102,7 @@ textarea{min-height:50px;resize:vertical;}
     <div class="row" style="gap:6px;align-items:center">
       <button class="ghost small" id="undoBtn" title="復原上一步" disabled>↩️</button>
       <button class="ghost small" id="redoBtn" title="取消復原（重做）" disabled>↪️</button>
-      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v31</span></h1>
+      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v32</span></h1>
     </div>
     <div class="row" style="gap:6px;align-items:center">
       <select id="timeStepSelect" style="font-size:11px;padding:3px 6px;width:auto">
@@ -1809,11 +1809,16 @@ function isLeaveBufferEntry(u){
   return (u.start==='18:00' && u.end==='24:00') || (u.start==='12:00' && u.end==='24:00') || (u.start==='00:00' && u.end==='07:30');
 }
 function onDutyList(date){
-  const onLeaveIds = new Set((state.unavail[date]||[]).filter(u=>u.allDay && isLeaveReason(u.reason)).map(u=>u.personId));
+  const dayEntries = state.unavail[date]||[];
+  const awayIds = new Set(dayEntries.filter(u=>u.allDay && (isLeaveReason(u.reason) || u.inCamp===false)).map(u=>u.personId));
   return state.personnel.filter(p=>{
-    if(onLeaveIds.has(p.id)) return false;
+    if(awayIds.has(p.id)) return false;
     const lt = personLongTerm(p);
-    if(lt.mode!=='off' && !lt.inCamp) return false; // genuinely away (e.g. 受訓) — not "in camp" even though not on 休假
+    // 「在營」only makes someone disappear from this whole-day list when it's
+    // a whole-day setting (mode='allday') — a 時段性不可排(mode='range')'s
+    // 在營=否 only means they're away during THAT time window each day, not
+    // all day, so it must not exclude them from a day-level list like this
+    if(lt.mode==='allday' && !lt.inCamp) return false;
     return true;
   }).sort((a,b)=>groupIndex(a.group)-groupIndex(b.group) || rankIndex(a.rank)-rankIndex(b.rank));
 }
@@ -2070,13 +2075,24 @@ function renderUnavail(){
         <div class="grow"><label>事故原因(選填)</label>
           <select id="uaReasonPreset">
             <option value="">（不指定）</option>
-            ${UNAVAIL_REASON_PRESETS.map(r=>`<option>${r}</option>`).join('')}
+            ${[...new Set([...UNAVAIL_REASON_PRESETS, ...LONGTERM_REASON_PRESETS])].map(r=>`<option>${r}</option>`).join('')}
             <option value="__custom">其他(手動輸入)</option>
           </select>
         </div>
       </div>
       <div class="row wrap" id="uaReasonCustomRow" style="margin-bottom:8px;display:none">
         <div class="grow"><label>原因內容</label><input type="text" id="uaReasonCustom" placeholder="請輸入原因"></div>
+      </div>
+      <div class="hint" id="uaRosterDefaultHint" style="margin-bottom:8px;display:none"></div>
+      <div class="row wrap" style="margin-bottom:8px">
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text)">
+          <input type="checkbox" id="uaInCamp" style="width:auto" checked> 在營（人在營區，只是不排這天的勤務；取消勾選代表這天實際不在營區）
+        </label>
+      </div>
+      <div class="row wrap" style="margin-bottom:8px">
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text)">
+          <input type="checkbox" id="uaSyncRosterDefault" style="width:auto"> 同時更新到人員名冊預設（僅套用給勾選中、名冊本來就有長期事故設定的人）
+        </label>
       </div>
       <div class="row wrap" style="margin-bottom:8px">
         <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text)">
@@ -2253,8 +2269,34 @@ function renderUnavail(){
       cb.onchange=()=>{
         if(cb.checked) uaCheckedIds.add(cb.value);
         else uaCheckedIds.delete(cb.value);
+        applyUaRosterDefaultHint();
       };
     });
+  }
+  /* when exactly one checked person already has a 長期事故 reason set on
+     the roster, surface it as a hint and quietly pre-fill the reason/在營
+     fields (only if the form is still at its untouched defaults) so the
+     common case — registering today's specific instance of someone's
+     usual long-term reason — doesn't require re-typing it */
+  function applyUaRosterDefaultHint(){
+    const hintEl = document.getElementById('uaRosterDefaultHint');
+    if(uaCheckedIds.size!==1){ hintEl.style.display='none'; return; }
+    const person = state.personnel.find(p=>p.id===[...uaCheckedIds][0]);
+    const lt = person? personLongTerm(person) : {mode:'off'};
+    if(!person || lt.mode==='off' || !lt.reason){ hintEl.style.display='none'; return; }
+    hintEl.style.display='block';
+    hintEl.textContent = `💡 ${person.name} 名冊上的長期事故預設是「${lt.reason}（${lt.inCamp?'在營':'不在營'}）」，下面已帶入，可再依今天實際狀況調整。`;
+    const presetSel = document.getElementById('uaReasonPreset');
+    if(presetSel && !presetSel.value){
+      const opt = [...presetSel.options].find(o=>o.value===lt.reason);
+      if(opt) presetSel.value = lt.reason;
+      else {
+        presetSel.value = '__custom';
+        document.getElementById('uaReasonCustomRow').style.display='flex';
+        document.getElementById('uaReasonCustom').value = lt.reason;
+      }
+    }
+    document.getElementById('uaInCamp').checked = lt.inCamp;
   }
   wireUaCheckboxes();
   document.getElementById('uaSearch').oninput=(e)=>{
@@ -2410,6 +2452,8 @@ function renderUnavail(){
     const start=document.getElementById('uaStart').value, end=document.getElementById('uaEnd').value;
     const preset=document.getElementById('uaReasonPreset').value;
     const reason = preset==='__custom'? document.getElementById('uaReasonCustom').value.trim() : preset;
+    const inCamp = document.getElementById('uaInCamp').checked;
+    const syncRosterDefault = document.getElementById('uaSyncRosterDefault').checked;
     const multi=document.getElementById('uaMultiDay').checked;
     let dates=[currentDate];
     if(multi){
@@ -2420,9 +2464,17 @@ function renderUnavail(){
     dates.forEach(d=>{
       if(!state.unavail[d]) state.unavail[d]=[];
       personIds.forEach(personId=>{
-        state.unavail[d].push({id:uid(),personId,allDay,start,end,reason});
+        state.unavail[d].push({id:uid(),personId,allDay,start,end,reason,inCamp});
       });
     });
+    if(syncRosterDefault && reason){
+      personIds.forEach(personId=>{
+        const person = state.personnel.find(p=>p.id===personId);
+        if(person && personLongTerm(person).mode!=='off'){
+          person.longTerm = {...personLongTerm(person), reason, inCamp};
+        }
+      });
+    }
     uaCheckedIds.clear();
     saveState(); render();
   };
@@ -2986,6 +3038,19 @@ function renderSchedule(){
     <div class="card">
       <button class="primary" id="autoAssignBtn2" style="width:100%">🪄 自動補空缺（不覆蓋已排的）</button>
     </div>
+    ${collapsibleCardHTML('copyDay', '複製某天的設定到另一天', `
+      <div class="row wrap" style="margin-bottom:8px">
+        <div class="grow"><label>從（來源日期）</label><input type="date" id="copyFromDate" value="${currentDate}"></div>
+        <div class="grow"><label>到（目標日期）</label><input type="date" id="copyToDate" value="${nextDateStr(currentDate)}"></div>
+      </div>
+      <div class="row wrap" style="gap:10px;margin-bottom:8px">
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px"><input type="checkbox" id="copyCatShifts" style="width:auto" checked> 排班類別班別結構</label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px"><input type="checkbox" id="copyMisc" style="width:auto"> 其他勤務項目結構</label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px"><input type="checkbox" id="copyUnavail" style="width:auto"> 休假/事故登記</label>
+      </div>
+      <button class="primary" id="copyDayBtn" style="width:100%">複製</button>
+      <div class="hint">「排班類別班別結構」「其他勤務項目結構」只複製時段/人數/角色等設定本身，不複製當天已排入的人員——因為衛哨規則不允許同一人連續兩天站同一時段，直接複製人員容易違規，複製後仍需手動或自動補空缺重新指派。「休假/事故登記」會連同人員一起複製（例如假日留守，禮拜日多半跟禮拜六是同一批人休假）。複製採附加方式，不會清空目標日期原有的資料；如果複製結果不理想，用左上角的復原（↩️）按鈕還原即可。</div>
+    `)}
     ${missingDefaults.length? collapsibleCardHTML('missingDefaults', `⚠️ 少了預設類別（${missingDefaults.length}）`, `
       <div class="muted" style="margin-bottom:8px">偵測到以下類別目前不在清單中（可能是被刪除了），可一鍵還原班別設定（該類別過去已排的內容無法救回，只能還原空白班表結構）：</div>
       <div class="row wrap">
@@ -3026,6 +3091,49 @@ function renderSchedule(){
     </div>
   `;
   document.getElementById('autoAssignBtn2').onclick=()=>{ autoAssignDay(currentDate); autoAssignMiscForDate(currentDate); render(); };
+  document.getElementById('copyDayBtn').onclick=()=>{
+    const from=document.getElementById('copyFromDate').value;
+    const to=document.getElementById('copyToDate').value;
+    if(!from||!to){ showAlert('請選擇來源與目標日期'); return; }
+    if(from===to){ showAlert('來源與目標日期不能相同'); return; }
+    const doCat=document.getElementById('copyCatShifts').checked;
+    const doMisc=document.getElementById('copyMisc').checked;
+    const doUnavail=document.getElementById('copyUnavail').checked;
+    if(!doCat && !doMisc && !doUnavail){ showAlert('請至少勾選一項要複製的內容'); return; }
+    showConfirm(`確定要把 ${from} 的設定複製到 ${to} 嗎？（採附加方式，不會清空 ${to} 原有的資料）`, ()=>{
+      if(doCat){
+        const srcOverride = state.dailyShiftOverrides[from]||{};
+        if(Object.keys(srcOverride).length){
+          if(!state.dailyShiftOverrides[to]) state.dailyShiftOverrides[to]={};
+          Object.keys(srcOverride).forEach(catId=>{
+            state.dailyShiftOverrides[to][catId] = srcOverride[catId].map(s=>({...s, id:uid()}));
+          });
+        }
+      }
+      if(doMisc){
+        const srcMisc = state.misc[from]||[];
+        if(!state.misc[to]) state.misc[to]=[];
+        srcMisc.forEach(m=>{
+          state.misc[to].push({
+            id:uid(), role:m.role, start:m.start, end:m.end, restUntil:m.restUntil||'',
+            roles: m.roles? [...m.roles]:undefined,
+            personIds: m.roles? m.roles.map(()=>undefined) : [],
+            lockedSlots: m.roles? m.roles.map(()=>false) : undefined,
+          });
+        });
+      }
+      if(doUnavail){
+        const srcUnavail = (state.unavail[from]||[]).filter(u=>!isLeaveBufferEntry(u));
+        if(!state.unavail[to]) state.unavail[to]=[];
+        srcUnavail.forEach(u=>{
+          state.unavail[to].push({id:uid(), personId:u.personId, allDay:u.allDay, start:u.start, end:u.end, reason:u.reason, inCamp:u.inCamp});
+        });
+      }
+      saveState();
+      showAlert('複製完成。');
+      render();
+    });
+  };
   wireScheduleCardsDrag();
   wireMiscCardEvents();
   document.getElementById('clearTargetSelectAll').onclick=()=>{
@@ -3649,15 +3757,16 @@ let miscSelectedRoles=null;
 let miscFreeformFilterState={search:'',group:''};
 let miscFreeformCheckedIds=new Set();
 let miscEditingId=null;
-let adhocQueryState={time:'10:00',officer:0,nco:0,enlisted:0,hasRun:false,results:null};
+let adhocQueryState={time:'10:00',officer:0,nco:0,enlisted:0,skill:'',hasRun:false,results:null};
 function runAdhocQuery(){
-  const {time, officer, nco, enlisted} = adhocQueryState;
+  const {time, officer, nco, enlisted, skill} = adhocQueryState;
   const qMin = toMin(time);
   const wanted = {軍官:Number(officer)||0, 士官:Number(nco)||0, 士兵:Number(enlisted)||0};
   const byCategory = {軍官:[], 士官:[], 士兵:[]};
   state.personnel.forEach(p=>{
     const cat = rankCategory(p.rank);
     if(!cat) return;
+    if(skill && !(p.skills||[]).includes(skill)) return;
     if(isPersonUnavailable(p.id, currentDate, qMin, qMin+1)) return;
     const freeMin = freeDurationFrom(p.id, currentDate, qMin);
     const freeUntilMin = qMin+freeMin;
@@ -3679,18 +3788,76 @@ function renderAdhocQueryResult(){
   const {wanted, byCategory} = adhocQueryState.results;
   const p2=n=>String(n).padStart(2,'0');
   const fmtMin=m=>`${p2(Math.floor(m/60)%24)}:${p2(m%60)}`;
-  return ['軍官','士官','士兵'].map(cat=>{
-    if(!wanted[cat]) return '';
+  const anyWanted = wanted.軍官||wanted.士官||wanted.士兵;
+  const cats = anyWanted? ['軍官','士官','士兵'] : ['軍官','士官','士兵']; // show all groups either way when a skill-only search is used
+  return cats.map(cat=>{
     const candidates = byCategory[cat];
-    const enough = candidates.length >= wanted[cat];
-    const shown = candidates;
+    if(!wanted[cat] && !candidates.length) return '';
+    const enough = !wanted[cat] || candidates.length >= wanted[cat];
     return `<div style="margin-bottom:10px">
-      <div class="${enough?'hint':'badge-issue'}" style="margin-bottom:4px">${enough?'':'⚠️ '}需要${cat} ${wanted[cat]} 人，目前有空的共 ${candidates.length} 人</div>
-      ${shown.length? shown.map(({p,freeMin,freeUntilMin,nextCommitment})=>`
-        <div class="muted">・${esc(p.name)}（${p.group||'未分組'}·${p.rank}）：可用到 ${fmtMin(freeUntilMin)}（共${Math.floor(freeMin/60)}時${freeMin%60}分）${nextCommitment? ` → 之後：${esc(nextCommitment)}`:''}</div>
+      ${wanted[cat]? `<div class="${enough?'hint':'badge-issue'}" style="margin-bottom:4px">${enough?'':'⚠️ '}需要${cat} ${wanted[cat]} 人，目前有空的共 ${candidates.length} 人</div>` : `<div class="hint" style="margin-bottom:4px">${cat}（共 ${candidates.length} 人有空）</div>`}
+      ${candidates.length? candidates.map(({p,freeMin,freeUntilMin,nextCommitment})=>`
+        <div class="row" style="align-items:flex-start;margin-bottom:4px">
+          <div class="muted grow">・${esc(p.name)}（${p.group||'未分組'}·${p.rank}${personBadges(p)}）：可用到 ${fmtMin(freeUntilMin)}（共${Math.floor(freeMin/60)}時${freeMin%60}分）${nextCommitment? ` → 之後：${esc(nextCommitment)}`:''}</div>
+          <button class="ghost small" data-adhoc-add="${p.id}" data-adhoc-start="${adhocQueryState.time}" data-adhoc-end="${fmtMin(freeUntilMin)}">加入</button>
+        </div>
       `).join('') : `<div class="empty">此時段沒有${cat}有空</div>`}
     </div>`;
   }).join('');
+}
+/* lets the person go straight from a 臨時任務查詢/搜尋結果 into today's 其他勤務
+   — either folded into an existing freeform entry for today, or as the
+   start of a brand new one — without re-typing the person into the
+   separate 新增項目 form on the 其他勤務 tab */
+function openAdhocAddModal(personId, defaultStart, defaultEnd){
+  const person = state.personnel.find(p=>p.id===personId);
+  if(!person) return;
+  const todayFreeform = (state.misc[currentDate]||[]).filter(m=>!m.roles);
+  const modal=document.createElement('div');
+  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:70;display:flex;align-items:center;justify-content:center;padding:20px;';
+  modal.innerHTML=`
+    <div style="background:var(--panel);max-width:360px;width:100%;border-radius:10px;padding:16px;border:1px solid var(--line);">
+      <h2 style="margin:0 0 10px">將 ${esc(person.name)} 加入其他勤務</h2>
+      <label>加入方式</label>
+      <select id="adhocTarget" style="margin-bottom:8px">
+        <option value="__new">＋建立新項目</option>
+        ${todayFreeform.map(m=>`<option value="${m.id}">套用到「${esc(m.role)}」${m.start&&m.end?` (${m.start}-${m.end})`:''}</option>`).join('')}
+      </select>
+      <div id="adhocNewFields">
+        <label>項目名稱</label><input type="text" id="adhocNewRole" placeholder="例：緊急支援" style="margin-bottom:8px">
+        <div class="row wrap" style="margin-bottom:8px">
+          <div class="grow"><label>開始</label><select id="adhocNewStart">${timeOptions().map(t=>`<option ${t===defaultStart?'selected':''}>${t}</option>`).join('')}</select></div>
+          <div class="grow"><label>結束</label><select id="adhocNewEnd">${timeOptions().map(t=>`<option ${t===defaultEnd?'selected':''}>${t}</option>`).join('')}</select></div>
+        </div>
+      </div>
+      <div class="row wrap">
+        <button class="ghost grow" id="adhocCancel">取消</button>
+        <button class="primary grow" id="adhocConfirm">確認加入</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+  document.getElementById('adhocTarget').onchange=(e)=>{
+    document.getElementById('adhocNewFields').style.display = e.target.value==='__new'? 'block':'none';
+  };
+  document.getElementById('adhocCancel').onclick=()=>modal.remove();
+  document.getElementById('adhocConfirm').onclick=()=>{
+    const target = document.getElementById('adhocTarget').value;
+    if(target==='__new'){
+      const role = document.getElementById('adhocNewRole').value.trim();
+      if(!role){ showAlert('請輸入項目名稱'); return; }
+      const start = document.getElementById('adhocNewStart').value;
+      const end = document.getElementById('adhocNewEnd').value;
+      if(!state.misc[currentDate]) state.misc[currentDate]=[];
+      state.misc[currentDate].push({id:uid(), role, start, end, restUntil:'', personIds:[personId]});
+    } else {
+      const entry = (state.misc[currentDate]||[]).find(m=>m.id===target);
+      if(entry){
+        if(!entry.personIds) entry.personIds=[];
+        if(!entry.personIds.includes(personId)) entry.personIds.push(personId);
+      }
+    }
+    saveState(); modal.remove(); render();
+  };
 }
 function miscPeopleCheckboxesHTML(groupFilter, searchFilter){
   if(!state.personnel.length) return `<div class="empty">尚無人員</div>`;
@@ -4085,7 +4252,7 @@ function wireMiscCardEvents(){
 function renderMisc(){
   const list = state.misc[currentDate]||[];
   app.innerHTML = `
-    ${collapsibleCardHTML('adhocQuery', `臨時任務查詢（指定時間+需要幾官幾士幾兵，列出可用人選）`, `
+    ${collapsibleCardHTML('adhocQuery', `臨時任務查詢（指定時間+需要幾官幾士幾兵/專長，列出可用人選）`, `
       <div class="row wrap" style="margin-bottom:8px">
         <div class="grow"><label>需要開始的時間</label><select id="ahTime">${timeOptions().map(t=>`<option ${t===(adhocQueryState.time||'10:00')?'selected':''}>${t}</option>`).join('')}</select></div>
       </div>
@@ -4094,8 +4261,17 @@ function renderMisc(){
         <div class="grow"><label>需要士官人數</label><input type="text" id="ahNCO" value="${adhocQueryState.nco||0}"></div>
         <div class="grow"><label>需要士兵人數</label><input type="text" id="ahEnlisted" value="${adhocQueryState.enlisted||0}"></div>
       </div>
+      <div class="row wrap" style="margin-bottom:8px">
+        <div class="grow"><label>需要專長(選填)</label>
+          <select id="ahSkill">
+            <option value="">（不限）</option>
+            ${state.skillOptions.map(s=>`<option value="${esc(s)}" ${adhocQueryState.skill===s?'selected':''}>${esc(s)}</option>`).join('')}
+          </select>
+        </div>
+      </div>
       <button class="primary" id="ahQueryBtn" style="width:100%;margin-bottom:8px">查詢可用人選</button>
       <div id="ahResult">${adhocQueryState.hasRun? renderAdhocQueryResult():''}</div>
+      <div class="hint">查到的人選旁邊可以直接按「加入」，選擇建立新的其他勤務項目或加到今天已有的項目，不用再跳去「其他勤務」分頁重填一次。</div>
     `)}
     ${collapsibleCardHTML('miscPresets', '常用項目（點一下自動帶入名稱、時間與角色）', `
       <div class="row wrap">
@@ -4375,9 +4551,18 @@ function renderMisc(){
     adhocQueryState.officer=Number(document.getElementById('ahOfficer').value)||0;
     adhocQueryState.nco=Number(document.getElementById('ahNCO').value)||0;
     adhocQueryState.enlisted=Number(document.getElementById('ahEnlisted').value)||0;
+    adhocQueryState.skill=document.getElementById('ahSkill').value;
     runAdhocQuery();
-    document.getElementById('ahResult').innerHTML = renderAdhocQueryResult();
+    const resultEl = document.getElementById('ahResult');
+    resultEl.innerHTML = renderAdhocQueryResult();
+    wireAdhocAddButtons();
   };
+  function wireAdhocAddButtons(){
+    document.querySelectorAll('[data-adhoc-add]').forEach(b=>{
+      b.onclick=()=>openAdhocAddModal(b.dataset.adhocAdd, b.dataset.adhocStart, b.dataset.adhocEnd);
+    });
+  }
+  wireAdhocAddButtons();
   document.getElementById('openAddPresetModal').onclick=()=>openMiscPresetModal();
   document.getElementById('mAdd').onclick=()=>{
     const role=document.getElementById('mRole').value.trim();
