@@ -108,7 +108,7 @@ textarea{min-height:50px;resize:vertical;}
     <div class="row" style="gap:6px;align-items:center">
       <button class="ghost small" id="undoBtn" title="復原上一步" disabled>↩️</button>
       <button class="ghost small" id="redoBtn" title="取消復原（重做）" disabled>↪️</button>
-      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v40</span></h1>
+      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v42</span></h1>
     </div>
     <div class="row" style="gap:6px;align-items:center">
       <select id="timeStepSelect" style="font-size:11px;padding:3px 6px;width:auto">
@@ -3943,10 +3943,12 @@ function renderSchedule(){
       <div class="row wrap" style="gap:10px;margin-bottom:8px">
         <label style="display:flex;align-items:center;gap:6px;font-size:13px"><input type="checkbox" id="copyCatShifts" style="width:auto" checked> 排班類別班別結構</label>
         <label style="display:flex;align-items:center;gap:6px;font-size:13px"><input type="checkbox" id="copyMisc" style="width:auto"> 其他勤務項目結構</label>
-        <label style="display:flex;align-items:center;gap:6px;font-size:13px"><input type="checkbox" id="copyUnavail" style="width:auto"> 休假/事故登記</label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px"><input type="checkbox" id="copyLeave" style="width:auto"> 休假登記</label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px"><input type="checkbox" id="copyUnavail" style="width:auto"> 一般事故登記（不含休假）</label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px"><input type="checkbox" id="copySuspensions" style="width:auto"> 長期事故暫停狀態</label>
       </div>
       <button class="primary" id="copyDayBtn" style="width:100%">複製</button>
-      <div class="hint">「排班類別班別結構」「其他勤務項目結構」只複製時段/人數/角色等設定本身，不複製當天已排入的人員——因為衛哨規則不允許同一人連續兩天站同一時段，直接複製人員容易違規，複製後仍需手動或自動補空缺重新指派。「休假/事故登記」會連同人員一起複製（例如假日留守，禮拜日多半跟禮拜六是同一批人休假）。複製採附加方式，不會清空目標日期原有的資料；如果複製結果不理想，用左上角的復原（↩️）按鈕還原即可。</div>
+      <div class="hint">「排班類別班別結構」「其他勤務項目結構」只複製時段/人數/角色等設定本身，不複製當天已排入的人員——因為衛哨規則不允許同一人連續兩天站同一時段，直接複製人員容易違規，複製後仍需手動或自動補空缺重新指派。「休假登記」跟「一般事故登記」分開勾選，可以只複製其中一種（例如假日留守，禮拜日多半跟禮拜六是同一批人休假，但不一定要連出車、體檢這類一般事故也一起複製）；休假會重建成完整的一天份紀錄（含前後6小時緩衝），可以在「目前登記的休假」正常編輯。「長期事故暫停狀態」複製的是「今天暫停長期事故、恢復正常排班」這個名單本身。複製採附加方式，不會清空目標日期原有的資料；如果複製結果不理想，用左上角的復原（↩️）按鈕還原即可。</div>
     `)}
     ${missingDefaults.length? collapsibleCardHTML('missingDefaults', `⚠️ 少了預設類別（${missingDefaults.length}）`, `
       <div class="muted" style="margin-bottom:8px">偵測到以下類別目前不在清單中（可能是被刪除了），可一鍵還原班別設定（該類別過去已排的內容無法救回，只能還原空白班表結構）：</div>
@@ -4004,8 +4006,10 @@ function renderSchedule(){
     if(from===to){ showAlert('來源與目標日期不能相同'); return; }
     const doCat=document.getElementById('copyCatShifts').checked;
     const doMisc=document.getElementById('copyMisc').checked;
+    const doLeave=document.getElementById('copyLeave').checked;
     const doUnavail=document.getElementById('copyUnavail').checked;
-    if(!doCat && !doMisc && !doUnavail){ showAlert('請至少勾選一項要複製的內容'); return; }
+    const doSuspensions=document.getElementById('copySuspensions').checked;
+    if(!doCat && !doMisc && !doLeave && !doUnavail && !doSuspensions){ showAlert('請至少勾選一項要複製的內容'); return; }
     showConfirm(`確定要把 ${from} 的設定複製到 ${to} 嗎？（採附加方式，不會清空 ${to} 原有的資料）`, ()=>{
       if(doCat){
         const srcOverride = state.dailyShiftOverrides[from]||{};
@@ -4028,12 +4032,30 @@ function renderSchedule(){
           });
         });
       }
+      if(doLeave){
+        const srcLeave = (state.unavail[from]||[]).filter(u=>!isLeaveBufferEntry(u) && u.leaveId);
+        srcLeave.forEach(u=>{
+          // recreate as a proper one-day leave block (fresh leaveId + its
+          // own buffer entries the day before/after `to`), not a flat
+          // orphaned copy — see createLeaveSegment
+          createLeaveSegment(u.personId, to, to, u.reason==='榮譽假');
+        });
+      }
       if(doUnavail){
-        const srcUnavail = (state.unavail[from]||[]).filter(u=>!isLeaveBufferEntry(u));
+        const srcUnavail = (state.unavail[from]||[]).filter(u=>!isLeaveBufferEntry(u) && !u.leaveId);
         if(!state.unavail[to]) state.unavail[to]=[];
         srcUnavail.forEach(u=>{
           state.unavail[to].push({id:uid(), personId:u.personId, allDay:u.allDay, start:u.start, end:u.end, reason:u.reason, inCamp:u.inCamp});
         });
+      }
+      if(doSuspensions){
+        const srcSuspensions = state.longTermSuspensions[from]||[];
+        if(srcSuspensions.length){
+          if(!state.longTermSuspensions[to]) state.longTermSuspensions[to]=[];
+          srcSuspensions.forEach(pid=>{
+            if(!state.longTermSuspensions[to].includes(pid)) state.longTermSuspensions[to].push(pid);
+          });
+        }
       }
       saveState();
       showAlert('複製完成。');
