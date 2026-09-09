@@ -110,7 +110,7 @@ textarea{min-height:50px;resize:vertical;}
     <div class="row" style="gap:6px;align-items:center">
       <button class="ghost small" id="undoBtn" title="復原上一步" disabled>↩️</button>
       <button class="ghost small" id="redoBtn" title="取消復原（重做）" disabled>↪️</button>
-      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v46</span></h1>
+      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v47</span></h1>
     </div>
     <div class="row" style="gap:6px;align-items:center">
       <select id="timeStepSelect" style="font-size:11px;padding:3px 6px;width:auto">
@@ -4401,7 +4401,7 @@ function openCategoryEditor(catId){
   modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:50;display:flex;align-items:flex-end;';
   modal.innerHTML = `
     <div style="background:var(--panel);width:100%;max-height:88vh;overflow:auto;border-radius:12px 12px 0 0;padding:14px;">
-      <div class="section-title"><h2 style="margin:0">編輯：${esc(cat.name)}</h2><button class="ghost small" id="closeModal">關閉</button></div>
+      <div class="section-title"><h2 style="margin:0">編輯：${esc(cat.name)}</h2><div class="row" style="gap:4px"><button class="ghost small" id="duplicateCatBtn">📋 複製此類別</button><button class="ghost small" id="closeModal">關閉</button></div></div>
       <label>類別名稱</label><input type="text" id="catName" value="${esc(cat.name)}" style="margin-bottom:8px">
       <div class="row wrap" style="margin-bottom:8px">
         <label style="display:flex;align-items:center;gap:6px;font-size:13px"><input type="checkbox" id="catRest" style="width:auto" ${cat.enforceRest?'checked':''}> 套用6小時規則</label>
@@ -4427,6 +4427,13 @@ function openCategoryEditor(catId){
         <label style="display:flex;align-items:center;gap:6px;font-size:13px">
           <input type="radio" name="editScope" value="today" style="width:auto"> 只套用到今天（${minguoLabel(currentDate)}）
         </label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px">
+          <input type="radio" name="editScope" value="range" style="width:auto"> 套用到指定日期範圍
+        </label>
+      </div>
+      <div class="row wrap" id="scopeRangeRow" style="margin-bottom:8px;display:none">
+        <div class="grow"><label>從</label><input type="date" id="scopeRangeStart" value="${currentDate}"></div>
+        <div class="grow"><label>到</label><input type="date" id="scopeRangeEnd" value="${currentDate}"></div>
       </div>
       <div class="hint" id="scopeHint" style="margin-bottom:8px"></div>
       <div id="shiftEditList">${cat.shifts.map((s,i)=>shiftEditRow(s,i)).join('')}</div>
@@ -4497,22 +4504,29 @@ function openCategoryEditor(catId){
     rerenderPriorityLists();
   };
   /* --- 班別時段 scope handling: "default" edits cat.shifts (applies to
-     every date); "today" edits a separate working array that's only
-     written into state.dailyShiftOverrides[currentDate] on Save, so
-     switching the radio back and forth before saving never touches the
-     category-wide template. */
+     every date); "today" and "range" edit a separate working array that's
+     only written into state.dailyShiftOverrides on Save (per-date for
+     "today", per-date-for-every-date-in-range for "range"), so switching
+     the radio back and forth before saving never touches the category-wide
+     template. */
   let editScope='default';
   let todayShiftsDraft=null; // lazily built the first time the user switches to "today"
+  let rangeShiftsDraft=null; // lazily built the first time the user switches to "range"
   function activeShiftsArray(){
-    return editScope==='today' ? todayShiftsDraft : cat.shifts;
+    if(editScope==='today') return todayShiftsDraft;
+    if(editScope==='range') return rangeShiftsDraft;
+    return cat.shifts;
   }
   function hasTodayOverride(){
     return !!((state.dailyShiftOverrides[currentDate]||{})[cat.id]);
   }
   function updateScopeUI(){
     const hintEl=document.getElementById('scopeHint');
+    document.getElementById('scopeRangeRow').style.display = editScope==='range'? 'flex':'none';
     if(editScope==='today'){
       hintEl.textContent = `這裡改的是「${cat.name}」只在今天（${minguoLabel(currentDate)}）套用的班別設定，存檔後不影響其他日期，也不影響這個類別本身的預設值。`;
+    } else if(editScope==='range'){
+      hintEl.textContent = `這裡改的是「${cat.name}」在指定日期範圍內（含起訖日，每天都會各自存一份）套用的班別設定，範圍外的日期不受影響，也不影響這個類別本身的預設值。`;
     } else {
       hintEl.textContent = `這裡改的是「${cat.name}」這個類別的預設班別設定，會套用到所有日期${hasTodayOverride()? '（但今天已經有專屬設定，實際仍以那份為準，除非切到「只套用到今天」調整或移除它）':''}。只是想改「今天」某一班的人員，不用進這裡——回排班分頁該班別下面的下拉選單直接改人就好。`;
     }
@@ -4525,6 +4539,9 @@ function openCategoryEditor(catId){
       if(editScope==='today' && !todayShiftsDraft){
         const existing = (state.dailyShiftOverrides[currentDate]||{})[cat.id];
         todayShiftsDraft = existing? existing.map(s=>({...s})) : cat.shifts.map(s=>({...s}));
+      }
+      if(editScope==='range' && !rangeShiftsDraft){
+        rangeShiftsDraft = cat.shifts.map(s=>({...s}));
       }
       shiftEditRowRerender();
       updateScopeUI();
@@ -4558,9 +4575,10 @@ function openCategoryEditor(catId){
   document.getElementById('restoreShiftsBtn').onclick=()=>{
     const defaults = state.categoryShiftDefaults[cat.id];
     if(!defaults){ showAlert('這個類別目前還沒有存過預設班別，請先按下面「將目前設定存為預設班別」建立一份。'); return; }
-    showConfirm(`確定要把${editScope==='today'? '「今天」這份':''}班別時段還原成你設定的預設班別嗎？目前編輯中尚未儲存的調整會被取代（已經存檔的排班紀錄不會受影響）。`, ()=>{
+    showConfirm(`確定要把${editScope!=='default'? '目前這份':''}班別時段還原成你設定的預設班別嗎？目前編輯中尚未儲存的調整會被取代（已經存檔的排班紀錄不會受影響）。`, ()=>{
       const cloned = defaults.map(s=>({...s, id:uid()}));
       if(editScope==='today') todayShiftsDraft = cloned;
+      else if(editScope==='range') rangeShiftsDraft = cloned;
       else cat.shifts = cloned;
       shiftEditRowRerender();
     });
@@ -4582,6 +4600,27 @@ function openCategoryEditor(catId){
     });
   };
   wireCloseConfirm(modal, document.getElementById('closeModal'));
+  document.getElementById('duplicateCatBtn').onclick=()=>{
+    showPrompt('新類別名稱？（例：G028後門）', cat.name+'（複製）', (newName)=>{
+      const newId=uid();
+      const newShifts = cat.shifts.map(s=>({...s, id:uid()}));
+      const newCat = {
+        ...cat,
+        id:newId, name:newName, shifts:newShifts,
+        excludeRanks: [...(cat.excludeRanks||[])],
+        avoidRanks: [...(cat.avoidRanks||[])],
+        customPriority: cat.customPriority? [...cat.customPriority] : undefined,
+        customPriorityHelper: cat.customPriorityHelper? [...cat.customPriorityHelper] : undefined,
+        sortOrder: nextSortOrder(),
+      };
+      state.categories.push(newCat);
+      state.categoryShiftDefaults[newId] = newShifts.map(s=>({...s}));
+      saveState();
+      modal.remove();
+      showAlert(`已建立「${newName}」，複製自「${cat.name}」的全部設定，可以再進去微調細節。`);
+      render();
+    });
+  };
   document.getElementById('saveCat').onclick=()=>{
     cat.name=document.getElementById('catName').value.trim()||cat.name;
     cat.enforceRest=document.getElementById('catRest').checked;
@@ -4597,6 +4636,13 @@ function openCategoryEditor(catId){
     if(editScope==='today'){
       if(!state.dailyShiftOverrides[currentDate]) state.dailyShiftOverrides[currentDate]={};
       state.dailyShiftOverrides[currentDate][cat.id] = draftShifts;
+    } else if(editScope==='range'){
+      const rs=document.getElementById('scopeRangeStart').value, re=document.getElementById('scopeRangeEnd').value;
+      if(!rs||!re||rs>re){ showAlert('請確認日期範圍正確（起始日不能晚於結束日）'); return; }
+      dateRangeList(rs,re).forEach(d=>{
+        if(!state.dailyShiftOverrides[d]) state.dailyShiftOverrides[d]={};
+        state.dailyShiftOverrides[d][cat.id] = draftShifts.map(s=>({...s, id:uid()}));
+      });
     } else {
       cat.shifts.length = 0;
       draftShifts.forEach(d=>cat.shifts.push(d));
