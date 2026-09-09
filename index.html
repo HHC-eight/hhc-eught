@@ -110,7 +110,7 @@ textarea{min-height:50px;resize:vertical;}
     <div class="row" style="gap:6px;align-items:center">
       <button class="ghost small" id="undoBtn" title="復原上一步" disabled>↩️</button>
       <button class="ghost small" id="redoBtn" title="取消復原（重做）" disabled>↪️</button>
-      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v50</span></h1>
+      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v51</span></h1>
     </div>
     <div class="row" style="gap:6px;align-items:center">
       <select id="timeStepSelect" style="font-size:11px;padding:3px 6px;width:auto">
@@ -1102,7 +1102,29 @@ function autoAssignMiscForDate(date){
       }
     });
   });
-  state.misc[date].forEach(entry=>{
+  /* process entries with the strictest requirements first (most required
+     license/EMT/skill types), so a rare qualification (e.g. the only
+     person with a 大客車 license) doesn't get used up by an earlier, less
+     picky entry that could have been filled by almost anyone. Entries
+     tied on requirement count fall back to the card's own display order
+     (sortOrder) — this only reorders the AUTO-ASSIGN pass itself, not the
+     entries' stored order or how they're displayed. */
+  function miscEntryRequirementScore(entry){
+    const preset = presetForEntry(entry);
+    if(!preset) return 0;
+    let score = 0;
+    if((preset.requiredLicenses||[]).length) score++;
+    if(preset.requiredMedCert) score++;
+    if((preset.requiredSkills||[]).length) score++;
+    return score;
+  }
+  const processingOrder = [...state.misc[date]].sort((a,b)=>{
+    const sa=miscEntryRequirementScore(a), sb=miscEntryRequirementScore(b);
+    if(sa!==sb) return sb-sa;
+    const pa=presetForEntry(a), pb=presetForEntry(b);
+    return (pa?(pa.sortOrder??999):999) - (pb?(pb.sortOrder??999):999);
+  });
+  processingOrder.forEach(entry=>{
     if(!entry.roles){
       if(!entry.personIds) entry.personIds=[];
       const alreadyHasSomeone = entry.personIds.some(id=>id);
