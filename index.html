@@ -108,7 +108,7 @@ textarea{min-height:50px;resize:vertical;}
     <div class="row" style="gap:6px;align-items:center">
       <button class="ghost small" id="undoBtn" title="復原上一步" disabled>↩️</button>
       <button class="ghost small" id="redoBtn" title="取消復原（重做）" disabled>↪️</button>
-      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v39</span></h1>
+      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v40</span></h1>
     </div>
     <div class="row" style="gap:6px;align-items:center">
       <select id="timeStepSelect" style="font-size:11px;padding:3px 6px;width:auto">
@@ -795,6 +795,20 @@ function personCompRestWindows(personId, date){
   return out;
 }
 
+/* ---------------- long-term suspension (今天暫停長期事故) ---------------- */
+/* a roster-level 長期事故 (mode='allday'/'range') applies every day
+   unconditionally — there was previously no way to say "not today". This
+   lets a specific date opt a specific person OUT of their standing
+   long-term restriction for that one day only, without touching the
+   roster setting itself (which keeps applying on every other day). */
+if(!state.longTermSuspensions) state.longTermSuspensions={};
+function isLongTermSuspended(personId, date){
+  return ((state.longTermSuspensions||{})[date]||[]).includes(personId);
+}
+function effectiveLongTerm(person, date){
+  if(person && isLongTermSuspended(person.id, date)) return {mode:'off'};
+  return personLongTerm(person);
+}
 /* ---------------- availability ---------------- */
 /* excludeCatShift: {catId,shiftId} — skip this exact shift when checking for
    double-booking against the person's OTHER current assignments (so a shift's
@@ -803,7 +817,7 @@ function isPersonUnavailable(personId, date, s, e, excludeCatShift){
   // s,e in minutes-of-day (0-1440-ish), plain (not absolute-unwrapped)
   const person = state.personnel.find(p=>p.id===personId);
   if(person){
-    const lt = personLongTerm(person);
+    const lt = effectiveLongTerm(person, date);
     if(lt.mode==='allday') return true;
     if(lt.mode==='range' && lt.start && lt.end && windowsOverlapRecurring(s,e,toMin(lt.start),toMin(lt.end))) return true;
   }
@@ -849,7 +863,7 @@ function unavailabilityReasonsInRange(personId, date, s, e){
   const out=[];
   const person = state.personnel.find(p=>p.id===personId);
   if(person){
-    const lt = personLongTerm(person);
+    const lt = effectiveLongTerm(person, date);
     if(lt.mode==='allday') out.push('長期事故：全天不可排');
     else if(lt.mode==='range' && lt.start && lt.end && windowsOverlapRecurring(s,e,toMin(lt.start),toMin(lt.end))) out.push(`長期事故：每天 ${lt.start}-${lt.end} 不可排`);
   }
@@ -2084,7 +2098,7 @@ function personAwayReason(personId, date){
   if(away) return away.reason || '（未指定原因）';
   const person = state.personnel.find(p=>p.id===personId);
   if(person){
-    const lt = personLongTerm(person);
+    const lt = effectiveLongTerm(person, date);
     if(lt.mode==='allday' && !lt.inCamp) return lt.reason || '長期事故';
   }
   return '（原因不明）';
@@ -2349,7 +2363,7 @@ function onDutyList(date){
   // take someone off the roster for the day.
   return state.personnel.filter(p=>{
     if(awayIds.has(p.id)) return false;
-    const lt = personLongTerm(p);
+    const lt = effectiveLongTerm(p, date);
     // 「在營」only makes someone disappear from this whole-day list when it's
     // a whole-day setting (mode='allday') — a 時段性不可排(mode='range')'s
     // 在營=否 only means they're away during THAT time window each day, not
@@ -2724,6 +2738,11 @@ function renderUnavail(){
           <input type="checkbox" id="uaSyncRosterDefault" style="width:auto"> 同時更新到人員名冊預設（不論名冊本來有無設定，都會以這次填的為準，成為新的長期預設）
         </label>
       </div>
+      <div class="divider"></div>
+      <h3>長期事故例外</h3>
+      <div class="hint" style="margin-bottom:8px">適用於名冊上設定了「長期事故」的人，今天例外要恢復正常排班（例如平常不排的主官，今天剛好需要排他）。只影響「今天」這一天，不會更動名冊上的長期設定本身，之後其他天照樣套用長期事故。上面勾選的人員，再按下面按鈕即可切換。</div>
+      <button class="ghost" id="uaSuspendLongTerm" style="width:100%">暫停/恢復 勾選人員的長期事故（僅今天）</button>
+      <div class="divider"></div>
       <div class="row wrap" style="margin-bottom:8px">
         <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text)">
           <input type="checkbox" id="uaMultiDay" style="width:auto"> 連續多日（例：9/8-9/9 都登記同一筆事故，會套用到上面勾選的每一位人員）
@@ -3024,6 +3043,33 @@ function renderUnavail(){
   };
   document.getElementById('uaReasonCustom').oninput=()=>{ uaReasonTouched=true; };
   document.getElementById('uaInCamp').onchange=()=>{ uaInCampTouched=true; };
+  document.getElementById('uaSuspendLongTerm').onclick=()=>{
+    const personIds=[...uaCheckedIds];
+    if(!personIds.length){ showAlert('請至少勾選一位人員'); return; }
+    const withLt = personIds.filter(pid=>{
+      const p=state.personnel.find(pp=>pp.id===pid);
+      return p && personLongTerm(p).mode!=='off';
+    });
+    if(!withLt.length){ showAlert('勾選的人裡面沒有人設定了長期事故，不需要暫停/恢復。'); return; }
+    if(!state.longTermSuspensions[currentDate]) state.longTermSuspensions[currentDate]=[];
+    const suspendedNow = withLt.filter(pid=>state.longTermSuspensions[currentDate].includes(pid));
+    const notSuspendedNow = withLt.filter(pid=>!state.longTermSuspensions[currentDate].includes(pid));
+    const action = notSuspendedNow.length>=suspendedNow.length ? 'suspend' : 'restore';
+    const msg = action==='suspend'
+      ? `確定要讓 ${withLt.length} 位人員今天（${minguoLabel(currentDate)}）暫停長期事故、恢復正常排班嗎？（不會更動名冊設定，只影響今天）`
+      : `確定要取消這 ${withLt.length} 位人員今天的暫停，恢復長期事故限制嗎？`;
+    showConfirm(msg, ()=>{
+      withLt.forEach(pid=>{
+        if(action==='suspend'){
+          if(!state.longTermSuspensions[currentDate].includes(pid)) state.longTermSuspensions[currentDate].push(pid);
+        } else {
+          state.longTermSuspensions[currentDate] = state.longTermSuspensions[currentDate].filter(id=>id!==pid);
+        }
+      });
+      uaCheckedIds.clear();
+      saveState(); render();
+    });
+  };
   function refreshReverseCheckboxes(){
     document.getElementById('reverseCheckArea').innerHTML = renderReverseCheckboxes();
     wireReverseCheckboxes();
@@ -3243,7 +3289,7 @@ function personOptions(selected, groupFilter){
   let sorted=[...state.personnel].sort((a,b)=> groupIndex(a.group)-groupIndex(b.group) || rankIndex(a.rank)-rankIndex(b.rank));
   if(groupFilter) sorted = groupFilter==='__none'? sorted.filter(p=>!p.group) : sorted.filter(p=>p.group===groupFilter);
   if(!sorted.length) return `<option value="">（此排組無人員）</option>`;
-  return sorted.map(p=>`<option value="${p.id}" ${p.id===selected?'selected':''}>${esc(p.name)}（${p.group||'未分組'}·${p.rank}${p.license? '·🚗'+esc(p.license):''}${p.medCert? '·⛑️'+esc(p.medCert):''}${(p.skills&&p.skills.length)? '·🔧'+p.skills.map(esc).join('/'):''}${personLongTerm(p).mode!=='off'?'·🚫長期':''}）</option>`).join('');
+  return sorted.map(p=>`<option value="${p.id}" ${p.id===selected?'selected':''}>${esc(p.name)}（${p.group||'未分組'}·${p.rank}${p.license? '·🚗'+esc(p.license):''}${p.medCert? '·⛑️'+esc(p.medCert):''}${(p.skills&&p.skills.length)? '·🔧'+p.skills.map(esc).join('/'):''}${effectiveLongTerm(p, currentDate).mode!=='off'?'·🚫長期':''}）</option>`).join('');
 }
 function personOptionsForIncident(selected, groupFilter, date){
   if(!state.personnel.length) return `<option value="">（尚無人員）</option>`;
@@ -3273,7 +3319,7 @@ function uaPeopleCheckboxesHTML(groupFilter, date, searchFilter){
   return personListSummaryHTML(list, state.personnel) + list.map(p=>`
     <label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0">
       <input type="checkbox" class="ua-person-cb" value="${p.id}" style="width:auto" ${uaCheckedIds.has(p.id)?'checked':''}>
-      ${esc(p.name)}（${p.group||'未分組'}·${p.rank}${personBadges(p)}）${hasAllDay(p)?' <span class="warn">✅已登記全天</span>':''}
+      ${esc(p.name)}（${p.group||'未分組'}·${p.rank}${personBadges(p)}）${hasAllDay(p)?' <span class="warn">✅已登記全天</span>':''}${isLongTermSuspended(p.id,date)? ' <span class="ok">🟢今日已暫停長期事故</span>':''}
     </label>`).join('');
 }
 function personOptionsPrioritized(selected, eligibleFn){
@@ -3283,7 +3329,7 @@ function personOptionsPrioritized(selected, eligibleFn){
     if(pa!==pb) return pa-pb;
     return groupIndex(a.group)-groupIndex(b.group) || rankIndex(a.rank)-rankIndex(b.rank);
   });
-  return sorted.map(p=>`<option value="${p.id}" ${p.id===selected?'selected':''}>${esc(p.name)}（${p.group||'未分組'}·${p.rank}${p.license? '·🚗'+esc(p.license):''}${p.medCert? '·⛑️'+esc(p.medCert):''}${(p.skills&&p.skills.length)? '·🔧'+p.skills.map(esc).join('/'):''}${personLongTerm(p).mode!=='off'?'·🚫長期':''}）</option>`).join('');
+  return sorted.map(p=>`<option value="${p.id}" ${p.id===selected?'selected':''}>${esc(p.name)}（${p.group||'未分組'}·${p.rank}${p.license? '·🚗'+esc(p.license):''}${p.medCert? '·⛑️'+esc(p.medCert):''}${(p.skills&&p.skills.length)? '·🔧'+p.skills.map(esc).join('/'):''}${effectiveLongTerm(p, currentDate).mode!=='off'?'·🚫長期':''}）</option>`).join('');
 }
 function fmtDate(d){ return d; }
 const WEEKDAY_CH=['日','一','二','三','四','五','六'];
@@ -4906,7 +4952,7 @@ function isPersonBusyForMiscEdit(personId, date, s, eRaw, excludeEntryId){
   const e = wrapEndMin(s, eRaw);
   const person = state.personnel.find(p=>p.id===personId);
   if(person){
-    const lt = personLongTerm(person);
+    const lt = effectiveLongTerm(person, date);
     if(lt.mode==='allday') return true;
     if(lt.mode==='range' && lt.start && lt.end && windowsOverlapRecurring(s,e,toMin(lt.start),toMin(lt.end))) return true;
   }
@@ -4936,7 +4982,7 @@ function miscEditBusyReasons(personId, date, s, eRaw, excludeEntryId){
   const out=[];
   const person = state.personnel.find(p=>p.id===personId);
   if(person){
-    const lt = personLongTerm(person);
+    const lt = effectiveLongTerm(person, date);
     if(lt.mode==='allday') out.push('長期事故：全天不可排');
     else if(lt.mode==='range' && lt.start && lt.end && windowsOverlapRecurring(s,e,toMin(lt.start),toMin(lt.end))) out.push(`長期事故：每天 ${lt.start}-${lt.end} 不可排`);
   }
