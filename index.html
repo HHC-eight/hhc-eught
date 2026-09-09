@@ -110,7 +110,7 @@ textarea{min-height:50px;resize:vertical;}
     <div class="row" style="gap:6px;align-items:center">
       <button class="ghost small" id="undoBtn" title="復原上一步" disabled>↩️</button>
       <button class="ghost small" id="redoBtn" title="取消復原（重做）" disabled>↪️</button>
-      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v49</span></h1>
+      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v50</span></h1>
     </div>
     <div class="row" style="gap:6px;align-items:center">
       <select id="timeStepSelect" style="font-size:11px;padding:3px 6px;width:auto">
@@ -3957,7 +3957,7 @@ function renderSchedule(){
         <label style="display:flex;align-items:center;gap:6px;font-size:13px"><input type="checkbox" id="copySuspensions" style="width:auto"> 長期事故暫停狀態</label>
       </div>
       <button class="primary" id="copyDayBtn" style="width:100%">複製</button>
-      <div class="hint">「排班類別班別結構」「其他勤務項目結構」只複製時段/人數/角色等設定本身，不複製當天已排入的人員——因為衛哨規則不允許同一人連續兩天站同一時段，直接複製人員容易違規，複製後仍需手動或自動補空缺重新指派。「休假登記」跟「一般事故登記」分開勾選，可以只複製其中一種（例如假日留守，禮拜日多半跟禮拜六是同一批人休假，但不一定要連出車、體檢這類一般事故也一起複製）；休假會重建成完整的一天份紀錄（含前後6小時緩衝），可以在「目前登記的休假」正常編輯。「長期事故暫停狀態」複製的是「今天暫停長期事故、恢復正常排班」這個名單本身。複製採附加方式，不會清空目標日期原有的資料；如果複製結果不理想，用左上角的復原（↩️）按鈕還原即可。</div>
+      <div class="hint">「排班類別班別結構」「其他勤務項目結構」只複製時段/人數/角色等設定本身，不複製當天已排入的人員——因為衛哨規則不允許同一人連續兩天站同一時段，直接複製人員容易違規，複製後仍需手動或自動補空缺重新指派。「休假登記」跟「一般事故登記」分開勾選，可以只複製其中一種（例如假日留守，禮拜日多半跟禮拜六是同一批人休假，但不一定要連出車、體檢這類一般事故也一起複製）；休假會重建成完整的一天份紀錄（含前後6小時緩衝），可以在「目前登記的休假」正常編輯。「長期事故暫停狀態」複製的是「今天暫停長期事故、恢復正常排班」這個名單本身。複製是「同步」而不是單純附加：勾選的項目如果目標日期已經有同一筆（同一人同一項目、同一人同一段休假、或同一人同原因的事故），會先移除舊的再放新的，重複按複製不會越疊越多份；沒勾選、跟這次複製無關的資料完全不受影響。如果複製結果不理想，用左上角的復原（↩️）按鈕還原即可。</div>
     `)}
     ${missingDefaults.length? collapsibleCardHTML('missingDefaults', `⚠️ 少了預設類別（${missingDefaults.length}）`, `
       <div class="muted" style="margin-bottom:8px">偵測到以下類別目前不在清單中（可能是被刪除了），可一鍵還原班別設定（該類別過去已排的內容無法救回，只能還原空白班表結構）：</div>
@@ -4037,7 +4037,7 @@ function renderSchedule(){
     const doUnavail=document.getElementById('copyUnavail').checked;
     const doSuspensions=document.getElementById('copySuspensions').checked;
     if(!doCat && !doMisc && !doLeave && !doUnavail && !doSuspensions){ showAlert('請至少勾選一項要複製的內容'); return; }
-    showConfirm(`確定要把 ${from} 的設定複製到 ${to} 嗎？（採附加方式，不會清空 ${to} 原有的資料）`, ()=>{
+    showConfirm(`確定要把 ${from} 的設定複製到 ${to} 嗎？（複製的項目如果在 ${to} 已經有同一筆，會先移除舊的再放新的，不會越複製越多份；跟這次複製無關的資料不受影響）`, ()=>{
       if(doCat){
         const srcOverride = state.dailyShiftOverrides[from]||{};
         if(Object.keys(srcOverride).length){
@@ -4051,6 +4051,10 @@ function renderSchedule(){
         const srcMisc = state.misc[from]||[];
         if(!state.misc[to]) state.misc[to]=[];
         srcMisc.forEach(m=>{
+          // idempotent: drop any existing target entry for the same
+          // role+time before adding the fresh copy, so re-running the
+          // copy converges to one entry instead of piling up duplicates
+          state.misc[to] = state.misc[to].filter(existing=>!(existing.role===m.role && existing.start===m.start && existing.end===m.end));
           state.misc[to].push({
             id:uid(), role:m.role, start:m.start, end:m.end, restUntil:m.restUntil||'',
             roles: m.roles? [...m.roles]:undefined,
@@ -4062,6 +4066,11 @@ function renderSchedule(){
       if(doLeave){
         const srcLeave = (state.unavail[from]||[]).filter(u=>!isLeaveBufferEntry(u) && u.leaveId);
         srcLeave.forEach(u=>{
+          // idempotent: if this person already has a leave block covering
+          // `to`, remove it first so re-copying doesn't stack up several
+          // overlapping leave blocks for the same person/day
+          const existingLid = findLeaveIdForPerson(u.personId, to);
+          if(existingLid) deleteLeaveById(existingLid);
           // recreate as a proper one-day leave block (fresh leaveId + its
           // own buffer entries the day before/after `to`), not a flat
           // orphaned copy — see createLeaveSegment
@@ -4072,6 +4081,9 @@ function renderSchedule(){
         const srcUnavail = (state.unavail[from]||[]).filter(u=>!isLeaveBufferEntry(u) && !u.leaveId);
         if(!state.unavail[to]) state.unavail[to]=[];
         srcUnavail.forEach(u=>{
+          // idempotent: drop any existing target entry for the same
+          // person+reason+time before adding the fresh copy
+          state.unavail[to] = state.unavail[to].filter(existing=>!(!existing.leaveId && existing.personId===u.personId && existing.reason===u.reason && existing.allDay===u.allDay && existing.start===u.start && existing.end===u.end));
           state.unavail[to].push({id:uid(), personId:u.personId, allDay:u.allDay, start:u.start, end:u.end, reason:u.reason, inCamp:u.inCamp});
         });
       }
