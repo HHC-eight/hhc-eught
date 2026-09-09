@@ -105,7 +105,7 @@ textarea{min-height:50px;resize:vertical;}
     <div class="row" style="gap:6px;align-items:center">
       <button class="ghost small" id="undoBtn" title="復原上一步" disabled>↩️</button>
       <button class="ghost small" id="redoBtn" title="取消復原（重做）" disabled>↪️</button>
-      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v33</span></h1>
+      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v35</span></h1>
     </div>
     <div class="row" style="gap:6px;align-items:center">
       <select id="timeStepSelect" style="font-size:11px;padding:3px 6px;width:auto">
@@ -454,6 +454,7 @@ state.miscPresets.forEach((p,i)=>{
   if(p.sortOrder===undefined) p.sortOrder = 1000+i*10;
   if(p.excludeFromExport===undefined) p.excludeFromExport=false;
   if(p.isSentry===undefined) p.isSentry=false;
+  if(p.isAllDayAway===undefined) p.isAllDayAway=false;
 });
 let currentTab='people';
 /* the currently-viewed date persists across reloads (separate from the
@@ -2047,6 +2048,88 @@ function findLeaveIdForPerson(personId, date){
   const hit = (state.unavail[date]||[]).find(u=>u.personId===personId && u.leaveId);
   return hit? hit.leaveId : null;
 }
+/* 不在營名單 (統計分頁): the exact complement of onDutyList — anyone
+   excluded from "在勤人員" for whatever reason (休假, 長期事故 在營=否,
+   or a 全日出勤/營外 misc duty) shows up here instead, so the two lists
+   always add up to the full roster. */
+let notInCampFilterState={search:'',group:''};
+function notInCampList(date){
+  const onDutyIds = new Set(onDutyList(date).map(p=>p.id));
+  return state.personnel.filter(p=>!onDutyIds.has(p.id));
+}
+function personAwayReason(personId, date){
+  const dayEntries = (state.unavail[date]||[]).filter(u=>u.personId===personId && u.allDay);
+  const away = dayEntries.find(u=>isLeaveReason(u.reason) || u.inCamp===false);
+  if(away) return away.reason || '（未指定原因）';
+  const person = state.personnel.find(p=>p.id===personId);
+  if(person){
+    const lt = personLongTerm(person);
+    if(lt.mode==='allday' && !lt.inCamp) return lt.reason || '長期事故';
+  }
+  return '（原因不明）';
+}
+function notInCampItemsHTML(list, date){
+  if(!list.length) return `<div class="empty">找不到符合的人員</div>`;
+  const byGroup={};
+  list.forEach(p=>{ const g=p.group||'未分組'; if(!byGroup[g]) byGroup[g]=[]; byGroup[g].push(p); });
+  return Object.entries(byGroup).sort((a,b)=>groupIndex(a[0])-groupIndex(b[0])).map(([g,members])=>{
+    const bd={軍官:0,士官:0,士兵:0}; members.forEach(p=>{ const k=rankCategory(p.rank); if(k) bd[k]++; });
+    const sorted = members.slice().sort((a,b)=>rankIndex(a.rank)-rankIndex(b.rank));
+    const rows = sorted.map(p=>{
+      const reason = personAwayReason(p.id, date);
+      const lid = findLeaveIdForPerson(p.id, date);
+      return `<div class="row" style="margin-bottom:2px">
+        <span class="muted grow">・${esc(p.name)}（${p.rank}）：${esc(reason)}</span>
+        ${lid? `<button class="ghost small" data-edit-leave="${lid}">編輯</button>`:''}
+      </div>`;
+    }).join('');
+    return collapsibleCardHTML('notInCampGroup-'+g, `${esc(g)}（${members.length}人・${bd.軍官}官${bd.士官}士${bd.士兵}兵）`, rows);
+  }).join('');
+}
+function notInCampCardHTML(){
+  const date = currentDate;
+  const fullList = notInCampList(date);
+  let list = fullList;
+  if(notInCampFilterState.search) list = list.filter(p=>p.name.includes(notInCampFilterState.search));
+  if(notInCampFilterState.group==='__none') list = list.filter(p=>!p.group);
+  else if(notInCampFilterState.group) list = list.filter(p=>p.group===notInCampFilterState.group);
+  const rankTotal={軍官:0,士官:0,士兵:0};
+  list.forEach(p=>{ const k=rankCategory(p.rank); if(k) rankTotal[k]++; });
+  const inner = `
+    <div class="row wrap" style="margin-bottom:8px">
+      <div class="grow"><label>搜尋姓名</label><input type="text" id="notInCampSearch" placeholder="輸入姓名關鍵字" value="${esc(notInCampFilterState.search)}"></div>
+      <div style="width:120px"><label>排組篩選</label>
+        <select id="notInCampGroupFilter">
+          <option value="" ${!notInCampFilterState.group?'selected':''}>（全部）</option>
+          ${[...new Set(state.personnel.map(p=>p.group).filter(Boolean))].sort((a,b)=>groupIndex(a)-groupIndex(b)).map(g=>`<option value="${esc(g)}" ${notInCampFilterState.group===g?'selected':''}>${esc(g)}</option>`).join('')}
+          <option value="__none" ${notInCampFilterState.group==='__none'?'selected':''}>未分組</option>
+        </select>
+      </div>
+    </div>
+    <div class="muted" style="margin-bottom:8px" id="notInCampSummary">篩選出 ${list.length} / 共 ${fullList.length} 人不在營・${rankTotal.軍官}官${rankTotal.士官}士${rankTotal.士兵}兵</div>
+    <div id="notInCampItems">${notInCampItemsHTML(list, date)}</div>
+  `;
+  return collapsibleCardHTML('notInCamp', `${minguoLabel(date)} 不在營名單（${fullList.length}人）`, inner);
+}
+function wireNotInCampCardEvents(){
+  const searchEl = document.getElementById('notInCampSearch');
+  if(!searchEl) return;
+  function refresh(){
+    const date = currentDate;
+    const fullList = notInCampList(date);
+    let list = fullList;
+    if(notInCampFilterState.search) list = list.filter(p=>p.name.includes(notInCampFilterState.search));
+    if(notInCampFilterState.group==='__none') list = list.filter(p=>!p.group);
+    else if(notInCampFilterState.group) list = list.filter(p=>p.group===notInCampFilterState.group);
+    const rankTotal={軍官:0,士官:0,士兵:0};
+    list.forEach(p=>{ const k=rankCategory(p.rank); if(k) rankTotal[k]++; });
+    document.getElementById('notInCampSummary').textContent = `篩選出 ${list.length} / 共 ${fullList.length} 人不在營・${rankTotal.軍官}官${rankTotal.士官}士${rankTotal.士兵}兵`;
+    document.getElementById('notInCampItems').innerHTML = notInCampItemsHTML(list, date);
+    wireLeaveEditButtons();
+  }
+  searchEl.oninput=(e)=>{ notInCampFilterState.search=e.target.value.trim(); refresh(); };
+  document.getElementById('notInCampGroupFilter').onchange=(e)=>{ notInCampFilterState.group=e.target.value; refresh(); };
+}
 /* 編輯休假 — lets the whole leave block be corrected after the fact: change
    the date range, split it into several separate segments (each gets its
    own buffer, since e.g. 9/8-9/10 discovered to actually be 9/8 + 9/10 with
@@ -2143,6 +2226,11 @@ function isLeaveBufferEntry(u){
 function onDutyList(date){
   const dayEntries = state.unavail[date]||[];
   const awayIds = new Set(dayEntries.filter(u=>u.allDay && (isLeaveReason(u.reason) || u.inCamp===false)).map(u=>u.personId));
+  // NOTE: 全日出勤（營外）(e.g. 採買/督伙 all day) does NOT remove someone
+  // from 在勤人員 — they still have an assigned task and count as "on
+  // duty", just physically away; renderOnDutyList annotates them with the
+  // task name instead. Only 休假 and 在營=否 (長期事故/單日事故) genuinely
+  // take someone off the roster for the day.
   return state.personnel.filter(p=>{
     if(awayIds.has(p.id)) return false;
     const lt = personLongTerm(p);
@@ -2252,7 +2340,9 @@ function personDutySummary(personId, date){
   });
   (state.misc[date]||[]).forEach(m=>{
     if((m.personIds||[]).includes(personId)){
-      parts.push(`${m.role}${m.start&&m.end? ` (${m.start}-${m.end})`:''}`);
+      const preset = presetForEntry(m);
+      const awayTag = preset && preset.isAllDayAway ? '🚗營外・' : '';
+      parts.push(`${awayTag}${m.role}${m.start&&m.end? ` (${m.start}-${m.end})`:''}`);
     }
   });
   return parts;
@@ -2280,10 +2370,7 @@ function renderDayListItemsHTML(){
 function dayListCardHTML(){
   const list = dayListBaseEntries();
   const filteredList = computeDayListFiltered();
-  return collapsibleCardHTML('dayList', `<span id="dayListHeader">${minguoLabel(currentDate)} 休假統計/名單（篩選出 ${filteredList.length} / 共 ${list.length}）</span>`, `
-      <div class="muted" style="margin-bottom:4px"><b>各排組休假統計</b>（點各組展開名單）</div>
-      ${renderLeaveGroupSummary(currentDate)}
-      <div class="divider"></div>
+  return collapsibleCardHTML('dayList', `<span id="dayListHeader">${minguoLabel(currentDate)} 當天所有事故/請假登記（篩選出 ${filteredList.length} / 共 ${list.length}）</span>`, `
       ${list.length? `
       <div class="row wrap" style="margin-bottom:8px">
         <div class="grow"><label>搜尋姓名</label><input type="text" id="dayListSearch" placeholder="輸入姓名關鍵字" value="${esc(dayListFilterState.search)}"></div>
@@ -2306,6 +2393,7 @@ function dayListCardHTML(){
         <button class="ghost small danger" id="clearDayBtn" style="align-self:flex-end">清空此類別</button>
       </div>`:''}
       <div id="dayListItems">${renderDayListItemsHTML()}</div>
+      <div class="hint">此清單包含當天所有登記（不論是否在營），統計分頁的「不在營名單」則只顯示實際不在營的人。</div>
     `, `<button class="ghost small" id="dedupUnavailBtn">移除重複紀錄</button><button class="ghost small" id="dayListClearFilter">清除篩選</button>`);
 }
 function wireLeaveEditButtons(){
@@ -2452,7 +2540,7 @@ function renderUnavail(){
       </div>
       <div class="row wrap" style="margin-bottom:8px">
         <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text)">
-          <input type="checkbox" id="uaSyncRosterDefault" style="width:auto"> 同時更新到人員名冊預設（僅套用給勾選中、名冊本來就有長期事故設定的人）
+          <input type="checkbox" id="uaSyncRosterDefault" style="width:auto"> 同時更新到人員名冊預設（不論名冊本來有無設定，都會以這次填的為準，成為新的長期預設）
         </label>
       </div>
       <div class="row wrap" style="margin-bottom:8px">
@@ -2841,8 +2929,10 @@ function renderUnavail(){
     if(syncRosterDefault && reason){
       personIds.forEach(personId=>{
         const person = state.personnel.find(p=>p.id===personId);
-        if(person && personLongTerm(person).mode!=='off'){
-          person.longTerm = {...personLongTerm(person), reason, inCamp};
+        if(person){
+          const existingLt = personLongTerm(person);
+          const mode = existingLt.mode!=='off' ? existingLt.mode : 'allday';
+          person.longTerm = {...existingLt, mode, reason, inCamp};
         }
       });
     }
@@ -3357,14 +3447,14 @@ function renderStats(){
 `);
   const groupRankStatsHTML = collapsibleCardHTML('groupRankStats', '各排組人數統計（官/士/兵）', renderGroupRankStats());
   const onDutyHTML = collapsibleCardHTML('onDuty', `${minguoLabel(currentDate)} 在勤人員（非休假，含當日勤務）（${onDutyList(currentDate).length}人）`, renderOnDutyList(currentDate));
-  const dayListHTML = dayListCardHTML();
+  const notInCampHTML = notInCampCardHTML();
   const incidentHTML = collapsibleCardHTML('incidentBreakdown', `${minguoLabel(currentDate)} 其他事故/管制分類（點各項展開名單）`, renderIncidentBreakdown(currentDate));
   const cardDefs = [
     {key:'queryForm', html:queryFormHTML},
     {key:'hourly', html:hourlyHTML},
     {key:'groupRankStats', html:groupRankStatsHTML},
     {key:'onDuty', html:onDutyHTML},
-    {key:'dayList', html:dayListHTML},
+    {key:'notInCamp', html:notInCampHTML},
     {key:'incidentBreakdown', html:incidentHTML},
   ];
   app.innerHTML = renderCardList('statsCardsContainer', 'stats', cardDefs);
@@ -3380,7 +3470,8 @@ function renderStats(){
     if(searchEl) searchEl.oninput=(e)=>{ hourlyPeopleFilterState.search=e.target.value.trim(); document.getElementById('hourPeopleList-'+h).innerHTML=hourlyAvailablePeopleHTML(h); };
     if(groupEl) groupEl.onchange=(e)=>{ hourlyPeopleFilterState.group=e.target.value; document.getElementById('hourPeopleList-'+h).innerHTML=hourlyAvailablePeopleHTML(h); };
   });
-  wireDayListCardEvents();
+  wireNotInCampCardEvents();
+  wireLeaveEditButtons();
   document.getElementById('queryBtn').onclick=()=>{
     const t=getTimeSelectValue('queryTime');
     const qMin=toMin(t);
@@ -4314,6 +4405,12 @@ function openMiscPresetModal(editIndex){
         </label>
       </div>
       <div class="hint" style="margin-bottom:8px">用於「可外散宿人員」判斷：勾選後，這個項目裡開始時間落在22:00-06:00的時段會排除當事人的外散宿資格。</div>
+      <div class="row wrap" style="margin-bottom:8px">
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text)">
+          <input type="checkbox" id="mpAllDayAway" style="width:auto" ${existing&&existing.isAllDayAway?'checked':''}> 全日出勤（營外）
+        </label>
+      </div>
+      <div class="hint" style="margin-bottom:8px">勾選後，被排到這個項目的人仍會留在「在勤人員」名單裡（他們有任務在身，只是人在營外），但名單上會加註「🚗營外」標示這個任務（例如整天在外的採買、督伙）。</div>
       <div class="divider"></div>
       <h3>資格要求（若項目分「駕駛/車長」，以下套用在駕駛；若為單一人員項目，套用在該人員）</h3>
       <label>需持有駕照(可複選，不選代表不限)</label>
@@ -4411,6 +4508,7 @@ function openMiscPresetModal(editIndex){
     if(!role){ showAlert('請輸入項目名稱'); return; }
     const fixed=document.getElementById('mpFixed').checked;
     const isSentry=document.getElementById('mpSentry').checked;
+    const isAllDayAway=document.getElementById('mpAllDayAway').checked;
     const restUntil=getTimeSelectValue('mpRest');
     const requiredLicenses=[...document.querySelectorAll('.mp-req-license:checked')].map(cb=>cb.value);
     const requiredMedCert=document.getElementById('mpReqMedCert').checked;
@@ -4419,12 +4517,12 @@ function openMiscPresetModal(editIndex){
     const isDefaultOrder = rankPriorityDraft.length===defaultOrder.length && rankPriorityDraft.every((r,i)=>r===defaultOrder[i]);
     const rankPriority = isDefaultOrder? null : [...rankPriorityDraft];
     if(editing){
-      existing.role=role; existing.times=timesDraft.map(t=>({...t})); existing.fixed=fixed; existing.isSentry=isSentry; existing.restUntil=restUntil;
+      existing.role=role; existing.times=timesDraft.map(t=>({...t})); existing.fixed=fixed; existing.isSentry=isSentry; existing.isAllDayAway=isAllDayAway; existing.restUntil=restUntil;
       existing.requiredLicenses=requiredLicenses; existing.requiredMedCert=requiredMedCert; existing.requiredSkills=requiredSkills;
       existing.rankPriority=rankPriority;
       delete existing.start; delete existing.end;
     } else {
-      state.miscPresets.push({role,times:timesDraft.map(t=>({...t})),roles:null,fixed,isSentry,restUntil,requiredLicenses,requiredMedCert,requiredSkills,rankPriority,sortOrder:nextSortOrder(),excludeFromExport:false});
+      state.miscPresets.push({role,times:timesDraft.map(t=>({...t})),roles:null,fixed,isSentry,isAllDayAway,restUntil,requiredLicenses,requiredMedCert,requiredSkills,rankPriority,sortOrder:nextSortOrder(),excludeFromExport:false});
     }
     saveState(); modal.remove(); render();
   };
