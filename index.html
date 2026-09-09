@@ -108,7 +108,7 @@ textarea{min-height:50px;resize:vertical;}
     <div class="row" style="gap:6px;align-items:center">
       <button class="ghost small" id="undoBtn" title="復原上一步" disabled>↩️</button>
       <button class="ghost small" id="redoBtn" title="取消復原（重做）" disabled>↪️</button>
-      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v38</span></h1>
+      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v39</span></h1>
     </div>
     <div class="row" style="gap:6px;align-items:center">
       <select id="timeStepSelect" style="font-size:11px;padding:3px 6px;width:auto">
@@ -1385,8 +1385,7 @@ function batchLtPeopleCheckboxesHTML(groupFilter, searchFilter){
 }
 function renderPeople(){
   const groups = [...new Set(state.personnel.map(p=>p.group).filter(Boolean))].sort((a,b)=>groupIndex(a)-groupIndex(b));
-  app.innerHTML = `
-    ${collapsibleCardHTML('npForm', '新增人員', `
+  const npFormHTML = collapsibleCardHTML('npForm', '新增人員', `
       <div class="row wrap" style="margin-bottom:8px">
         <div class="grow"><label>姓名</label><input type="text" id="npName" placeholder="例：姓名"></div>
         <div class="grow"><label>排/組別</label><select id="npGroup">${groupOptionsHTML('')}</select></div>
@@ -1473,9 +1472,8 @@ function renderPeople(){
         <div class="grow"><label>備考(選填)</label><input type="text" id="npNote" placeholder="例：新兵、隔宿另計"></div>
       </div>
       <button class="primary" id="npAdd" style="width:100%">新增</button>
-`)}
-    <div class="card">
-      <div class="section-title"><h2 style="margin:0" id="pplCountLabel">名冊（${state.personnel.length}人）</h2><button class="ghost small" id="pplClearFilter">清除篩選</button></div>
+`);
+  const pplRosterHTML = collapsibleCardHTML('pplRoster', `<span id="pplCountLabel">名冊（${state.personnel.length}人）</span>`, `
       <div id="pplSummary">${personListSummaryHTML(state.personnel, state.personnel)}</div>
       <div class="row wrap" style="margin-bottom:8px">
         <div class="grow"><label>搜尋姓名</label><input type="text" id="pplSearch" placeholder="輸入姓名關鍵字" value="${esc(pplFilterState.kw)}"></div>
@@ -1531,8 +1529,8 @@ function renderPeople(){
       </div>
       ${groups.length===0 && state.personnel.length===0 ? `<div class="empty">尚未新增人員</div>` : ''}
       <div id="pplListArea">${renderPeopleGroups(groups)}</div>
-    </div>
-    ${collapsibleCardHTML('batchLt', '批次設定長期事故（勾選多位人員，套用同一組設定）', `
+    `, `<button class="ghost small" id="pplClearFilter">清除篩選</button>`);
+  const batchLtHTML = collapsibleCardHTML('batchLt', '批次設定長期事故（勾選多位人員，套用同一組設定）', `
       <div class="row wrap" style="margin-bottom:8px">
         <div class="grow"><label>搜尋姓名</label><input type="text" id="batchLtSearch" placeholder="輸入姓名關鍵字" value="${esc(batchLtFilterState.search)}"></div>
         <div style="width:120px"><label>排組篩選</label>
@@ -1584,7 +1582,13 @@ function renderPeople(){
       </div>
       <button class="primary" id="batchLtApply" style="width:100%">套用到勾選的人員</button>
       <div class="hint">會直接覆蓋勾選人員原本的長期事故設定；選「（無，取消長期事故）」可批次清除。</div>
-    `)}
+    `);
+  const cardDefs = [
+    {key:'npForm', html:npFormHTML},
+    {key:'pplRoster', html:pplRosterHTML},
+    {key:'batchLt', html:batchLtHTML},
+  ];
+  app.innerHTML = renderCardList('peopleCardsContainer', 'people', cardDefs) + `
     <div class="hint">💡 名單一次輸入後會持續保留在此裝置（localStorage）；用右上角「匯出」可備份，之後可再匯入。</div>
     <div class="card">
       <button class="ghost small" id="importBtn">📥 匯入備份 JSON</button>
@@ -1782,6 +1786,7 @@ function renderPeople(){
     });
   };
   wirePeopleListButtons();
+  wireCardListDrag('peopleCardsContainer', 'people', cardDefs);
 }
 function openPersonEditor(personId){
   const p = state.personnel.find(p=>p.id===personId);
@@ -1950,6 +1955,8 @@ let reverseCheckedIds=new Set(); // survives filter changes — checking someone
 let dayListFilterState={search:'',group:''}; // for the day's incident/leave list
 let uaFilterState={search:'',group:''}; // for the single-entry 人員事故登載 form's filters
 let uaCheckedIds=new Set(); // survives filter changes, same as reverseCheckedIds
+let uaInCampTouched=false; // true once the user manually changes 在營 themselves — after that, applyUaRosterDefaultHint must never overwrite it again
+let uaReasonTouched=false; // same idea, for the reason preset
 let lvFilterState={search:'',group:''}; // for the 新增人員休假 form's filters
 let lvCheckedIds=new Set();
 function lvPeopleCheckboxesHTML(groupFilter, searchFilter){
@@ -2638,6 +2645,7 @@ function longTermItemsHTML(){
   return list.map(p=>`<div class="muted">・${esc(p.name)}（${p.group||'未分組'}·${p.rank}）：${longTermLabel(p)}</div>`).join('');
 }
 function renderUnavail(){
+  uaInCampTouched=false; uaReasonTouched=false;
   const longTerm = state.personnel.filter(p=>personLongTerm(p).mode!=='off');
   const leaveBlocks={};
   Object.keys(state.unavail).forEach(d=>{
@@ -2899,7 +2907,11 @@ function renderUnavail(){
      the roster, surface it as a hint and quietly pre-fill the reason/在營
      fields (only if the form is still at its untouched defaults) so the
      common case — registering today's specific instance of someone's
-     usual long-term reason — doesn't require re-typing it */
+     usual long-term reason — doesn't require re-typing it. Once the user
+     manually touches 在營 themselves (e.g. to say "not in camp just
+     today"), this must never overwrite it again — a checkbox's checked
+     state alone can't tell "untouched" from "manually set back to its
+     default", so a separate touched-flag tracks that explicitly. */
   function applyUaRosterDefaultHint(){
     const hintEl = document.getElementById('uaRosterDefaultHint');
     if(uaCheckedIds.size!==1){ hintEl.style.display='none'; return; }
@@ -2909,7 +2921,7 @@ function renderUnavail(){
     hintEl.style.display='block';
     hintEl.textContent = `💡 ${person.name} 名冊上的長期事故預設是「${lt.reason}（${lt.inCamp?'在營':'不在營'}）」，下面已帶入，可再依今天實際狀況調整。`;
     const presetSel = document.getElementById('uaReasonPreset');
-    if(presetSel && !presetSel.value){
+    if(presetSel && !presetSel.value && !uaReasonTouched){
       const opt = [...presetSel.options].find(o=>o.value===lt.reason);
       if(opt) presetSel.value = lt.reason;
       else {
@@ -2918,7 +2930,7 @@ function renderUnavail(){
         document.getElementById('uaReasonCustom').value = lt.reason;
       }
     }
-    document.getElementById('uaInCamp').checked = lt.inCamp;
+    if(!uaInCampTouched) document.getElementById('uaInCamp').checked = lt.inCamp;
   }
   wireUaCheckboxes();
   document.getElementById('uaSearch').oninput=(e)=>{
@@ -3007,8 +3019,11 @@ function renderUnavail(){
     document.getElementById('uaTimeRow').style.display = e.target.checked? 'none':'flex';
   };
   document.getElementById('uaReasonPreset').onchange=(e)=>{
+    uaReasonTouched=true;
     document.getElementById('uaReasonCustomRow').style.display = e.target.value==='__custom'? 'flex':'none';
   };
+  document.getElementById('uaReasonCustom').oninput=()=>{ uaReasonTouched=true; };
+  document.getElementById('uaInCamp').onchange=()=>{ uaInCampTouched=true; };
   function refreshReverseCheckboxes(){
     document.getElementById('reverseCheckArea').innerHTML = renderReverseCheckboxes();
     wireReverseCheckboxes();
@@ -5108,8 +5123,7 @@ function wireMiscCardEvents(){
 }
 function renderMisc(){
   const list = state.misc[currentDate]||[];
-  app.innerHTML = `
-    ${collapsibleCardHTML('adhocQuery', `臨時任務查詢（指定時間+需要幾官幾士幾兵/專長，列出可用人選）`, `
+  const adhocQueryHTML = collapsibleCardHTML('adhocQuery', `臨時任務查詢（指定時間+需要幾官幾士幾兵/專長，列出可用人選）`, `
       <div class="row wrap" style="margin-bottom:8px">
         <div class="grow"><label>需要開始的時間</label>${timeSelectHTML('ahTime', adhocQueryState.time||'10:00')}</div>
       </div>
@@ -5129,16 +5143,16 @@ function renderMisc(){
       <button class="primary" id="ahQueryBtn" style="width:100%;margin-bottom:8px">查詢可用人選</button>
       <div id="ahResult">${adhocQueryState.hasRun? renderAdhocQueryResult():''}</div>
       <div class="hint">查到的人選旁邊可以直接按「加入」，選擇建立新的其他勤務項目或加到今天已有的項目，不用再跳去「其他勤務」分頁重填一次。</div>
-    `)}
-    ${collapsibleCardHTML('miscPresets', '常用項目（點一下自動帶入名稱、時間與角色）', `
+    `);
+  const miscPresetsHTML = collapsibleCardHTML('miscPresets', '常用項目（點一下自動帶入名稱、時間與角色）', `
       <div class="row wrap">
         ${state.miscPresets.map((mp,i)=>({mp,i})).sort((a,b)=>(b.mp.fixed?1:0)-(a.mp.fixed?1:0)).map(({mp,i})=>`<span class="pill-btn" style="cursor:pointer" data-preset="${i}">${mp.fixed?'📌':''}${esc(mp.role)} ${presetTimes(mp).map(t=>t.start+'-'+t.end).join('、')} <span data-edit-preset="${i}" style="margin-left:4px">✎</span></span>`).join('')}
       </div>
       <div class="hint" style="margin-bottom:8px">📌代表「固定項目」：點旁邊的 ✎ 可編輯名稱/時間/固定與否，或刪除。</div>
       <div class="divider"></div>
       <button class="ghost small" id="openAddPresetModal">＋新增常用項目</button>
-    `)}
-    ${collapsibleCardHTML('miscAddForm', miscEditingId? '編輯項目' : '新增項目', `
+    `);
+  const miscAddFormHTML = collapsibleCardHTML('miscAddForm', miscEditingId? '編輯項目' : '新增項目', `
       <div class="row wrap" style="margin-bottom:8px">
         <div class="grow"><label>項目名稱</label><input type="text" id="mRole" placeholder="例：技工 / 採買 / 查哨"></div>
       </div>
@@ -5196,8 +5210,8 @@ function renderMisc(){
       `}
       <button class="primary" id="mAdd" style="width:100%">${miscEditingId? '儲存修改':'新增'}</button>
       ${miscEditingId? `<button class="ghost small" id="mCancelEdit" style="width:100%;margin-top:6px">取消編輯</button>`:''}
-    `)}
-    ${collapsibleCardHTML('miscToday', `${fmtDate(currentDate)} 其他勤務（${list.length}筆・共${new Set(list.flatMap(m=>(m.personIds||[]).filter(Boolean))).size}人）`, `
+    `);
+  const miscTodayHTML = collapsibleCardHTML('miscToday', `${fmtDate(currentDate)} 其他勤務（${list.length}筆・共${new Set(list.flatMap(m=>(m.personIds||[]).filter(Boolean))).size}人）`, `
       ${list.length===0? `<div class="empty">尚未新增</div>` : [...list].sort((a,b)=>{
         const pa=state.miscPresets.find(p=>p.role===a.role), pb=state.miscPresets.find(p=>p.role===b.role);
         return (pa?(pa.sortOrder??999):999) - (pb?(pb.sortOrder??999):999);
@@ -5217,7 +5231,14 @@ function renderMisc(){
           ${issues.map(i=>`<div class="badge-issue">⚠️ ${esc(i)}</div>`).join('')}
         </div>`;
       }).join('')}
-    `)}
+    `);
+  const cardDefs = [
+    {key:'adhocQuery', html:adhocQueryHTML},
+    {key:'miscPresets', html:miscPresetsHTML},
+    {key:'miscAddForm', html:miscAddFormHTML},
+    {key:'miscToday', html:miscTodayHTML},
+  ];
+  app.innerHTML = renderCardList('miscCardsContainer', 'misc', cardDefs) + `
     <div class="hint">此區用於不需6小時規則的項目，如：技工、採買、愛心便當、消防車、救護車、話務、督伙、開關門、健身房簽到等，依你們單位每日需要自行新增，也可以直接點上方常用項目快速帶入。採買/愛心便當/消防車/救護車需分別指定駕駛與車長：消防車駕駛需大型車或大客車駕照，救護車駕駛需小型車/大型車/大客車其中一種且救護車車長與駕駛都需具備EMT-1/EMT-2/EMT-P或醫生證書，其餘車輛駕駛至少需小型車駕照；車長需士官以上且階級高於駕駛，選單會把符合資格的人排到最上面。話務需至少小型車駕照。</div>
   `;
   function wireMiscCheckboxes(){
@@ -5473,6 +5494,7 @@ function renderMisc(){
     };
   }
   wireMiscCardEvents();
+  wireCardListDrag('miscCardsContainer', 'misc', cardDefs);
 }
 
 /* ---------------- init ---------------- */
