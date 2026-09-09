@@ -54,6 +54,8 @@ button.danger{color:var(--danger);border-color:var(--danger);background:transpar
 button.small{padding:5px 9px;font-size:12px;}
 button{transition:transform .12s ease, opacity .12s ease;}
 button:active{opacity:.6;transform:scale(.94);}
+button:disabled{opacity:.3;cursor:default;}
+button:disabled:active{transform:none;}
 @keyframes pressFlash{0%{background-color:var(--accent);color:#1a140a;}100%{background-color:inherit;color:inherit;}}
 button.press-flash{animation:pressFlash .4s ease;}
 button.pressed,.pill-btn.pressed{opacity:.6;transform:scale(.94);}
@@ -98,9 +100,9 @@ textarea{min-height:50px;resize:vertical;}
   </div>
   <div class="topbar-main">
     <div class="row" style="gap:6px;align-items:center">
-      <button class="ghost small" id="undoBtn" title="復原上一步" style="display:none">↩️</button>
-      <button class="ghost small" id="redoBtn" title="取消復原（重做）" style="display:none">↪️</button>
-      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v30</span></h1>
+      <button class="ghost small" id="undoBtn" title="復原上一步" disabled>↩️</button>
+      <button class="ghost small" id="redoBtn" title="取消復原（重做）" disabled>↪️</button>
+      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v31</span></h1>
     </div>
     <div class="row" style="gap:6px;align-items:center">
       <select id="timeStepSelect" style="font-size:11px;padding:3px 6px;width:auto">
@@ -683,18 +685,30 @@ function windowsOverlapRecurring(aS,aE,bS,bE){
 }
 
 /* ---------------- long-term unavailability ---------------- */
-/* p.longTerm = {mode:'off'|'allday'|'range', start, end}. Falls back to the
-   legacy boolean field p.longTermUnavailable from earlier versions. */
+/* p.longTerm = {mode:'off'|'allday'|'range', start, end, reason, inCamp}.
+   Falls back to the legacy boolean field p.longTermUnavailable from
+   earlier versions. `reason` is a free label (usually one of
+   LONGTERM_REASON_PRESETS) explaining WHY duty assignment skips this
+   person; `inCamp` is independent of that — it says whether they're
+   still physically present (主官/懷孕/受傷 etc. — around, just never
+   handed duty) versus genuinely away (受訓 etc.), which is what
+   distinguishes "在勤人員" headcounts from duty-assignment eligibility.
+   Duty exclusion itself is unconditional for any allday/range entry
+   regardless of inCamp — inCamp only affects presence-style displays. */
+const LONGTERM_REASON_PRESETS = ['主官','高勤傳令','高勤文書','受訓','懷孕','受傷'];
+const LONGTERM_REASON_DEFAULT_INCAMP = {主官:true, 高勤傳令:true, 高勤文書:true, 受訓:false, 懷孕:true, 受傷:true};
 function personLongTerm(p){
-  if(p.longTerm) return p.longTerm;
-  if(p.longTermUnavailable) return {mode:'allday'};
+  if(p.longTerm) return {inCamp:true, ...p.longTerm}; // inCamp defaults true for records saved before this field existed
+  if(p.longTermUnavailable) return {mode:'allday', inCamp:true};
   return {mode:'off'};
 }
 function longTermLabel(p){
   const lt=personLongTerm(p);
-  if(lt.mode==='allday') return '長期全天不可排';
-  if(lt.mode==='range') return `長期不可排 ${lt.start}–${lt.end}`;
-  return '';
+  if(lt.mode==='off') return '';
+  const reasonPart = lt.reason? lt.reason : (lt.mode==='allday'? '長期全天不可排' : '長期不可排');
+  const timePart = lt.mode==='range'? ` ${lt.start}–${lt.end}` : (lt.mode==='allday'? '（全天）':'');
+  const campPart = lt.inCamp? '在營，不排勤務' : '不在營';
+  return `${reasonPart}${timePart}（${campPart}）`;
 }
 
 /* ---------------- compensatory rest (補休) ---------------- */
@@ -1206,8 +1220,8 @@ refreshGlobalDate();
 function refreshUndoButton(){
   const btn = document.getElementById('undoBtn');
   const rbtn = document.getElementById('redoBtn');
-  if(btn) btn.style.display = undoStack.length? 'inline-block' : 'none';
-  if(rbtn) rbtn.style.display = redoStack.length? 'inline-block' : 'none';
+  if(btn) btn.disabled = !undoStack.length;
+  if(rbtn) rbtn.disabled = !redoStack.length;
 }
 function flashPressed(btn){
   if(!btn) return;
@@ -1336,6 +1350,23 @@ function renderPeople(){
             <option value="range">長期時段性不可排（每天固定時段）</option>
           </select>
         </div>
+      </div>
+      <div class="row wrap" id="npLongTermDetails" style="margin-bottom:8px;display:none">
+        <div class="grow"><label>原因</label>
+          <select id="npLTReason">
+            <option value="">（不指定）</option>
+            ${LONGTERM_REASON_PRESETS.map(r=>`<option value="${r}">${r}</option>`).join('')}
+            <option value="__custom">其他(自訂)</option>
+          </select>
+        </div>
+      </div>
+      <div class="row wrap" id="npLTReasonCustomRow" style="margin-bottom:8px;display:none">
+        <div class="grow"><label>自訂原因</label><input type="text" id="npLTReasonCustom" placeholder="請輸入原因"></div>
+      </div>
+      <div class="row wrap" id="npLTInCampRow" style="margin-bottom:8px;display:none">
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text)">
+          <input type="checkbox" id="npLTInCamp" style="width:auto" checked> 在營（人在營區，只是不排勤務；取消勾選代表實際不在營區，例如受訓）
+        </label>
       </div>
       <div class="row wrap" id="npLongTermRange" style="margin-bottom:8px;display:none">
         <div class="grow"><label>每天開始</label><select id="npLTStart">${timeOptions().map(t=>`<option ${t==='18:00'?'selected':''}>${t}</option>`).join('')}</select></div>
@@ -1485,7 +1516,19 @@ function renderPeople(){
     applyPeopleFilter();
   };
   document.getElementById('npLongTermMode').onchange=(e)=>{
-    document.getElementById('npLongTermRange').style.display = e.target.value==='range'? 'flex':'none';
+    const isRange = e.target.value==='range';
+    const isOn = e.target.value!=='off';
+    document.getElementById('npLongTermRange').style.display = isRange? 'flex':'none';
+    document.getElementById('npLongTermDetails').style.display = isOn? 'flex':'none';
+    document.getElementById('npLTInCampRow').style.display = isOn? 'flex':'none';
+    if(!isOn) document.getElementById('npLTReasonCustomRow').style.display='none';
+  };
+  document.getElementById('npLTReason').onchange=(e)=>{
+    const v=e.target.value;
+    document.getElementById('npLTReasonCustomRow').style.display = v==='__custom'? 'flex':'none';
+    if(Object.prototype.hasOwnProperty.call(LONGTERM_REASON_DEFAULT_INCAMP, v)){
+      document.getElementById('npLTInCamp').checked = LONGTERM_REASON_DEFAULT_INCAMP[v];
+    }
   };
   document.getElementById('npAddSkillType').onclick=()=>{
     const name=document.getElementById('npNewSkillName').value.trim();
@@ -1509,9 +1552,14 @@ function renderPeople(){
     const medCert=document.getElementById('npMedCert').value;
     const skills=[...document.querySelectorAll('.np-skill-cb:checked')].map(cb=>cb.value);
     const mode=document.getElementById('npLongTermMode').value;
-    const longTerm = mode==='range'
-      ? {mode:'range', start:document.getElementById('npLTStart').value, end:document.getElementById('npLTEnd').value}
-      : {mode};
+    let longTerm = {mode};
+    if(mode!=='off'){
+      const reasonSel = document.getElementById('npLTReason').value;
+      const reason = reasonSel==='__custom'? document.getElementById('npLTReasonCustom').value.trim() : reasonSel;
+      const inCamp = document.getElementById('npLTInCamp').checked;
+      longTerm = {mode, reason, inCamp};
+      if(mode==='range'){ longTerm.start=document.getElementById('npLTStart').value; longTerm.end=document.getElementById('npLTEnd').value; }
+    }
     const note = document.getElementById('npNote').value.trim();
     const outingRestriction = document.getElementById('npOutingRestriction').value;
     if(!name) return;
@@ -1560,6 +1608,23 @@ function openPersonEditor(personId){
         <option value="allday" ${lt.mode==='allday'?'selected':''}>長期全天不可排</option>
         <option value="range" ${lt.mode==='range'?'selected':''}>長期時段性不可排（每天固定時段）</option>
       </select>
+      <div class="row wrap" id="epLongTermDetails" style="margin-bottom:8px;display:${lt.mode!=='off'?'flex':'none'}">
+        <div class="grow"><label>原因</label>
+          <select id="epLTReason">
+            <option value="" ${!lt.reason?'selected':''}>（不指定）</option>
+            ${LONGTERM_REASON_PRESETS.map(r=>`<option value="${r}" ${lt.reason===r?'selected':''}>${r}</option>`).join('')}
+            <option value="__custom" ${lt.reason && !LONGTERM_REASON_PRESETS.includes(lt.reason)?'selected':''}>其他(自訂)</option>
+          </select>
+        </div>
+      </div>
+      <div class="row wrap" id="epLTReasonCustomRow" style="margin-bottom:8px;display:${lt.reason && !LONGTERM_REASON_PRESETS.includes(lt.reason)?'flex':'none'}">
+        <div class="grow"><label>自訂原因</label><input type="text" id="epLTReasonCustom" value="${esc(lt.reason && !LONGTERM_REASON_PRESETS.includes(lt.reason)?lt.reason:'')}" placeholder="請輸入原因"></div>
+      </div>
+      <div class="row wrap" id="epLTInCampRow" style="margin-bottom:8px;display:${lt.mode!=='off'?'flex':'none'}">
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text)">
+          <input type="checkbox" id="epLTInCamp" style="width:auto" ${lt.inCamp?'checked':''}> 在營（人在營區，只是不排勤務；取消勾選代表實際不在營區，例如受訓）
+        </label>
+      </div>
       <div class="row wrap" id="epLongTermRange" style="margin-bottom:8px;display:${lt.mode==='range'?'flex':'none'}">
         <div class="grow"><label>每天開始</label><select id="epLTStart">${timeOptions().map(t=>`<option ${t===(lt.start||'18:00')?'selected':''}>${t}</option>`).join('')}</select></div>
         <div class="grow"><label>到隔天/當天</label><select id="epLTEnd">${timeOptions().map(t=>`<option ${t===(lt.end||'08:30')?'selected':''}>${t}</option>`).join('')}</select></div>
@@ -1590,7 +1655,19 @@ function openPersonEditor(personId){
     document.getElementById('epNewSkillName').value='';
   };
   document.getElementById('epLongTermMode').onchange=(e)=>{
-    document.getElementById('epLongTermRange').style.display = e.target.value==='range'? 'flex':'none';
+    const isRange = e.target.value==='range';
+    const isOn = e.target.value!=='off';
+    document.getElementById('epLongTermRange').style.display = isRange? 'flex':'none';
+    document.getElementById('epLongTermDetails').style.display = isOn? 'flex':'none';
+    document.getElementById('epLTInCampRow').style.display = isOn? 'flex':'none';
+    if(!isOn) document.getElementById('epLTReasonCustomRow').style.display='none';
+  };
+  document.getElementById('epLTReason').onchange=(e)=>{
+    const v=e.target.value;
+    document.getElementById('epLTReasonCustomRow').style.display = v==='__custom'? 'flex':'none';
+    if(Object.prototype.hasOwnProperty.call(LONGTERM_REASON_DEFAULT_INCAMP, v)){
+      document.getElementById('epLTInCamp').checked = LONGTERM_REASON_DEFAULT_INCAMP[v];
+    }
   };
   document.getElementById('saveP').onclick=()=>{
     p.name=document.getElementById('epName').value.trim()||p.name;
@@ -1601,9 +1678,15 @@ function openPersonEditor(personId){
     p.medCert=document.getElementById('epMedCert').value;
     p.skills=[...document.querySelectorAll('.ep-skill-cb:checked')].map(cb=>cb.value);
     const mode=document.getElementById('epLongTermMode').value;
-    p.longTerm = mode==='range'
-      ? {mode:'range', start:document.getElementById('epLTStart').value, end:document.getElementById('epLTEnd').value}
-      : {mode};
+    let newLongTerm = {mode};
+    if(mode!=='off'){
+      const reasonSel = document.getElementById('epLTReason').value;
+      const reason = reasonSel==='__custom'? document.getElementById('epLTReasonCustom').value.trim() : reasonSel;
+      const inCamp = document.getElementById('epLTInCamp').checked;
+      newLongTerm = {mode, reason, inCamp};
+      if(mode==='range'){ newLongTerm.start=document.getElementById('epLTStart').value; newLongTerm.end=document.getElementById('epLTEnd').value; }
+    }
+    p.longTerm = newLongTerm;
     p.note = document.getElementById('epNote').value.trim();
     p.outingRestriction = document.getElementById('epOutingRestriction').value;
     delete p.longTermUnavailable;
@@ -1727,8 +1810,12 @@ function isLeaveBufferEntry(u){
 }
 function onDutyList(date){
   const onLeaveIds = new Set((state.unavail[date]||[]).filter(u=>u.allDay && isLeaveReason(u.reason)).map(u=>u.personId));
-  return state.personnel.filter(p=>!onLeaveIds.has(p.id))
-    .sort((a,b)=>groupIndex(a.group)-groupIndex(b.group) || rankIndex(a.rank)-rankIndex(b.rank));
+  return state.personnel.filter(p=>{
+    if(onLeaveIds.has(p.id)) return false;
+    const lt = personLongTerm(p);
+    if(lt.mode!=='off' && !lt.inCamp) return false; // genuinely away (e.g. 受訓) — not "in camp" even though not on 休假
+    return true;
+  }).sort((a,b)=>groupIndex(a.group)-groupIndex(b.group) || rankIndex(a.rank)-rankIndex(b.rank));
 }
 function isHolidayDate(date){
   const d = new Date(date+'T00:00:00');
