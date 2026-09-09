@@ -65,7 +65,7 @@ button.pressed,.pill-btn.pressed{opacity:.6;transform:scale(.94);}
 .tabs{position:fixed;bottom:0;left:0;right:0;display:flex;background:var(--panel);border-top:1px solid var(--line);z-index:30;padding-bottom:env(safe-area-inset-bottom);}
 .tabs button{flex:1;background:transparent;border:none;border-radius:0;padding:11px 4px;font-size:12px;color:var(--dim);}
 .tabs button.active{color:var(--accent);font-weight:600;}
-.list-item{display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--line);}
+.list-item{display:flex;align-items:flex-start;gap:8px;padding:8px 0;border-bottom:1px solid var(--line);}
 .list-item:last-child{border-bottom:none;}
 .tag{font-size:11px;padding:2px 7px;border-radius:20px;border:1px solid var(--line);color:var(--dim);white-space:nowrap;}
 .tag.rank-軍官{color:#c9573c;border-color:#c9573c;}
@@ -75,12 +75,14 @@ button.pressed,.pill-btn.pressed{opacity:.6;transform:scale(.94);}
 .warn{color:var(--danger);font-size:12px;}
 .ok{color:var(--ok);font-size:12px;}
 .shift-row{border:1px solid var(--line);border-radius:6px;padding:8px;margin-bottom:8px;background:var(--panel2);}
-.shift-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;}
+.shift-head{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;margin-bottom:6px;}
+.shift-head>.muted{margin-left:auto;}
 .shift-time{font-size:13px;font-weight:600;}
 .slot-select{margin-bottom:4px;}
 .badge-issue{display:inline-block;font-size:11px;color:var(--danger);margin-top:2px;}
-.section-title{display:flex;justify-content:space-between;align-items:center;margin-bottom:0;min-height:22px;}
-.section-title h2{margin:0;}
+.section-title{display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px;margin-bottom:0;min-height:22px;}
+.section-title h2,.section-title h3{margin:0;flex:1 1 auto;min-width:0;line-height:1.5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.section-title>.row,.section-title>button{flex-shrink:0;margin-left:auto;}
 .hr-table{width:100%;border-collapse:collapse;font-size:11px;}
 .hr-table td,.hr-table th{padding:3px 2px;text-align:center;border-bottom:1px solid var(--line);}
 .hr-table th{color:var(--dim);font-weight:500;}
@@ -108,7 +110,7 @@ textarea{min-height:50px;resize:vertical;}
     <div class="row" style="gap:6px;align-items:center">
       <button class="ghost small" id="undoBtn" title="復原上一步" disabled>↩️</button>
       <button class="ghost small" id="redoBtn" title="取消復原（重做）" disabled>↪️</button>
-      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v42</span></h1>
+      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v46</span></h1>
     </div>
     <div class="row" style="gap:6px;align-items:center">
       <select id="timeStepSelect" style="font-size:11px;padding:3px 6px;width:auto">
@@ -2113,7 +2115,7 @@ function notInCampItemsHTML(list, date){
     const rows = sorted.map(p=>{
       const reason = personAwayReason(p.id, date);
       const lid = findLeaveIdForPerson(p.id, date);
-      return `<div class="row" style="margin-bottom:2px">
+      return `<div class="row" style="margin-bottom:4px;align-items:flex-start">
         <span class="muted grow">・${esc(p.name)}（${p.rank}）：${esc(reason)}</span>
         ${lid? `<button class="ghost small" data-edit-leave="${lid}">編輯</button>` : `<button class="ghost small" data-quick-incident="${p.id}">編輯</button>`}
       </div>`;
@@ -2480,12 +2482,19 @@ function personDutySummary(personId, date){
 let onDutyFilterState={search:'',group:''};
 function onDutyItemsHTML(list, date){
   if(!list.length) return `<div class="empty">找不到符合的人員</div>`;
-  return list.map(p=>{
-    const duties = personDutySummary(p.id, date);
-    return `<div class="row" style="margin-bottom:2px">
-      <span class="muted grow">・${esc(p.name)}（${p.group||'未分組'}·${p.rank}）：${duties.length? duties.map(esc).join('、') : '無排班'}</span>
-      <button class="ghost small" data-quick-incident="${p.id}">登記事故</button>
-    </div>`;
+  const byGroup={};
+  list.forEach(p=>{ const g=p.group||'未分組'; if(!byGroup[g]) byGroup[g]=[]; byGroup[g].push(p); });
+  return Object.entries(byGroup).sort((a,b)=>groupIndex(a[0])-groupIndex(b[0])).map(([g,members])=>{
+    const bd={軍官:0,士官:0,士兵:0}; members.forEach(p=>{ const k=rankCategory(p.rank); if(k) bd[k]++; });
+    const sorted = members.slice().sort((a,b)=>rankIndex(a.rank)-rankIndex(b.rank));
+    const rows = sorted.map(p=>{
+      const duties = personDutySummary(p.id, date);
+      return `<div class="row" style="margin-bottom:4px;align-items:flex-start">
+        <span class="muted grow">・${esc(p.name)}（${p.rank}）：${duties.length? duties.map(esc).join('、') : '無排班'}</span>
+        <button class="ghost small" data-quick-incident="${p.id}">登記事故</button>
+      </div>`;
+    }).join('');
+    return collapsibleCardHTML('onDutyGroup-'+g, `${esc(g)}（${members.length}人・${bd.軍官}官${bd.士官}士${bd.士兵}兵）`, rows);
   }).join('');
 }
 function onDutyCardHTML(){
@@ -4304,15 +4313,16 @@ function renderCategoryCard(cat, dragIdx){
   const filledCount = shifts.reduce((sum,s)=>sum+(dayAssign[s.id]||[]).filter(Boolean).length,0);
   const totalCount = shifts.reduce((sum,s)=>sum+s.count,0);
   const title = `<span data-drag-handle style="cursor:grab;padding-right:6px;color:var(--dim)">⠿</span>${esc(cat.name)}
-        ${cat.enforceRest?'<span class="tag" style="margin-left:6px">6hr規則</span>':''}
-        ${cat.preferLowRank?'<span class="tag" style="margin-left:4px">建議低階</span>':''}
-        ${cat.needsNCO?'<span class="tag" style="margin-left:4px">需士官帶隊</span>':''}
-        ${(cat.excludeRanks||[]).length?`<span class="tag" style="margin-left:4px">${esc((cat.excludeRanks||[]).join('、'))}不可排</span>`:''}
-        ${(cat.avoidRanks||[]).length?`<span class="tag" style="margin-left:4px">盡量避免${esc((cat.avoidRanks||[]).join('、'))}</span>`:''}
-        ${hasTodayOverride?'<span class="tag" style="margin-left:4px;color:var(--accent);border-color:var(--accent)">今日專屬設定</span>':''}
         <span class="muted" style="margin-left:6px">已排 ${filledCount}/${totalCount}</span>`;
+  const tagsRow = `${cat.enforceRest?'<span class="tag" style="margin-right:4px">6hr規則</span>':''}
+        ${cat.preferLowRank?'<span class="tag" style="margin-right:4px">建議低階</span>':''}
+        ${cat.needsNCO?'<span class="tag" style="margin-right:4px">需士官帶隊</span>':''}
+        ${(cat.excludeRanks||[]).length?`<span class="tag" style="margin-right:4px">${esc((cat.excludeRanks||[]).join('、'))}不可排</span>`:''}
+        ${(cat.avoidRanks||[]).length?`<span class="tag" style="margin-right:4px">盡量避免${esc((cat.avoidRanks||[]).join('、'))}</span>`:''}
+        ${hasTodayOverride?'<span class="tag" style="margin-right:4px;color:var(--accent);border-color:var(--accent)">今日專屬設定</span>':''}`;
   const extraButtons = `<label style="display:flex;align-items:center;gap:3px;font-size:11px"><input type="checkbox" class="card-exclude-cb" data-exclude-kind="cat" data-exclude-id="${cat.id}" style="width:auto" ${cat.excludeFromExport?'checked':''}>不匯出</label><button class="ghost small" data-edit-cat="${cat.id}">編輯</button><button class="ghost small danger" data-clear-cat="${cat.id}">清空排班</button>`;
   const inner = `
+    <div class="row wrap" style="gap:0;margin-bottom:8px">${tagsRow}</div>
     <div class="hint" style="margin-bottom:8px">${esc(categoryPriorityLabel(cat))}</div>
     ${shifts.map(s=>{
       const assigned = dayAssign[s.id] || [];
