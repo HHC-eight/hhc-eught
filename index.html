@@ -108,7 +108,7 @@ textarea{min-height:50px;resize:vertical;}
     <div class="row" style="gap:6px;align-items:center">
       <button class="ghost small" id="undoBtn" title="復原上一步" disabled>↩️</button>
       <button class="ghost small" id="redoBtn" title="取消復原（重做）" disabled>↪️</button>
-      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v36</span></h1>
+      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v37</span></h1>
     </div>
     <div class="row" style="gap:6px;align-items:center">
       <select id="timeStepSelect" style="font-size:11px;padding:3px 6px;width:auto">
@@ -2091,7 +2091,7 @@ function notInCampItemsHTML(list, date){
       const lid = findLeaveIdForPerson(p.id, date);
       return `<div class="row" style="margin-bottom:2px">
         <span class="muted grow">・${esc(p.name)}（${p.rank}）：${esc(reason)}</span>
-        ${lid? `<button class="ghost small" data-edit-leave="${lid}">編輯</button>`:''}
+        ${lid? `<button class="ghost small" data-edit-leave="${lid}">編輯</button>` : `<button class="ghost small" data-quick-incident="${p.id}">編輯</button>`}
       </div>`;
     }).join('');
     return collapsibleCardHTML('notInCampGroup-'+g, `${esc(g)}（${members.length}人・${bd.軍官}官${bd.士官}士${bd.士兵}兵）`, rows);
@@ -2137,6 +2137,7 @@ function wireNotInCampCardEvents(){
     document.getElementById('notInCampSummary').textContent = `篩選出 ${list.length} / 共 ${fullList.length} 人不在營・${rankTotal.軍官}官${rankTotal.士官}士${rankTotal.士兵}兵`;
     document.getElementById('notInCampItems').innerHTML = notInCampItemsHTML(list, date);
     wireLeaveEditButtons();
+    wireQuickIncidentButtons();
   }
   searchEl.oninput=(e)=>{ notInCampFilterState.search=e.target.value.trim(); refresh(); };
   document.getElementById('notInCampGroupFilter').onchange=(e)=>{ notInCampFilterState.group=e.target.value; refresh(); };
@@ -2148,6 +2149,100 @@ function wireNotInCampCardEvents(){
    other people onto the same corrected date(s) in one go (useful for
    holiday duty coverage, where the same batch of people are usually off
    together). */
+/* 統計分頁直接補登/編輯事故 — the whole point of looking at 在勤人員/不在營名單
+   is to spot someone who's in the wrong bucket (scheduled on duty but
+   should've had an incident registered, or vice versa), so fixing it needs
+   to happen right there instead of bouncing back to 休假/事故. Handles
+   everyday 事故 entries only (not 休假 leaveId blocks, which already have
+   their own editor via openLeaveEditModal — a person with an active leaveId
+   should be routed there instead). */
+function openQuickIncidentModal(personId, date){
+  const person = state.personnel.find(p=>p.id===personId);
+  if(!person) return;
+  const existing = (state.unavail[date]||[]).filter(u=>u.personId===personId && !u.leaveId && !isLeaveBufferEntry(u));
+  const modal=document.createElement('div');
+  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:70;display:flex;align-items:flex-end;';
+  modal.innerHTML=`
+    <div style="background:var(--panel);width:100%;max-height:88vh;overflow:auto;border-radius:12px 12px 0 0;padding:14px;">
+      <div class="section-title"><h2 style="margin:0">登記/編輯事故：${esc(person.name)}</h2><button class="ghost small" id="closeModal">關閉</button></div>
+      <div class="hint" style="margin-bottom:8px">${minguoLabel(date)}</div>
+      <div id="qiExistingList" style="margin-bottom:8px">${existing.length? existing.map(u=>`
+        <div class="list-item">
+          <span class="grow">${u.allDay? '全天':`${u.start}-${u.end}`}${u.reason? `（${esc(u.reason)}）`:''}${u.inCamp===false? ' 🚫不在營':''}</span>
+          <button class="ghost small danger" data-qi-del="${u.id}">刪除</button>
+        </div>`).join('') : `<div class="empty">今天還沒有登記</div>`}</div>
+      <div class="divider"></div>
+      <h3>新增一筆</h3>
+      <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text);margin-bottom:8px">
+        <input type="checkbox" id="qiAllDay" style="width:auto" checked> 全天不能排
+      </label>
+      <div class="row wrap" id="qiTimeRow" style="margin-bottom:8px;display:none">
+        <div class="grow"><label>開始</label>${timeSelectHTML('qiStart','08:00')}</div>
+        <div class="grow"><label>結束</label>${timeSelectHTML('qiEnd','12:00')}</div>
+      </div>
+      <div class="row wrap" style="margin-bottom:8px">
+        <div class="grow"><label>原因</label>
+          <select id="qiReasonPreset">
+            <option value="">（不指定）</option>
+            ${[...new Set([...state.dailyReasonOptions, ...state.longtermReasonOptions])].map(r=>`<option>${esc(r)}</option>`).join('')}
+            <option value="__custom">其他(手動輸入)</option>
+          </select>
+        </div>
+      </div>
+      <div class="row wrap" id="qiReasonCustomRow" style="margin-bottom:8px;display:none">
+        <div class="grow"><label>原因內容</label><input type="text" id="qiReasonCustom" placeholder="請輸入原因"></div>
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;align-self:flex-end;padding-bottom:8px">
+          <input type="checkbox" id="qiReasonAddToPreset" style="width:auto"> 加入預設列表
+        </label>
+      </div>
+      <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text);margin-bottom:8px">
+        <input type="checkbox" id="qiInCamp" style="width:auto"> 在營（人在營區，只是不排勤務；不勾表示這天實際不在營區）
+      </label>
+      <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text);margin-bottom:8px">
+        <input type="checkbox" id="qiSyncRosterDefault" style="width:auto"> 同時更新到人員名冊預設（不論名冊本來有無設定，都以這次填的為準）
+      </label>
+      <button class="primary" id="qiAdd" style="width:100%">新增</button>
+    </div>`;
+  document.body.appendChild(modal);
+  document.getElementById('closeModal').onclick=()=>modal.remove();
+  document.getElementById('qiAllDay').onchange=(e)=>{
+    document.getElementById('qiTimeRow').style.display = e.target.checked? 'none':'flex';
+  };
+  document.getElementById('qiReasonPreset').onchange=(e)=>{
+    document.getElementById('qiReasonCustomRow').style.display = e.target.value==='__custom'? 'flex':'none';
+  };
+  function wireDelButtons(){
+    document.querySelectorAll('[data-qi-del]').forEach(b=>{
+      b.onclick=()=>{
+        state.unavail[date] = (state.unavail[date]||[]).filter(u=>u.id!==b.dataset.qiDel);
+        saveState();
+        modal.remove();
+        render();
+      };
+    });
+  }
+  wireDelButtons();
+  document.getElementById('qiAdd').onclick=()=>{
+    const allDay = document.getElementById('qiAllDay').checked;
+    const start = allDay? '' : getTimeSelectValue('qiStart');
+    const end = allDay? '' : getTimeSelectValue('qiEnd');
+    const presetVal = document.getElementById('qiReasonPreset').value;
+    const reason = presetVal==='__custom'? document.getElementById('qiReasonCustom').value.trim() : presetVal;
+    const inCamp = document.getElementById('qiInCamp').checked;
+    const syncRosterDefault = document.getElementById('qiSyncRosterDefault').checked;
+    if(presetVal==='__custom' && reason && document.getElementById('qiReasonAddToPreset').checked && !state.dailyReasonOptions.includes(reason)){
+      state.dailyReasonOptions.push(reason);
+    }
+    if(!state.unavail[date]) state.unavail[date]=[];
+    state.unavail[date].push({id:uid(), personId, allDay, start, end, reason, inCamp});
+    if(syncRosterDefault && reason){
+      const existingLt = personLongTerm(person);
+      const mode = existingLt.mode!=='off' ? existingLt.mode : 'allday';
+      person.longTerm = {...existingLt, mode, reason, inCamp};
+    }
+    saveState(); modal.remove(); render();
+  };
+}
 function openLeaveEditModal(leaveId){
   const entries=[];
   Object.keys(state.unavail).forEach(d=>{ (state.unavail[d]||[]).forEach(u=>{ if(u.leaveId===leaveId) entries.push(u); }); });
@@ -2363,7 +2458,10 @@ function renderOnDutyList(date){
   if(!people.length) return `<div class="empty">尚未新增人員</div>`;
   return people.map(p=>{
     const duties = personDutySummary(p.id, date);
-    return `<div class="muted">・${esc(p.name)}（${p.group||'未分組'}·${p.rank}）：${duties.length? duties.map(esc).join('、') : '無排班'}</div>`;
+    return `<div class="row" style="margin-bottom:2px">
+      <span class="muted grow">・${esc(p.name)}（${p.group||'未分組'}·${p.rank}）：${duties.length? duties.map(esc).join('、') : '無排班'}</span>
+      <button class="ghost small" data-quick-incident="${p.id}">登記事故</button>
+    </div>`;
   }).join('');
 }
 function renderDayListItemsHTML(){
@@ -2410,6 +2508,11 @@ function dayListCardHTML(){
 function wireLeaveEditButtons(){
   document.querySelectorAll('[data-edit-leave]').forEach(b=>{
     b.onclick=()=>openLeaveEditModal(b.dataset.editLeave);
+  });
+}
+function wireQuickIncidentButtons(){
+  document.querySelectorAll('[data-quick-incident]').forEach(b=>{
+    b.onclick=()=>openQuickIncidentModal(b.dataset.quickIncident, currentDate);
   });
 }
 function wireDayListCardEvents(){
@@ -3483,6 +3586,7 @@ function renderStats(){
   });
   wireNotInCampCardEvents();
   wireLeaveEditButtons();
+  wireQuickIncidentButtons();
   document.getElementById('queryBtn').onclick=()=>{
     const t=getTimeSelectValue('queryTime');
     const qMin=toMin(t);
