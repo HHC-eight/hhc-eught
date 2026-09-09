@@ -89,6 +89,9 @@ button.pressed,.pill-btn.pressed{opacity:.6;transform:scale(.94);}
 .divider{height:1px;background:var(--line);margin:12px 0;}
 textarea{min-height:50px;resize:vertical;}
 .hint{font-size:11px;color:var(--dim);margin-top:4px;line-height:1.5;}
+.time-select-pair{display:inline-flex;align-items:center;gap:3px;width:100%;}
+.time-select-pair select{width:auto;flex:1;min-width:0;}
+.time-select-colon{color:var(--dim);}
 </style>
 </head>
 <body>
@@ -102,7 +105,7 @@ textarea{min-height:50px;resize:vertical;}
     <div class="row" style="gap:6px;align-items:center">
       <button class="ghost small" id="undoBtn" title="復原上一步" disabled>↩️</button>
       <button class="ghost small" id="redoBtn" title="取消復原（重做）" disabled>↪️</button>
-      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v32</span></h1>
+      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v33</span></h1>
     </div>
     <div class="row" style="gap:6px;align-items:center">
       <select id="timeStepSelect" style="font-size:11px;padding:3px 6px;width:auto">
@@ -593,6 +596,48 @@ function timeOptionsFine(step){
 function timeOptions(){
   return timeOptionsFine(state.timeStepMinutes||10);
 }
+/* every time picker in the app is a pair of small 時/分 selects instead of
+   one long combined dropdown (which at a 5-10 min step ran to 150-300
+   options and took forever to scroll) — these three helpers are the only
+   place that builds/reads/writes that pair, so every call site converts
+   the same way: render with timeSelectHTML(id, value), read back with
+   getTimeSelectValue(id), and programmatically update with
+   setTimeSelectValue(id, value). id is a plain string for a fixed-id field;
+   for a per-row field in a repeated list, pass a string that embeds the
+   row index (e.g. `se-start-3`) so each row's pair has unique ids. */
+function timeSelectHTML(id, value, opts){
+  opts = opts||{};
+  const hasVal = !!value;
+  const [h,m] = hasVal? value.split(':') : ['',''];
+  const step = state.timeStepMinutes||10;
+  const hourOpts = Array.from({length:25},(_,i)=>String(i).padStart(2,'0')); // 00-24 (24 supports "24:00" end markers)
+  const minOpts = []; for(let mm=0; mm<60; mm+=step) minOpts.push(String(mm).padStart(2,'0'));
+  if(hasVal && !minOpts.includes(m)) minOpts.push(m); // keep a saved value visible even if it doesn't align to the current step
+  minOpts.sort((a,b)=>Number(a)-Number(b));
+  const emptyOpt = opts.allowEmpty? `<option value="">--</option>` : '';
+  return `<span class="time-select-pair" data-time-id="${esc(id)}">
+    <select id="${esc(id)}__h" class="time-select-h">${emptyOpt}${hourOpts.map(hh=>`<option value="${hh}" ${hh===h?'selected':''}>${hh}</option>`).join('')}</select>
+    <span class="time-select-colon">:</span>
+    <select id="${esc(id)}__m" class="time-select-m">${emptyOpt}${minOpts.map(mm=>`<option value="${mm}" ${mm===m?'selected':''}>${mm}</option>`).join('')}</select>
+  </span>`;
+}
+function getTimeSelectValue(id){
+  const hEl=document.getElementById(id+'__h'), mEl=document.getElementById(id+'__m');
+  if(!hEl||!mEl) return '';
+  if(!hEl.value || !mEl.value) return '';
+  return `${hEl.value}:${mEl.value}`;
+}
+function setTimeSelectValue(id, value){
+  const hEl=document.getElementById(id+'__h'), mEl=document.getElementById(id+'__m');
+  if(!hEl||!mEl) return;
+  if(!value){ hEl.value=''; mEl.value=''; return; }
+  const [h,m] = value.split(':');
+  hEl.value=h;
+  if(![...mEl.options].some(o=>o.value===m)){
+    const opt=document.createElement('option'); opt.value=m; opt.textContent=m; mEl.appendChild(opt);
+  }
+  mEl.value=m;
+}
 
 /* Build absolute (non-wrapping) start/end minutes for every shift in a category
    so that shifts from DIFFERENT categories land on the SAME shared timeline —
@@ -697,6 +742,13 @@ function windowsOverlapRecurring(aS,aE,bS,bE){
    regardless of inCamp — inCamp only affects presence-style displays. */
 const LONGTERM_REASON_PRESETS = ['主官','高勤傳令','高勤文書','受訓','懷孕','受傷'];
 const LONGTERM_REASON_DEFAULT_INCAMP = {主官:true, 高勤傳令:true, 高勤文書:true, 受訓:false, 懷孕:true, 受傷:true};
+/* user-editable reason-preset pools, kept separate as requested: one for
+   長期事故 (roster-level, e.g. 主官/受訓) and one for single-day 事故登載
+   (e.g. 出車/體檢) — a custom reason typed into either form can optionally
+   be added to that form's own pool, and both pools can have entries
+   removed later */
+if(!state.longtermReasonOptions) state.longtermReasonOptions=[...LONGTERM_REASON_PRESETS];
+if(!state.dailyReasonOptions) state.dailyReasonOptions=[...UNAVAIL_REASON_PRESETS];
 function personLongTerm(p){
   if(p.longTerm) return {inCamp:true, ...p.longTerm}; // inCamp defaults true for records saved before this field existed
   if(p.longTermUnavailable) return {mode:'allday', inCamp:true};
@@ -1299,15 +1351,35 @@ function render(){
 }
 
 /* ---- PEOPLE TAB ---- */
+let batchLtFilterState={search:'',group:''}; // for 批次設定長期事故
+let batchLtCheckedIds=new Set();
+function batchLtPeopleCheckboxesHTML(groupFilter, searchFilter){
+  if(!state.personnel.length) return `<div class="empty">尚無人員</div>`;
+  let list=[...state.personnel];
+  if(groupFilter) list = groupFilter==='__none'? list.filter(p=>!p.group) : list.filter(p=>p.group===groupFilter);
+  if(searchFilter) list = list.filter(p=>p.name.includes(searchFilter));
+  if(!list.length) return `<div class="empty">找不到符合的人員</div>`;
+  const rGroups=[...new Set(list.map(p=>p.group).filter(Boolean))].sort((a,b)=>groupIndex(a)-groupIndex(b));
+  const rList = rGroups.length? rGroups : [''];
+  return rList.map(g=>{
+    const members=list.filter(p=>p.group===g).sort((a,b)=>rankIndex(a.rank)-rankIndex(b.rank));
+    if(!members.length) return '';
+    return `<h3>${g?esc(g):'未分組'}</h3>` + members.map(p=>`
+      <label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0">
+        <input type="checkbox" class="batch-lt-person-cb" value="${p.id}" style="width:auto" ${batchLtCheckedIds.has(p.id)?'checked':''}>
+        ${esc(p.name)}（${p.group||'未分組'}·${p.rank}）${longTermLabel(p)? ` <span class="warn">🚫${esc(longTermLabel(p))}</span>`:''}
+      </label>`).join('');
+  }).join('');
+}
 function renderPeople(){
   const groups = [...new Set(state.personnel.map(p=>p.group).filter(Boolean))].sort((a,b)=>groupIndex(a)-groupIndex(b));
   app.innerHTML = `
     ${collapsibleCardHTML('npForm', '新增人員', `
       <div class="row wrap" style="margin-bottom:8px">
-        <div class="grow"><label>姓名</label><input type="text" id="npName" placeholder="例：柏凱"></div>
+        <div class="grow"><label>姓名</label><input type="text" id="npName" placeholder="例：姓名"></div>
         <div class="grow"><label>排/組別</label><select id="npGroup">${groupOptionsHTML('')}</select></div>
         <div style="width:108px"><label>階級</label>
-          <select id="npRank">${rankOptionsHTML('二兵')}</select>
+          <select id="npRank">${rankOptionsHTML('訓練役')}</select>
         </div>
       </div>
       <div class="row wrap" style="margin-bottom:8px">
@@ -1355,22 +1427,26 @@ function renderPeople(){
         <div class="grow"><label>原因</label>
           <select id="npLTReason">
             <option value="">（不指定）</option>
-            ${LONGTERM_REASON_PRESETS.map(r=>`<option value="${r}">${r}</option>`).join('')}
+            ${state.longtermReasonOptions.map(r=>`<option value="${esc(r)}">${esc(r)}</option>`).join('')}
             <option value="__custom">其他(自訂)</option>
           </select>
         </div>
       </div>
       <div class="row wrap" id="npLTReasonCustomRow" style="margin-bottom:8px;display:none">
         <div class="grow"><label>自訂原因</label><input type="text" id="npLTReasonCustom" placeholder="請輸入原因"></div>
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;align-self:flex-end;padding-bottom:8px">
+          <input type="checkbox" id="npLTReasonAddToPreset" style="width:auto"> 加入預設列表
+        </label>
       </div>
+      ${reasonPoolManagerHTML('longtermReasonOptions','npLtReasonPoolMgmt')}
       <div class="row wrap" id="npLTInCampRow" style="margin-bottom:8px;display:none">
         <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text)">
           <input type="checkbox" id="npLTInCamp" style="width:auto" checked> 在營（人在營區，只是不排勤務；取消勾選代表實際不在營區，例如受訓）
         </label>
       </div>
       <div class="row wrap" id="npLongTermRange" style="margin-bottom:8px;display:none">
-        <div class="grow"><label>每天開始</label><select id="npLTStart">${timeOptions().map(t=>`<option ${t==='18:00'?'selected':''}>${t}</option>`).join('')}</select></div>
-        <div class="grow"><label>到隔天/當天</label><select id="npLTEnd">${timeOptions().map(t=>`<option ${t==='08:30'?'selected':''}>${t}</option>`).join('')}</select></div>
+        <div class="grow"><label>每天開始</label>${timeSelectHTML('npLTStart','18:00')}</div>
+        <div class="grow"><label>到隔天/當天</label>${timeSelectHTML('npLTEnd','08:30')}</div>
       </div>
       <div class="row wrap" style="margin-bottom:8px">
         <div class="grow"><label>外散宿限制</label>
@@ -1443,6 +1519,59 @@ function renderPeople(){
       ${groups.length===0 && state.personnel.length===0 ? `<div class="empty">尚未新增人員</div>` : ''}
       <div id="pplListArea">${renderPeopleGroups(groups)}</div>
     </div>
+    ${collapsibleCardHTML('batchLt', '批次設定長期事故（勾選多位人員，套用同一組設定）', `
+      <div class="row wrap" style="margin-bottom:8px">
+        <div class="grow"><label>搜尋姓名</label><input type="text" id="batchLtSearch" placeholder="輸入姓名關鍵字" value="${esc(batchLtFilterState.search)}"></div>
+        <div style="width:120px"><label>排組篩選</label>
+          <select id="batchLtGroupFilter">
+            <option value="" ${!batchLtFilterState.group?'selected':''}>（全部）</option>
+            ${groups.map(g=>`<option value="${esc(g)}" ${batchLtFilterState.group===g?'selected':''}>${esc(g)}</option>`).join('')}
+            <option value="__none" ${batchLtFilterState.group==='__none'?'selected':''}>未分組</option>
+          </select>
+        </div>
+      </div>
+      <div class="row wrap" style="margin-bottom:6px">
+        <button class="ghost small" id="batchLtSelectAll">全選(篩選範圍)</button>
+        <button class="ghost small" id="batchLtClearAll">清空(篩選範圍)</button>
+        <button class="ghost small" id="batchLtClearFilter">清除篩選</button>
+      </div>
+      <div id="batchLtPeopleList" style="max-height:220px;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:8px;margin-bottom:8px">${batchLtPeopleCheckboxesHTML(batchLtFilterState.group||undefined, batchLtFilterState.search||undefined)}</div>
+      <div class="row wrap" style="margin-bottom:8px">
+        <div class="grow"><label>長期事故</label>
+          <select id="batchLtMode">
+            <option value="off">（無，取消長期事故）</option>
+            <option value="allday" selected>長期全天不可排</option>
+            <option value="range">長期時段性不可排（每天固定時段）</option>
+          </select>
+        </div>
+      </div>
+      <div class="row wrap" id="batchLtDetails" style="margin-bottom:8px">
+        <div class="grow"><label>原因</label>
+          <select id="batchLtReason">
+            <option value="">（不指定）</option>
+            ${state.longtermReasonOptions.map(r=>`<option value="${esc(r)}">${esc(r)}</option>`).join('')}
+            <option value="__custom">其他(自訂)</option>
+          </select>
+        </div>
+      </div>
+      <div class="row wrap" id="batchLtReasonCustomRow" style="margin-bottom:8px;display:none">
+        <div class="grow"><label>自訂原因</label><input type="text" id="batchLtReasonCustom" placeholder="請輸入原因"></div>
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;align-self:flex-end;padding-bottom:8px">
+          <input type="checkbox" id="batchLtReasonAddToPreset" style="width:auto"> 加入預設列表
+        </label>
+      </div>
+      <div class="row wrap" id="batchLtInCampRow" style="margin-bottom:8px">
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text)">
+          <input type="checkbox" id="batchLtInCamp" style="width:auto" checked> 在營（人在營區，只是不排勤務）
+        </label>
+      </div>
+      <div class="row wrap" id="batchLtRange" style="margin-bottom:8px;display:none">
+        <div class="grow"><label>每天開始</label>${timeSelectHTML('batchLtStart','18:00')}</div>
+        <div class="grow"><label>到隔天/當天</label>${timeSelectHTML('batchLtEnd','08:30')}</div>
+      </div>
+      <button class="primary" id="batchLtApply" style="width:100%">套用到勾選的人員</button>
+      <div class="hint">會直接覆蓋勾選人員原本的長期事故設定；選「（無，取消長期事故）」可批次清除。</div>
+    `)}
     <div class="hint">💡 名單一次輸入後會持續保留在此裝置（localStorage）；用右上角「匯出」可備份，之後可再匯入。</div>
     <div class="card">
       <button class="ghost small" id="importBtn">📥 匯入備份 JSON</button>
@@ -1558,7 +1687,10 @@ function renderPeople(){
       const reason = reasonSel==='__custom'? document.getElementById('npLTReasonCustom').value.trim() : reasonSel;
       const inCamp = document.getElementById('npLTInCamp').checked;
       longTerm = {mode, reason, inCamp};
-      if(mode==='range'){ longTerm.start=document.getElementById('npLTStart').value; longTerm.end=document.getElementById('npLTEnd').value; }
+      if(mode==='range'){ longTerm.start=getTimeSelectValue('npLTStart'); longTerm.end=getTimeSelectValue('npLTEnd'); }
+      if(reasonSel==='__custom' && reason && document.getElementById('npLTReasonAddToPreset').checked && !state.longtermReasonOptions.includes(reason)){
+        state.longtermReasonOptions.push(reason);
+      }
     }
     const note = document.getElementById('npNote').value.trim();
     const outingRestriction = document.getElementById('npOutingRestriction').value;
@@ -1567,6 +1699,73 @@ function renderPeople(){
     saveState(); render();
   };
   document.getElementById('importBtn').onclick=()=>document.getElementById('importFile').click();
+  wireReasonPoolDeleteButtons();
+  function wireBatchLtCheckboxes(){
+    document.querySelectorAll('.batch-lt-person-cb').forEach(cb=>{
+      cb.onchange=()=>{
+        if(cb.checked) batchLtCheckedIds.add(cb.value);
+        else batchLtCheckedIds.delete(cb.value);
+      };
+    });
+  }
+  wireBatchLtCheckboxes();
+  function refreshBatchLtCheckboxes(){
+    document.getElementById('batchLtPeopleList').innerHTML = batchLtPeopleCheckboxesHTML(batchLtFilterState.group||undefined, batchLtFilterState.search||undefined);
+    wireBatchLtCheckboxes();
+  }
+  document.getElementById('batchLtSearch').oninput=(e)=>{ batchLtFilterState.search=e.target.value.trim(); refreshBatchLtCheckboxes(); };
+  document.getElementById('batchLtGroupFilter').onchange=(e)=>{ batchLtFilterState.group=e.target.value; refreshBatchLtCheckboxes(); };
+  document.getElementById('batchLtClearFilter').onclick=()=>{
+    batchLtFilterState={search:'',group:''};
+    document.getElementById('batchLtSearch').value='';
+    document.getElementById('batchLtGroupFilter').value='';
+    refreshBatchLtCheckboxes();
+  };
+  document.getElementById('batchLtSelectAll').onclick=()=>{
+    document.querySelectorAll('.batch-lt-person-cb').forEach(cb=>{ cb.checked=true; batchLtCheckedIds.add(cb.value); });
+  };
+  document.getElementById('batchLtClearAll').onclick=()=>{
+    document.querySelectorAll('.batch-lt-person-cb').forEach(cb=>{ cb.checked=false; batchLtCheckedIds.delete(cb.value); });
+  };
+  document.getElementById('batchLtMode').onchange=(e)=>{
+    const isOn = e.target.value!=='off';
+    const isRange = e.target.value==='range';
+    document.getElementById('batchLtDetails').style.display = isOn? 'flex':'none';
+    document.getElementById('batchLtInCampRow').style.display = isOn? 'flex':'none';
+    document.getElementById('batchLtRange').style.display = isRange? 'flex':'none';
+    if(!isOn) document.getElementById('batchLtReasonCustomRow').style.display='none';
+  };
+  document.getElementById('batchLtReason').onchange=(e)=>{
+    const v=e.target.value;
+    document.getElementById('batchLtReasonCustomRow').style.display = v==='__custom'? 'flex':'none';
+    if(Object.prototype.hasOwnProperty.call(LONGTERM_REASON_DEFAULT_INCAMP, v)){
+      document.getElementById('batchLtInCamp').checked = LONGTERM_REASON_DEFAULT_INCAMP[v];
+    }
+  };
+  document.getElementById('batchLtApply').onclick=()=>{
+    const personIds=[...batchLtCheckedIds];
+    if(!personIds.length){ showAlert('請至少勾選一位人員'); return; }
+    const mode=document.getElementById('batchLtMode').value;
+    let newLongTerm = {mode};
+    if(mode!=='off'){
+      const reasonSel = document.getElementById('batchLtReason').value;
+      const reason = reasonSel==='__custom'? document.getElementById('batchLtReasonCustom').value.trim() : reasonSel;
+      const inCamp = document.getElementById('batchLtInCamp').checked;
+      newLongTerm = {mode, reason, inCamp};
+      if(mode==='range'){ newLongTerm.start=getTimeSelectValue('batchLtStart'); newLongTerm.end=getTimeSelectValue('batchLtEnd'); }
+      if(reasonSel==='__custom' && reason && document.getElementById('batchLtReasonAddToPreset').checked && !state.longtermReasonOptions.includes(reason)){
+        state.longtermReasonOptions.push(reason);
+      }
+    }
+    showConfirm(`確定要把這組長期事故設定套用到勾選的 ${personIds.length} 位人員嗎？會覆蓋他們原本的設定。`, ()=>{
+      personIds.forEach(pid=>{
+        const person = state.personnel.find(p=>p.id===pid);
+        if(person){ person.longTerm = {...newLongTerm}; delete person.longTermUnavailable; }
+      });
+      batchLtCheckedIds.clear();
+      saveState(); render();
+    });
+  };
   wirePeopleListButtons();
 }
 function openPersonEditor(personId){
@@ -1612,22 +1811,26 @@ function openPersonEditor(personId){
         <div class="grow"><label>原因</label>
           <select id="epLTReason">
             <option value="" ${!lt.reason?'selected':''}>（不指定）</option>
-            ${LONGTERM_REASON_PRESETS.map(r=>`<option value="${r}" ${lt.reason===r?'selected':''}>${r}</option>`).join('')}
-            <option value="__custom" ${lt.reason && !LONGTERM_REASON_PRESETS.includes(lt.reason)?'selected':''}>其他(自訂)</option>
+            ${state.longtermReasonOptions.map(r=>`<option value="${esc(r)}" ${lt.reason===r?'selected':''}>${esc(r)}</option>`).join('')}
+            <option value="__custom" ${lt.reason && !state.longtermReasonOptions.includes(lt.reason)?'selected':''}>其他(自訂)</option>
           </select>
         </div>
       </div>
-      <div class="row wrap" id="epLTReasonCustomRow" style="margin-bottom:8px;display:${lt.reason && !LONGTERM_REASON_PRESETS.includes(lt.reason)?'flex':'none'}">
-        <div class="grow"><label>自訂原因</label><input type="text" id="epLTReasonCustom" value="${esc(lt.reason && !LONGTERM_REASON_PRESETS.includes(lt.reason)?lt.reason:'')}" placeholder="請輸入原因"></div>
+      <div class="row wrap" id="epLTReasonCustomRow" style="margin-bottom:8px;display:${lt.reason && !state.longtermReasonOptions.includes(lt.reason)?'flex':'none'}">
+        <div class="grow"><label>自訂原因</label><input type="text" id="epLTReasonCustom" value="${esc(lt.reason && !state.longtermReasonOptions.includes(lt.reason)?lt.reason:'')}" placeholder="請輸入原因"></div>
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;align-self:flex-end;padding-bottom:8px">
+          <input type="checkbox" id="epLTReasonAddToPreset" style="width:auto"> 加入預設列表
+        </label>
       </div>
+      ${reasonPoolPillsOnlyHTML('longtermReasonOptions')}
       <div class="row wrap" id="epLTInCampRow" style="margin-bottom:8px;display:${lt.mode!=='off'?'flex':'none'}">
         <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text)">
           <input type="checkbox" id="epLTInCamp" style="width:auto" ${lt.inCamp?'checked':''}> 在營（人在營區，只是不排勤務；取消勾選代表實際不在營區，例如受訓）
         </label>
       </div>
       <div class="row wrap" id="epLongTermRange" style="margin-bottom:8px;display:${lt.mode==='range'?'flex':'none'}">
-        <div class="grow"><label>每天開始</label><select id="epLTStart">${timeOptions().map(t=>`<option ${t===(lt.start||'18:00')?'selected':''}>${t}</option>`).join('')}</select></div>
-        <div class="grow"><label>到隔天/當天</label><select id="epLTEnd">${timeOptions().map(t=>`<option ${t===(lt.end||'08:30')?'selected':''}>${t}</option>`).join('')}</select></div>
+        <div class="grow"><label>每天開始</label>${timeSelectHTML('epLTStart', lt.start||'18:00')}</div>
+        <div class="grow"><label>到隔天/當天</label>${timeSelectHTML('epLTEnd', lt.end||'08:30')}</div>
       </div>
       <label>外散宿限制</label>
       <select id="epOutingRestriction" style="margin-bottom:8px">
@@ -1641,6 +1844,7 @@ function openPersonEditor(personId){
   `;
   document.body.appendChild(modal);
   wireCloseConfirm(modal, document.getElementById('closeModal'));
+  wireReasonPoolDeleteButtons();
   document.getElementById('epAddSkillType').onclick=()=>{
     const name=document.getElementById('epNewSkillName').value.trim();
     if(!name){ showAlert('請輸入技能類別名稱'); return; }
@@ -1684,7 +1888,10 @@ function openPersonEditor(personId){
       const reason = reasonSel==='__custom'? document.getElementById('epLTReasonCustom').value.trim() : reasonSel;
       const inCamp = document.getElementById('epLTInCamp').checked;
       newLongTerm = {mode, reason, inCamp};
-      if(mode==='range'){ newLongTerm.start=document.getElementById('epLTStart').value; newLongTerm.end=document.getElementById('epLTEnd').value; }
+      if(mode==='range'){ newLongTerm.start=getTimeSelectValue('epLTStart'); newLongTerm.end=getTimeSelectValue('epLTEnd'); }
+      if(reasonSel==='__custom' && reason && document.getElementById('epLTReasonAddToPreset').checked && !state.longtermReasonOptions.includes(reason)){
+        state.longtermReasonOptions.push(reason);
+      }
     }
     p.longTerm = newLongTerm;
     p.note = document.getElementById('epNote').value.trim();
@@ -1798,10 +2005,135 @@ function renderLeaveGroupSummary(date){
     const bd = {軍官:0,士官:0,士兵:0};
     members.forEach(p=>{ const k=rankCategory(p.rank); if(k) bd[k]++; });
     const sorted = members.slice().sort((a,b)=>rankIndex(a.rank)-rankIndex(b.rank));
-    const inner = sorted.map(p=>`<div class="muted">・${esc(p.name)}（${p.rank}）</div>`).join('');
+    const inner = sorted.map(p=>{
+      const lid = findLeaveIdForPerson(p.id, date);
+      return `<div class="row" style="margin-bottom:2px">
+        <span class="muted grow">・${esc(p.name)}（${p.rank}）</span>
+        ${lid? `<button class="ghost small" data-edit-leave="${lid}">編輯</button>` : ''}
+      </div>`;
+    }).join('');
     return collapsibleCardHTML('leaveGroup-'+g, `${esc(g)}（${members.length}人・${bd.軍官}官${bd.士官}士${bd.士兵}兵）`, inner);
   }).join('');
   return html;
+}
+/* creates one leave block (with its own leaveId + buffer entries) for one
+   person — extracted so both the 新增人員休假 form and the 編輯休假 modal
+   (which can split one block into several) share the exact same logic */
+function createLeaveSegment(personId, s, e, honorRequested){
+  const bufferDays=daysBetweenInclusive(prevDateStr(s), nextDateStr(e));
+  const honorApplies = honorRequested && bufferDays<=5;
+  const firstRoster=prevDateStr(s);
+  const lastRoster=nextDateStr(e);
+  const firstStart = honorApplies? '12:00':'18:00';
+  const reasonLabel = honorApplies? '榮譽假':'休假';
+  const leaveId=uid();
+  if(!state.unavail[firstRoster]) state.unavail[firstRoster]=[];
+  state.unavail[firstRoster].push({id:uid(),personId,allDay:false,start:firstStart,end:'24:00',reason:reasonLabel,leaveId,leaveStart:s,leaveEnd:e});
+  dateRangeList(s,e).forEach(d=>{
+    if(!state.unavail[d]) state.unavail[d]=[];
+    state.unavail[d].push({id:uid(),personId,allDay:true,start:'',end:'',reason:reasonLabel,leaveId,leaveStart:s,leaveEnd:e});
+  });
+  if(!state.unavail[lastRoster]) state.unavail[lastRoster]=[];
+  state.unavail[lastRoster].push({id:uid(),personId,allDay:false,start:'00:00',end:'07:30',reason:reasonLabel,leaveId,leaveStart:s,leaveEnd:e});
+}
+function deleteLeaveById(leaveId){
+  Object.keys(state.unavail).forEach(d=>{
+    state.unavail[d]=(state.unavail[d]||[]).filter(u=>u.leaveId!==leaveId);
+  });
+}
+/* the leaveId of a person's leave block active on this date, if any —
+   used to attach an 編輯 button next to their name wherever they show up */
+function findLeaveIdForPerson(personId, date){
+  const hit = (state.unavail[date]||[]).find(u=>u.personId===personId && u.leaveId);
+  return hit? hit.leaveId : null;
+}
+/* 編輯休假 — lets the whole leave block be corrected after the fact: change
+   the date range, split it into several separate segments (each gets its
+   own buffer, since e.g. 9/8-9/10 discovered to actually be 9/8 + 9/10 with
+   9/9 not taken means two independent buffered blocks, not one), or add
+   other people onto the same corrected date(s) in one go (useful for
+   holiday duty coverage, where the same batch of people are usually off
+   together). */
+function openLeaveEditModal(leaveId){
+  const entries=[];
+  Object.keys(state.unavail).forEach(d=>{ (state.unavail[d]||[]).forEach(u=>{ if(u.leaveId===leaveId) entries.push(u); }); });
+  if(!entries.length) return;
+  const personId = entries[0].personId;
+  const person = state.personnel.find(p=>p.id===personId);
+  const honor = entries.some(e=>e.reason==='榮譽假');
+  let segments = [{start:entries[0].leaveStart, end:entries[0].leaveEnd}];
+  let addPersonIds = new Set();
+  const modal=document.createElement('div');
+  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:60;display:flex;align-items:flex-end;';
+  modal.innerHTML=`
+    <div style="background:var(--panel);width:100%;max-height:88vh;overflow:auto;border-radius:12px 12px 0 0;padding:14px;">
+      <div class="section-title"><h2 style="margin:0">編輯休假：${esc(person?person.name:'?')}</h2><button class="ghost small" id="closeModal">關閉</button></div>
+      <div class="hint" style="margin-bottom:8px">可直接修改起訖日期，或分成好幾段（例如原本9/8-9/10，發現9/9其實沒休，改成9/8跟9/10各自獨立一段，各自重新計算前後緩衝）。</div>
+      <div id="leaveSegList"></div>
+      <button class="ghost small" id="segAddBtn" style="margin-bottom:8px">＋新增分段</button>
+      <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text);margin-bottom:8px">
+        <input type="checkbox" id="segHonor" ${honor?'checked':''} style="width:auto"> 套用榮譽提早假（每段含前後緩衝在5天以內才會生效）
+      </label>
+      <div class="divider"></div>
+      <h3>同時加入其他人員（套用一樣修改後的分段）</h3>
+      <div id="segAddPeopleList" style="max-height:180px;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:8px;margin-bottom:8px"></div>
+      <div class="row wrap">
+        <button class="ghost danger grow" id="segDeleteAllBtn">移除這位的整段休假</button>
+        <button class="primary grow" id="segSaveBtn">儲存</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+  function renderSegList(){
+    document.getElementById('leaveSegList').innerHTML = segments.map((seg,i)=>`
+      <div class="row wrap" style="margin-bottom:6px">
+        <div class="grow"><label>第一天</label><input type="date" class="seg-start" data-seg="${i}" value="${seg.start}"></div>
+        <div class="grow"><label>最後一天</label><input type="date" class="seg-end" data-seg="${i}" value="${seg.end}"></div>
+        <button class="ghost small danger" data-seg-del="${i}" ${segments.length<=1?'disabled':''}>刪除段</button>
+      </div>`).join('');
+    document.querySelectorAll('.seg-start').forEach(el=>{ el.onchange=()=>{ segments[Number(el.dataset.seg)].start=el.value; }; });
+    document.querySelectorAll('.seg-end').forEach(el=>{ el.onchange=()=>{ segments[Number(el.dataset.seg)].end=el.value; }; });
+    document.querySelectorAll('[data-seg-del]').forEach(b=>{
+      b.onclick=()=>{ if(segments.length<=1) return; segments.splice(Number(b.dataset.segDel),1); renderSegList(); };
+    });
+  }
+  renderSegList();
+  document.getElementById('segAddBtn').onclick=()=>{
+    const last=segments[segments.length-1];
+    segments.push({start:last.end, end:last.end});
+    renderSegList();
+  };
+  function renderSegAddPeople(){
+    const others = state.personnel.filter(p=>p.id!==personId).sort((a,b)=>groupIndex(a.group)-groupIndex(b.group)||rankIndex(a.rank)-rankIndex(b.rank));
+    document.getElementById('segAddPeopleList').innerHTML = others.length? others.map(p=>`
+      <label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0">
+        <input type="checkbox" class="seg-add-person-cb" value="${p.id}" style="width:auto" ${addPersonIds.has(p.id)?'checked':''}>
+        ${esc(p.name)}（${p.group||'未分組'}·${p.rank}）
+      </label>`).join('') : `<div class="empty">沒有其他人員</div>`;
+    document.querySelectorAll('.seg-add-person-cb').forEach(cb=>{
+      cb.onchange=()=>{ if(cb.checked) addPersonIds.add(cb.value); else addPersonIds.delete(cb.value); };
+    });
+  }
+  renderSegAddPeople();
+  document.getElementById('segDeleteAllBtn').onclick=()=>{
+    showConfirm(`確定要移除 ${person?person.name:''} 這整段休假嗎？`, ()=>{
+      deleteLeaveById(leaveId);
+      saveState(); modal.remove(); render();
+    });
+  };
+  document.getElementById('segSaveBtn').onclick=()=>{
+    for(const seg of segments){
+      if(!seg.start||!seg.end||seg.start>seg.end){ showAlert('請確認每段的起訖日期都正確（第一天不能晚於最後一天）'); return; }
+    }
+    const honorChecked = document.getElementById('segHonor').checked;
+    showConfirm('確定要儲存這些修改嗎？原本這筆休假的登記會被取代。', ()=>{
+      deleteLeaveById(leaveId);
+      const targetPersonIds = [personId, ...addPersonIds];
+      targetPersonIds.forEach(pid=>{
+        segments.forEach(seg=>createLeaveSegment(pid, seg.start, seg.end, honorChecked));
+      });
+      saveState(); modal.remove(); render();
+    });
+  };
 }
 function isLeaveReason(reason){ return !!reason && reason.includes('假'); }
 function isLeaveBufferEntry(u){
@@ -1948,7 +2280,7 @@ function renderDayListItemsHTML(){
 function dayListCardHTML(){
   const list = dayListBaseEntries();
   const filteredList = computeDayListFiltered();
-  return collapsibleCardHTML('dayList', `<span id="dayListHeader">${minguoLabel(currentDate)} 休假名單（篩選出 ${filteredList.length} / 共 ${list.length}）</span>`, `
+  return collapsibleCardHTML('dayList', `<span id="dayListHeader">${minguoLabel(currentDate)} 休假統計/名單（篩選出 ${filteredList.length} / 共 ${list.length}）</span>`, `
       <div class="muted" style="margin-bottom:4px"><b>各排組休假統計</b>（點各組展開名單）</div>
       ${renderLeaveGroupSummary(currentDate)}
       <div class="divider"></div>
@@ -1976,12 +2308,18 @@ function dayListCardHTML(){
       <div id="dayListItems">${renderDayListItemsHTML()}</div>
     `, `<button class="ghost small" id="dedupUnavailBtn">移除重複紀錄</button><button class="ghost small" id="dayListClearFilter">清除篩選</button>`);
 }
+function wireLeaveEditButtons(){
+  document.querySelectorAll('[data-edit-leave]').forEach(b=>{
+    b.onclick=()=>openLeaveEditModal(b.dataset.editLeave);
+  });
+}
 function wireDayListCardEvents(){
+  wireLeaveEditButtons();
   function refreshDayList(){
     document.getElementById('dayListItems').innerHTML = renderDayListItemsHTML();
     const list=dayListBaseEntries();
     const filteredList=computeDayListFiltered();
-    document.getElementById('dayListHeader').textContent = `${minguoLabel(currentDate)} 休假名單（篩選出 ${filteredList.length} / 共 ${list.length}）`;
+    document.getElementById('dayListHeader').textContent = `${minguoLabel(currentDate)} 休假統計/名單（篩選出 ${filteredList.length} / 共 ${list.length}）`;
     wireDayListDeleteButtons();
   }
   function wireDayListDeleteButtons(){
@@ -2030,6 +2368,15 @@ function wireDayListCardEvents(){
     };
   }
 }
+let longTermFilterState={search:'',group:''}; // for the 長期事故 card
+function longTermItemsHTML(){
+  let list = state.personnel.filter(p=>personLongTerm(p).mode!=='off');
+  if(longTermFilterState.search) list = list.filter(p=>p.name.includes(longTermFilterState.search));
+  if(longTermFilterState.group==='__none') list = list.filter(p=>!p.group);
+  else if(longTermFilterState.group) list = list.filter(p=>p.group===longTermFilterState.group);
+  if(!list.length) return `<div class="empty">找不到符合的人員</div>`;
+  return list.map(p=>`<div class="muted">・${esc(p.name)}（${p.group||'未分組'}·${p.rank}）：${longTermLabel(p)}</div>`).join('');
+}
 function renderUnavail(){
   const longTerm = state.personnel.filter(p=>personLongTerm(p).mode!=='off');
   const leaveBlocks={};
@@ -2042,7 +2389,17 @@ function renderUnavail(){
     });
   });
   const longTermHTML = longTerm.length? collapsibleCardHTML('longTerm', `長期事故（自動套用於每一天，免重複登記）（${longTerm.length}人）`, `
-      ${longTerm.map(p=>`<div class="muted">・${esc(p.name)}（${p.group||'未分組'}·${p.rank}）：${longTermLabel(p)}</div>`).join('')}
+      <div class="row wrap" style="margin-bottom:8px">
+        <div class="grow"><label>搜尋姓名</label><input type="text" id="longTermSearch" placeholder="輸入姓名關鍵字" value="${esc(longTermFilterState.search)}"></div>
+        <div style="width:120px"><label>排組篩選</label>
+          <select id="longTermGroupFilter">
+            <option value="" ${!longTermFilterState.group?'selected':''}>（全部）</option>
+            ${[...new Set(state.personnel.map(p=>p.group).filter(Boolean))].sort((a,b)=>groupIndex(a)-groupIndex(b)).map(g=>`<option value="${esc(g)}" ${longTermFilterState.group===g?'selected':''}>${esc(g)}</option>`).join('')}
+            <option value="__none" ${longTermFilterState.group==='__none'?'selected':''}>未分組</option>
+          </select>
+        </div>
+      </div>
+      <div id="longTermItems">${longTermItemsHTML()}</div>
       <div class="hint">要修改或恢復可排，到「人員」分頁點該人「編輯」調整長期事故設定。</div>
     `) : '';
   const uaFormHTML = collapsibleCardHTML('uaForm', '人員事故登載（單日或指定時段，可多人多日）', `
@@ -2068,21 +2425,25 @@ function renderUnavail(){
         </label>
       </div>
       <div class="row wrap" id="uaTimeRow" style="margin-bottom:8px">
-        <div class="grow"><label>開始</label><select id="uaStart">${timeOptions().map(t=>`<option ${t==='08:00'?'selected':''}>${t}</option>`).join('')}</select></div>
-        <div class="grow"><label>結束</label><select id="uaEnd">${timeOptions().map(t=>`<option ${t==='12:00'?'selected':''}>${t}</option>`).join('')}</select></div>
+        <div class="grow"><label>開始</label>${timeSelectHTML('uaStart','08:00')}</div>
+        <div class="grow"><label>結束</label>${timeSelectHTML('uaEnd','12:00')}</div>
       </div>
       <div class="row wrap" style="margin-bottom:8px">
         <div class="grow"><label>事故原因(選填)</label>
           <select id="uaReasonPreset">
             <option value="">（不指定）</option>
-            ${[...new Set([...UNAVAIL_REASON_PRESETS, ...LONGTERM_REASON_PRESETS])].map(r=>`<option>${r}</option>`).join('')}
+            ${[...new Set([...state.dailyReasonOptions, ...state.longtermReasonOptions])].map(r=>`<option>${esc(r)}</option>`).join('')}
             <option value="__custom">其他(手動輸入)</option>
           </select>
         </div>
       </div>
       <div class="row wrap" id="uaReasonCustomRow" style="margin-bottom:8px;display:none">
         <div class="grow"><label>原因內容</label><input type="text" id="uaReasonCustom" placeholder="請輸入原因"></div>
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;align-self:flex-end;padding-bottom:8px">
+          <input type="checkbox" id="uaReasonAddToPreset" style="width:auto"> 加入預設列表
+        </label>
       </div>
+      ${reasonPoolManagerHTML('dailyReasonOptions','uaReasonPoolMgmt')}
       <div class="hint" id="uaRosterDefaultHint" style="margin-bottom:8px;display:none"></div>
       <div class="row wrap" style="margin-bottom:8px">
         <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text)">
@@ -2182,11 +2543,11 @@ function renderUnavail(){
       <button class="primary" id="lvAdd" style="width:100%">新增休假</button>
       <div class="hint">一般休假：從休假第一天「前一天18:00」到休假最後一天「隔天07:30」都會標記不可排（例：休9/8-9/10，會從9/7 18:00封鎖到9/11 07:30）。「榮譽提早假」的前一天會提早到12:00開始，但套用條件是「休假天數＋前後緩衝」總共不能超過5天（例：休9/8-9/10共3天，含緩衝是9/7~9/11共5天，符合，可套用榮譽假從9/7 12:00開始；休9/7-9/11共5天，含緩衝是9/6~9/12共7天，超過5天，榮譽假不適用，改用一般18:00起算）；除非勾選「特殊情況」允許例外套用。休假天數本身也有5天上限，超過需勾選「特殊情況」才能新增。</div>
 `);
-  const leaveGroupSummaryHTML = collapsibleCardHTML('leaveGroupSummary', `${minguoLabel(currentDate)} 休假統計（依排組，點各項展開名單）`, renderLeaveGroupSummary(currentDate));
   const leaveBlocksHTML = Object.keys(leaveBlocks).length? collapsibleCardHTML('leaveBlocks', `目前登記的休假（${Object.keys(leaveBlocks).length}筆）`, `
       ${Object.entries(leaveBlocks).map(([lid,b])=>{
         return `<div class="list-item">
           <span class="grow">${esc(personName(b.personId))}：${b.leaveStart||'?'} ~ ${b.leaveEnd||'?'}（共${b.leaveStart&&b.leaveEnd?daysBetweenInclusive(b.leaveStart,b.leaveEnd):'?'}天）</span>
+          <button class="ghost small" data-edit-leave="${lid}">編輯</button>
           <button class="ghost small danger" data-del-leave="${lid}">刪除整段</button>
         </div>`;
       }).join('')}
@@ -2247,7 +2608,6 @@ function renderUnavail(){
     {key:'uaForm', html:uaFormHTML},
     {key:'reverseForm', html:reverseFormHTML},
     {key:'lvForm', html:lvFormHTML},
-    {key:'leaveGroupSummary', html:leaveGroupSummaryHTML},
     ...(Object.keys(leaveBlocks).length? [{key:'leaveBlocks', html:leaveBlocksHTML}] : []),
     {key:'outing', html:outingHTML},
     {key:'dayList', html:dayListHTML},
@@ -2371,6 +2731,14 @@ function renderUnavail(){
     document.getElementById('outingGroupFilter').onchange=(e)=>{ outingFilterState.group=e.target.value; refreshOutingList(); };
   }
   wireDayListCardEvents();
+  wireReasonPoolDeleteButtons();
+  if(document.getElementById('longTermSearch')){
+    function refreshLongTermItems(){
+      document.getElementById('longTermItems').innerHTML = longTermItemsHTML();
+    }
+    document.getElementById('longTermSearch').oninput=(e)=>{ longTermFilterState.search=e.target.value.trim(); refreshLongTermItems(); };
+    document.getElementById('longTermGroupFilter').onchange=(e)=>{ longTermFilterState.group=e.target.value; refreshLongTermItems(); };
+  }
   document.getElementById('uaAllDay').onchange=(e)=>{
     document.getElementById('uaTimeRow').style.display = e.target.checked? 'none':'flex';
   };
@@ -2449,11 +2817,14 @@ function renderUnavail(){
     const personIds=[...uaCheckedIds];
     if(!personIds.length){ showAlert('請至少勾選一位人員'); return; }
     const allDay=document.getElementById('uaAllDay').checked;
-    const start=document.getElementById('uaStart').value, end=document.getElementById('uaEnd').value;
+    const start=getTimeSelectValue('uaStart'), end=getTimeSelectValue('uaEnd');
     const preset=document.getElementById('uaReasonPreset').value;
     const reason = preset==='__custom'? document.getElementById('uaReasonCustom').value.trim() : preset;
     const inCamp = document.getElementById('uaInCamp').checked;
     const syncRosterDefault = document.getElementById('uaSyncRosterDefault').checked;
+    if(preset==='__custom' && reason && document.getElementById('uaReasonAddToPreset').checked && !state.dailyReasonOptions.includes(reason)){
+      state.dailyReasonOptions.push(reason);
+    }
     const multi=document.getElementById('uaMultiDay').checked;
     let dates=[currentDate];
     if(multi){
@@ -2584,6 +2955,7 @@ function renderUnavail(){
       });
     };
   });
+  wireLeaveEditButtons();
 }
 function personOptions(selected, groupFilter){
   if(!state.personnel.length) return `<option value="">（尚無人員）</option>`;
@@ -2647,6 +3019,48 @@ function dutyDateRangeLabel(date){
   return `${fmtDateShort(prev)}（${weekdayLabel(prev)}）-${fmtDateShort(date)}（${weekdayLabel(date)}）`;
 }
 function esc(s){ return (s||'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+/* small reusable "manage this reason preset pool" widget — a row of pills
+   with a ✕ to remove each one, used identically by the 長期事故 pool
+   (state.longtermReasonOptions) and the 事故登載 pool
+   (state.dailyReasonOptions), which are kept as two separate lists per
+   the user's request even though the UI piece is shared. */
+function reasonPoolManagerHTML(poolKey, toggleKey){
+  const pool = state[poolKey]||[];
+  const expanded = isExpanded(toggleKey);
+  return `<div style="margin-bottom:8px">
+    <button type="button" class="ghost small" data-collapse-toggle="${toggleKey}">${expanded?'▲ 收合':'▼ 管理原因預設列表'}</button>
+    <div style="display:${expanded?'block':'none'};margin-top:6px">
+      <div class="row wrap" style="gap:4px">
+        ${pool.length? pool.map(r=>`<span class="pill-btn">${esc(r)} <span data-del-reason-pool="${poolKey}" data-del-reason-value="${esc(r)}" style="color:var(--danger);margin-left:3px;cursor:pointer">✕</span></span>`).join('') : `<span class="muted" style="font-size:12px">目前沒有預設項目</span>`}
+      </div>
+    </div>
+  </div>`;
+}
+/* modal version — modals aren't rebuilt by the normal tab render() cycle,
+   so the collapsible toggle above (which relies on that) wouldn't visibly
+   update inside one; this always-visible variant sidesteps that instead
+   of pretending to collapse */
+function reasonPoolPillsOnlyHTML(poolKey){
+  const pool = state[poolKey]||[];
+  if(!pool.length) return `<div class="muted" style="font-size:12px;margin-bottom:8px">目前沒有預設項目</div>`;
+  return `<div class="row wrap" style="gap:4px;margin-bottom:8px">
+    ${pool.map(r=>`<span class="pill-btn">${esc(r)} <span data-del-reason-pool="${poolKey}" data-del-reason-value="${esc(r)}" style="color:var(--danger);margin-left:3px;cursor:pointer">✕</span></span>`).join('')}
+  </div>`;
+}
+function wireReasonPoolDeleteButtons(){
+  document.querySelectorAll('[data-del-reason-pool]').forEach(x=>{
+    x.onclick=()=>{
+      const poolKey = x.dataset.delReasonPool;
+      const val = x.dataset.delReasonValue;
+      showConfirm(`確定要從預設列表移除「${esc(val)}」嗎？（不會影響已經登記過的資料，只是以後下拉選單不再出現這個選項）`, ()=>{
+        state[poolKey] = (state[poolKey]||[]).filter(v=>v!==val);
+        saveState();
+        x.closest('.pill-btn')?.remove(); // instant feedback even inside a modal, which render() doesn't rebuild
+        render();
+      });
+    };
+  });
+}
 
 function showAlert(message){
   const modal=document.createElement('div');
@@ -2887,7 +3301,7 @@ function renderStats(){
   const maxCount = Math.max(1,...counts);
   const queryFormHTML = collapsibleCardHTML('queryForm', '指定時間查詢', `
       <div class="row wrap" style="margin-bottom:8px">
-        <div class="grow"><label>時間</label><select id="queryTime">${timeOptions().map(t=>`<option ${t===queryFilterState.time?'selected':''}>${t}</option>`).join('')}</select></div>
+        <div class="grow"><label>時間</label>${timeSelectHTML('queryTime', queryFilterState.time)}</div>
       </div>
       <div class="row wrap" style="margin-bottom:8px">
         <div class="grow"><label>排組篩選</label>
@@ -2968,7 +3382,7 @@ function renderStats(){
   });
   wireDayListCardEvents();
   document.getElementById('queryBtn').onclick=()=>{
-    const t=document.getElementById('queryTime').value;
+    const t=getTimeSelectValue('queryTime');
     const qMin=toMin(t);
     const gf=document.getElementById('queryGroupFilter').value;
     const rkf=document.getElementById('queryRankFilter').value;
@@ -3453,7 +3867,6 @@ function wireCategoryEvents(){
 
 function openCategoryEditor(catId){
   const cat = state.categories.find(c=>c.id===catId);
-  const opts = timeOptions();
   const modal = document.createElement('div');
   modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:50;display:flex;align-items:flex-end;';
   modal.innerHTML = `
@@ -3604,11 +4017,11 @@ function openCategoryEditor(catId){
     const arr = activeShiftsArray();
     return [...document.querySelectorAll('.shiftEditItem')].map((row,i)=>({
       id: arr[i]? arr[i].id : uid(),
-      start: row.querySelector('.se-start').value,
-      end: row.querySelector('.se-end').value,
+      start: getTimeSelectValue('se-start-'+i),
+      end: getTimeSelectValue('se-end-'+i),
       count: Math.max(1, Number(row.querySelector('.se-count').value)||1),
       label: row.querySelector('.se-label').value.trim(),
-      restUntil: row.querySelector('.se-rest').value,
+      restUntil: getTimeSelectValue('se-rest-'+i),
       minNCO: Math.max(0, Number(row.querySelector('.se-minnco').value)||0)
     }));
   }
@@ -3667,17 +4080,12 @@ function openCategoryEditor(catId){
         <div style="width:64px"><label>人數</label><input type="text" class="se-count" value="${s.count}"></div>
       </div>
       <div class="row wrap" style="margin-top:6px">
-        <div class="grow"><label>開始</label><select class="se-start">${opts.map(t=>`<option ${t===s.start?'selected':''}>${t}</option>`).join('')}</select></div>
-        <div class="grow"><label>結束</label><select class="se-end">${opts.map(t=>`<option ${t===s.end?'selected':''}>${t}</option>`).join('')}</select></div>
+        <div class="grow"><label>開始</label>${timeSelectHTML('se-start-'+i, s.start)}</div>
+        <div class="grow"><label>結束</label>${timeSelectHTML('se-end-'+i, s.end)}</div>
         <button class="ghost small danger" data-shift-del="${i}">刪除</button>
       </div>
       <div class="row wrap" style="margin-top:6px">
-        <div class="grow"><label>補休至(選填，下班後自動排除其他勤務至此時間)</label>
-          <select class="se-rest">
-            <option value="" ${!s.restUntil?'selected':''}>（無補休）</option>
-            ${opts.map(t=>`<option ${t===s.restUntil?'selected':''}>${t}</option>`).join('')}
-          </select>
-        </div>
+        <div class="grow"><label>補休至(選填，下班後自動排除其他勤務至此時間)</label>${timeSelectHTML('se-rest-'+i, s.restUntil, {allowEmpty:true})}</div>
       </div>
       <div class="row wrap" style="margin-top:6px">
         <div style="width:120px"><label>最少需要幾位士官(含)以上(選填，0代表不限)</label><input type="text" class="se-minnco" value="${s.minNCO||0}"></div>
@@ -3826,8 +4234,8 @@ function openAdhocAddModal(personId, defaultStart, defaultEnd){
       <div id="adhocNewFields">
         <label>項目名稱</label><input type="text" id="adhocNewRole" placeholder="例：緊急支援" style="margin-bottom:8px">
         <div class="row wrap" style="margin-bottom:8px">
-          <div class="grow"><label>開始</label><select id="adhocNewStart">${timeOptions().map(t=>`<option ${t===defaultStart?'selected':''}>${t}</option>`).join('')}</select></div>
-          <div class="grow"><label>結束</label><select id="adhocNewEnd">${timeOptions().map(t=>`<option ${t===defaultEnd?'selected':''}>${t}</option>`).join('')}</select></div>
+          <div class="grow"><label>開始</label>${timeSelectHTML('adhocNewStart', defaultStart)}</div>
+          <div class="grow"><label>結束</label>${timeSelectHTML('adhocNewEnd', defaultEnd)}</div>
         </div>
       </div>
       <div class="row wrap">
@@ -3845,8 +4253,8 @@ function openAdhocAddModal(personId, defaultStart, defaultEnd){
     if(target==='__new'){
       const role = document.getElementById('adhocNewRole').value.trim();
       if(!role){ showAlert('請輸入項目名稱'); return; }
-      const start = document.getElementById('adhocNewStart').value;
-      const end = document.getElementById('adhocNewEnd').value;
+      const start = getTimeSelectValue('adhocNewStart');
+      const end = getTimeSelectValue('adhocNewEnd');
       if(!state.misc[currentDate]) state.misc[currentDate]=[];
       state.misc[currentDate].push({id:uid(), role, start, end, restUntil:'', personIds:[personId]});
     } else {
@@ -3882,7 +4290,6 @@ let miscSelectedRestUntil='';
 function openMiscPresetModal(editIndex){
   const editing = typeof editIndex==='number';
   const existing = editing? state.miscPresets[editIndex] : null;
-  const opts=timeOptions();
   let timesDraft = existing? presetTimes(existing).map(t=>({...t})) : [{start:'06:00',end:'07:00'}];
   const modal=document.createElement('div');
   modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:60;display:flex;align-items:flex-end;';
@@ -3894,12 +4301,7 @@ function openMiscPresetModal(editIndex){
       <div id="mpTimesList"></div>
       <button class="ghost small" id="mpAddTime" style="margin-bottom:8px">＋新增時段</button>
       <div class="row wrap" style="margin-bottom:8px">
-        <div class="grow"><label>補休至(選填，下勤後自動排除其他勤務至此時間)</label>
-          <select id="mpRest">
-            <option value="" ${!(existing&&existing.restUntil)?'selected':''}>（無補休）</option>
-            ${opts.map(t=>`<option ${existing&&t===existing.restUntil?'selected':''}>${t}</option>`).join('')}
-          </select>
-        </div>
+        <div class="grow"><label>補休至(選填，下勤後自動排除其他勤務至此時間)</label>${timeSelectHTML('mpRest', existing?existing.restUntil:'', {allowEmpty:true})}</div>
       </div>
       <div class="row wrap" style="margin-bottom:8px">
         <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text)">
@@ -3967,16 +4369,20 @@ function openMiscPresetModal(editIndex){
   function renderTimesList(){
     document.getElementById('mpTimesList').innerHTML = timesDraft.map((t,i)=>`
       <div class="row wrap" style="margin-bottom:2px">
-        <div class="grow"><label>開始</label><select data-time-start="${i}">${opts.map(o=>`<option ${o===t.start?'selected':''}>${o}</option>`).join('')}</select></div>
-        <div class="grow"><label>結束</label><select data-time-end="${i}">${opts.map(o=>`<option ${o===t.end?'selected':''}>${o}</option>`).join('')}</select></div>
+        <div class="grow"><label>開始</label>${timeSelectHTML('mpTime-start-'+i, t.start)}</div>
+        <div class="grow"><label>結束</label>${timeSelectHTML('mpTime-end-'+i, t.end)}</div>
         <button class="ghost small danger" data-time-del="${i}" ${timesDraft.length<=1?'disabled':''}>刪除</button>
       </div>
       ${t.end<=t.start? `<div class="hint" style="margin-bottom:6px">⏰ ${t.start} → 隔天${t.end}</div>` : `<div style="margin-bottom:6px"></div>`}`).join('');
-    document.querySelectorAll('[data-time-start]').forEach(sel=>{
-      sel.onchange=()=>{ timesDraft[Number(sel.dataset.timeStart)].start=sel.value; renderTimesList(); };
-    });
-    document.querySelectorAll('[data-time-end]').forEach(sel=>{
-      sel.onchange=()=>{ timesDraft[Number(sel.dataset.timeEnd)].end=sel.value; renderTimesList(); };
+    timesDraft.forEach((t,i)=>{
+      ['mpTime-start-'+i+'__h','mpTime-start-'+i+'__m'].forEach(id=>{
+        const el=document.getElementById(id);
+        if(el) el.onchange=()=>{ timesDraft[i].start=getTimeSelectValue('mpTime-start-'+i); renderTimesList(); };
+      });
+      ['mpTime-end-'+i+'__h','mpTime-end-'+i+'__m'].forEach(id=>{
+        const el=document.getElementById(id);
+        if(el) el.onchange=()=>{ timesDraft[i].end=getTimeSelectValue('mpTime-end-'+i); renderTimesList(); };
+      });
     });
     document.querySelectorAll('[data-time-del]').forEach(b=>{
       b.onclick=()=>{
@@ -4005,7 +4411,7 @@ function openMiscPresetModal(editIndex){
     if(!role){ showAlert('請輸入項目名稱'); return; }
     const fixed=document.getElementById('mpFixed').checked;
     const isSentry=document.getElementById('mpSentry').checked;
-    const restUntil=document.getElementById('mpRest').value;
+    const restUntil=getTimeSelectValue('mpRest');
     const requiredLicenses=[...document.querySelectorAll('.mp-req-license:checked')].map(cb=>cb.value);
     const requiredMedCert=document.getElementById('mpReqMedCert').checked;
     const requiredSkills=[...document.querySelectorAll('.mp-req-skill:checked')].map(cb=>cb.value);
@@ -4100,9 +4506,10 @@ function miscEditBusyReasons(personId, date, s, eRaw, excludeEntryId){
    requirements (license/EMT/skill) the same way the top "新增項目" form does */
 function inlineMiscPeopleListHTML(m, searchFilter){
   const preset = presetForEntry(m);
-  const startEl = document.getElementById('inlineStart-'+m.id), endEl = document.getElementById('inlineEnd-'+m.id);
-  const startVal = startEl? startEl.value : m.start;
-  const endVal = endEl? endEl.value : m.end;
+  const startExists = !!document.getElementById('inlineStart-'+m.id+'__h');
+  const startVal = startExists? getTimeSelectValue('inlineStart-'+m.id) : m.start;
+  const endExists = !!document.getElementById('inlineEnd-'+m.id+'__h');
+  const endVal = endExists? getTimeSelectValue('inlineEnd-'+m.id) : m.end;
   const hasTime = !!(startVal && endVal);
   const s = hasTime? toMin(startVal) : null;
   const eRaw = hasTime? toMin(endVal) : null;
@@ -4175,8 +4582,8 @@ function miscEntryEditorHTML(m){
       <div class="grow"><label>項目名稱</label><input type="text" id="inlineRole-${m.id}" value="${esc(m.role)}"></div>
     </div>
     <div class="row wrap" style="margin-bottom:8px">
-      <div class="grow"><label>開始</label><select id="inlineStart-${m.id}"><option value="">（不指定）</option>${timeOptions().map(t=>`<option ${t===m.start?'selected':''}>${t}</option>`).join('')}</select></div>
-      <div class="grow"><label>結束</label><select id="inlineEnd-${m.id}"><option value="">（不指定）</option>${timeOptions().map(t=>`<option ${t===m.end?'selected':''}>${t}</option>`).join('')}</select></div>
+      <div class="grow"><label>開始</label>${timeSelectHTML('inlineStart-'+m.id, m.start, {allowEmpty:true})}</div>
+      <div class="grow"><label>結束</label>${timeSelectHTML('inlineEnd-'+m.id, m.end, {allowEmpty:true})}</div>
     </div>
     ${rolesHtml}
     <div class="row wrap">
@@ -4196,9 +4603,10 @@ function wireMiscInlineEditors(){
         if(container) container.innerHTML = inlineMiscPeopleListHTML(m, val);
       };
       if(searchInput) searchInput.oninput = refreshList;
-      const startSel = document.getElementById('inlineStart-'+m.id), endSel = document.getElementById('inlineEnd-'+m.id);
-      if(startSel) startSel.addEventListener('change', refreshList);
-      if(endSel) endSel.addEventListener('change', refreshList);
+      ['inlineStart-'+m.id+'__h','inlineStart-'+m.id+'__m','inlineEnd-'+m.id+'__h','inlineEnd-'+m.id+'__m'].forEach(subId=>{
+        const el=document.getElementById(subId);
+        if(el) el.addEventListener('change', refreshList);
+      });
     }
   }
   document.querySelectorAll('[data-inline-save]').forEach(btn=>{
@@ -4208,9 +4616,8 @@ function wireMiscInlineEditors(){
       if(!m) return;
       const roleInput = document.getElementById('inlineRole-'+id);
       if(roleInput) m.role = roleInput.value.trim()||m.role;
-      const startSel = document.getElementById('inlineStart-'+id), endSel = document.getElementById('inlineEnd-'+id);
-      if(startSel) m.start = startSel.value;
-      if(endSel) m.end = endSel.value;
+      m.start = getTimeSelectValue('inlineStart-'+id);
+      m.end = getTimeSelectValue('inlineEnd-'+id);
       if(m.roles){
         m.personIds = m.roles.map((_,i)=>{
           const sel=document.querySelector(`[data-inline-role-sel="${i}"]`);
@@ -4254,7 +4661,7 @@ function renderMisc(){
   app.innerHTML = `
     ${collapsibleCardHTML('adhocQuery', `臨時任務查詢（指定時間+需要幾官幾士幾兵/專長，列出可用人選）`, `
       <div class="row wrap" style="margin-bottom:8px">
-        <div class="grow"><label>需要開始的時間</label><select id="ahTime">${timeOptions().map(t=>`<option ${t===(adhocQueryState.time||'10:00')?'selected':''}>${t}</option>`).join('')}</select></div>
+        <div class="grow"><label>需要開始的時間</label>${timeSelectHTML('ahTime', adhocQueryState.time||'10:00')}</div>
       </div>
       <div class="row wrap" style="margin-bottom:8px">
         <div class="grow"><label>需要軍官人數</label><input type="text" id="ahOfficer" value="${adhocQueryState.officer||0}"></div>
@@ -4286,8 +4693,8 @@ function renderMisc(){
         <div class="grow"><label>項目名稱</label><input type="text" id="mRole" placeholder="例：技工 / 採買 / 查哨"></div>
       </div>
       <div class="row wrap" style="margin-bottom:8px">
-        <div class="grow"><label>開始(選填)</label><select id="mStart"><option value="">（不指定）</option>${timeOptions().map(t=>`<option>${t}</option>`).join('')}</select></div>
-        <div class="grow"><label>結束(選填)</label><select id="mEnd"><option value="">（不指定）</option>${timeOptions().map(t=>`<option>${t}</option>`).join('')}</select></div>
+        <div class="grow"><label>開始(選填)</label>${timeSelectHTML('mStart', '', {allowEmpty:true})}</div>
+        <div class="grow"><label>結束(選填)</label>${timeSelectHTML('mEnd', '', {allowEmpty:true})}</div>
       </div>
       <div class="hint" id="mNextDayHint" style="margin-bottom:8px;display:none">⏰ 結束時間不晚於開始時間，代表跨到隔天（例：07:00 → 隔天07:00）。</div>
       ${miscSelectedRoles? `
@@ -4371,7 +4778,7 @@ function renderMisc(){
     });
   }
   function refreshPeopleFlags(){
-    const startVal=document.getElementById('mStart').value, endVal=document.getElementById('mEnd').value;
+    const startVal=getTimeSelectValue('mStart'), endVal=getTimeSelectValue('mEnd');
     const hasTime = !!(startVal && endVal);
     const s = hasTime? toMin(startVal) : null;
     const e0 = hasTime? toMin(endVal) : null;
@@ -4457,13 +4864,13 @@ function renderMisc(){
     });
   }
   function updateNextDayHint(){
-    const s=document.getElementById('mStart').value, e=document.getElementById('mEnd').value;
+    const s=getTimeSelectValue('mStart'), e=getTimeSelectValue('mEnd');
     const hint=document.getElementById('mNextDayHint');
     hint.style.display = (s && e && e<=s)? 'block':'none';
     if(s && e && e<=s) hint.textContent = `⏰ 結束時間不晚於開始時間，代表跨到隔天（${s} → 隔天${e}）。`;
   }
-  document.getElementById('mStart').onchange=()=>{ refreshPeopleFlags(); updateNextDayHint(); };
-  document.getElementById('mEnd').onchange=()=>{ refreshPeopleFlags(); updateNextDayHint(); };
+  ['mStart__h','mStart__m'].forEach(id=>{ const el=document.getElementById(id); if(el) el.onchange=()=>{ refreshPeopleFlags(); updateNextDayHint(); }; });
+  ['mEnd__h','mEnd__m'].forEach(id=>{ const el=document.getElementById(id); if(el) el.onchange=()=>{ refreshPeopleFlags(); updateNextDayHint(); }; });
   refreshPeopleFlags();
   updateNextDayHint();
   if(document.getElementById('mSearch')){
@@ -4534,8 +4941,8 @@ function renderMisc(){
       miscSelectedRestUntil = mp.restUntil||'';
       render();
       document.getElementById('mRole').value=mp.role;
-      document.getElementById('mStart').value=times[0].start;
-      document.getElementById('mEnd').value=times[0].end;
+      setTimeSelectValue('mStart', times[0].start);
+      setTimeSelectValue('mEnd', times[0].end);
       refreshPeopleFlags();
       updateNextDayHint();
     };
@@ -4547,7 +4954,7 @@ function renderMisc(){
     };
   });
   document.getElementById('ahQueryBtn').onclick=()=>{
-    adhocQueryState.time=document.getElementById('ahTime').value;
+    adhocQueryState.time=getTimeSelectValue('ahTime');
     adhocQueryState.officer=Number(document.getElementById('ahOfficer').value)||0;
     adhocQueryState.nco=Number(document.getElementById('ahNCO').value)||0;
     adhocQueryState.enlisted=Number(document.getElementById('ahEnlisted').value)||0;
@@ -4567,7 +4974,7 @@ function renderMisc(){
   document.getElementById('mAdd').onclick=()=>{
     const role=document.getElementById('mRole').value.trim();
     if(!role) return;
-    const start=document.getElementById('mStart').value, end=document.getElementById('mEnd').value;
+    const start=getTimeSelectValue('mStart'), end=getTimeSelectValue('mEnd');
     if(!state.misc[currentDate]) state.misc[currentDate]=[];
     const existing = miscEditingId? state.misc[currentDate].find(m=>m.id===miscEditingId) : null;
     if(miscSelectedRoles){
