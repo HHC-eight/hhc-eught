@@ -110,7 +110,7 @@ textarea{min-height:50px;resize:vertical;}
     <div class="row" style="gap:6px;align-items:center">
       <button class="ghost small" id="undoBtn" title="復原上一步" disabled>↩️</button>
       <button class="ghost small" id="redoBtn" title="取消復原（重做）" disabled>↪️</button>
-      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v52</span></h1>
+      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v54</span></h1>
     </div>
     <div class="row" style="gap:6px;align-items:center">
       <select id="timeStepSelect" style="font-size:11px;padding:3px 6px;width:auto">
@@ -352,7 +352,16 @@ function presetTimes(preset){
    read its configured requirements (license/cert/skill). Returns null for
    entries whose preset was since deleted/renamed (no requirements applied). */
 function presetForEntry(entry){
-  return state.miscPresets.find(p=>p.role===entry.role) || null;
+  const preset = state.miscPresets.find(p=>p.role===entry.role);
+  if(preset) return preset;
+  // ad-hoc entries created via 新增項目 without a matching 常用項目 can still
+  // carry their own one-off requirement fields (set in that form's
+  // 資格要求 section) — treat those the same as a preset's requirements
+  // wherever driverQualificationIssues/eligibility checks call this
+  if((entry.requiredLicenses&&entry.requiredLicenses.length) || entry.requiredMedCert || (entry.requiredSkills&&entry.requiredSkills.length)){
+    return {requiredLicenses:entry.requiredLicenses||[], requiredMedCert:!!entry.requiredMedCert, requiredSkills:entry.requiredSkills||[]};
+  }
+  return null;
 }
 /* two presets "compete for the same qualification" if they share a
    required license, both require EMT/medic cert, or share a required
@@ -394,6 +403,17 @@ function driverQualificationIssues(person, preset){
   });
   return issues;
 }
+/* 車長 eligibility: NCO+ outranking the driver (if one's picked yet),
+   plus the preset's shared EMT requirement, plus chiefRequiredSkills —
+   the chief's OWN separate skill requirement, independent of whatever
+   requiredSkills applies to the driver */
+function chiefEligible(person, preset, driver){
+  if(!['士官','軍官'].includes(rankCategory(person.rank))) return false;
+  if(driver && rankIndex(person.rank)>=rankIndex(driver.rank)) return false;
+  if(preset && preset.requiredMedCert && !person.medCert) return false;
+  if(preset && (preset.chiefRequiredSkills||[]).some(sk=>!(person.skills||[]).includes(sk))) return false;
+  return true;
+}
 /* validation for structured misc entries (entry.roles present): 車長/駕駛 pairs
    need the driver to meet the preset's configured requirements and the
    chief to be an NCO+ outranking the driver; anything tagged 話務 just needs
@@ -432,6 +452,10 @@ function validateMiscEntry(entry){
     }
     if(chief && !['士官','軍官'].includes(rankCategory(chief.rank))) issues.push(`車長 ${chief.name}：需為士官以上`);
     if(chief && driver && rankIndex(chief.rank)>=rankIndex(driver.rank)) issues.push(`車長 ${chief.name} 階級須高於駕駛 ${driver.name}`);
+    if(chief && preset && preset.requiredMedCert && !chief.medCert) issues.push(`車長 ${chief.name}：需具備EMT或醫生證書`);
+    if(chief && preset) (preset.chiefRequiredSkills||[]).forEach(sk=>{
+      if(!(chief.skills||[]).includes(sk)) issues.push(`車長 ${chief.name}：需具備${sk}專長`);
+    });
   }
   entry.roles.forEach((r,i)=>{
     if(r.startsWith('話務')){
@@ -464,6 +488,7 @@ state.miscPresets.forEach(p=>{
   if(p.requiredLicenses===undefined) p.requiredLicenses = p.role==='消防車'? ['大型車','大客車'] : [];
   if(p.requiredMedCert===undefined) p.requiredMedCert = p.role==='救護車';
   if(p.requiredSkills===undefined) p.requiredSkills = [];
+  if(p.chiefRequiredSkills===undefined) p.chiefRequiredSkills = [];
   if(p.rankPriority===undefined) p.rankPriority = null; // null = default rank order (RANK_DEFS)
 });
 /* unified display/export order shared across 排班類別 AND 其他勤務常用項目 —
@@ -1143,6 +1168,7 @@ function autoAssignMiscForDate(date){
     if((preset.requiredLicenses||[]).length) score++;
     if(preset.requiredMedCert) score++;
     if((preset.requiredSkills||[]).length) score++;
+    if((preset.chiefRequiredSkills||[]).length) score++;
     return score;
   }
   const processingOrder = [...state.misc[date]].sort((a,b)=>{
@@ -1188,7 +1214,7 @@ function autoAssignMiscForDate(date){
       } else if(r==='車長'){
         const driverIdx=entry.roles.indexOf('駕駛');
         const driver = driverIdx>-1? state.personnel.find(p=>p.id===entry.personIds[driverIdx]) : null;
-        eligibleFn = p=>['士官','軍官'].includes(rankCategory(p.rank)) && (!driver || rankIndex(p.rank)<rankIndex(driver.rank)) && (!needsMed || p.medCert);
+        eligibleFn = p=>chiefEligible(p, preset, driver);
       } else if(r.startsWith('話務')){
         eligibleFn = p=>!!p.license;
       } else {
@@ -1519,8 +1545,10 @@ function renderPeople(){
       ${reasonPoolManagerHTML('longtermReasonOptions','npLtReasonPoolMgmt')}
       <div class="row wrap" id="npLTInCampRow" style="margin-bottom:8px;display:none">
         <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text)">
-          <input type="checkbox" id="npLTInCamp" style="width:auto" checked> 在營（人在營區，只是不排勤務；取消勾選代表實際不在營區，例如受訓）
+          <input type="checkbox" id="npLTInCamp" style="width:auto" checked> 在營
         </label>
+      </div>
+      <div class="hint" style="margin-bottom:8px">「在營」只代表人physically在營區，不代表能不能被排勤務——同樣在營，可能是：一般人員（其餘時段正常可排）、消防車/救護車待命駕駛（其餘時段可站哨/勤務，但不能再排另一個需要駕照的任務，這由「全天待命」項目設定另外控制）、或像主官這種完全不排勤務的人。取消勾選才代表這天實際不在營區（例如受訓）。
       </div>
       <div class="row wrap" id="npLongTermRange" style="margin-bottom:8px;display:none">
         <div class="grow"><label>每天開始</label>${timeSelectHTML('npLTStart','18:00')}</div>
@@ -1640,8 +1668,10 @@ function renderPeople(){
       </div>
       <div class="row wrap" id="batchLtInCampRow" style="margin-bottom:8px">
         <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text)">
-          <input type="checkbox" id="batchLtInCamp" style="width:auto" checked> 在營（人在營區，只是不排勤務）
+          <input type="checkbox" id="batchLtInCamp" style="width:auto" checked> 在營
         </label>
+      </div>
+      <div class="hint" style="margin-bottom:8px">「在營」只代表人physically在營區，不代表能不能被排勤務——同樣在營，可能是：一般人員（其餘時段正常可排）、消防車/救護車待命駕駛（其餘時段可站哨/勤務，但不能再排另一個需要駕照的任務，這由「全天待命」項目設定另外控制）、或像主官這種完全不排勤務的人。取消勾選才代表這天實際不在營區。
       </div>
       <div class="row wrap" id="batchLtRange" style="margin-bottom:8px;display:none">
         <div class="grow"><label>每天開始</label>${timeSelectHTML('batchLtStart','18:00')}</div>
@@ -1912,8 +1942,10 @@ function openPersonEditor(personId){
       ${reasonPoolPillsOnlyHTML('longtermReasonOptions')}
       <div class="row wrap" id="epLTInCampRow" style="margin-bottom:8px;display:${lt.mode!=='off'?'flex':'none'}">
         <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text)">
-          <input type="checkbox" id="epLTInCamp" style="width:auto" ${lt.inCamp?'checked':''}> 在營（人在營區，只是不排勤務；取消勾選代表實際不在營區，例如受訓）
+          <input type="checkbox" id="epLTInCamp" style="width:auto" ${lt.inCamp?'checked':''}> 在營
         </label>
+      </div>
+      <div class="hint" style="margin-bottom:8px">「在營」只代表人physically在營區，不代表能不能被排勤務——同樣在營，可能是：一般人員（其餘時段正常可排）、消防車/救護車待命駕駛（其餘時段可站哨/勤務，但不能再排另一個需要駕照的任務，這由「全天待命」項目設定另外控制）、或像主官這種完全不排勤務的人。取消勾選才代表這天實際不在營區（例如受訓）。
       </div>
       <div class="row wrap" id="epLongTermRange" style="margin-bottom:8px;display:${lt.mode==='range'?'flex':'none'}">
         <div class="grow"><label>每天開始</label>${timeSelectHTML('epLTStart', lt.start||'18:00')}</div>
@@ -2273,8 +2305,10 @@ function openQuickIncidentModal(personId, date){
         </label>
       </div>
       <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text);margin-bottom:8px">
-        <input type="checkbox" id="qiInCamp" style="width:auto"> 在營（人在營區，只是不排勤務；不勾表示這天實際不在營區）
+        <input type="checkbox" id="qiInCamp" style="width:auto"> 在營
       </label>
+      <div class="hint" style="margin-bottom:8px">「在營」只代表人physically在營區，不代表能不能被排勤務——同樣在營，可能是：一般人員（其餘時段正常可排）、消防車/救護車待命駕駛（其餘時段可站哨/勤務，但不能再排另一個需要駕照的任務，這由「全天待命」項目設定另外控制）、或像主官這種完全不排勤務的人。取消勾選才代表這天實際不在營區。
+      </div>
       <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text);margin-bottom:8px">
         <input type="checkbox" id="qiSyncRosterDefault" style="width:auto"> 同時更新到人員名冊預設（不論名冊本來有無設定，都以這次填的為準）
       </label>
@@ -2602,11 +2636,28 @@ function renderOnDutyList(date){
 function renderDayListItemsHTML(){
   const list=dayListBaseEntries();
   const filteredList=computeDayListFiltered();
-  return filteredList.length===0? `<div class="empty">${list.length? '找不到符合的紀錄':'此日尚無登記'}</div>` : filteredList.map(u=>`
-    <div class="list-item">
-      <span class="grow">${esc(personName(u.personId))}：${u.allDay? '全天不能' : (u.start+'-'+u.end+' 不能')}${u.reason? `（${esc(u.reason)}）`:''}${u.leaveId?'　🏖️休假':''}</span>
-      <button class="ghost small danger" data-del-ua="${u.id}">刪除</button>
-    </div>`).join('');
+  if(!filteredList.length) return `<div class="empty">${list.length? '找不到符合的紀錄':'此日尚無登記'}</div>`;
+  const byPerson = {};
+  filteredList.forEach(u=>{
+    if(!byPerson[u.personId]) byPerson[u.personId]=[];
+    byPerson[u.personId].push(u);
+  });
+  const personIds = Object.keys(byPerson).sort((a,b)=>{
+    const pa=state.personnel.find(p=>p.id===a), pb=state.personnel.find(p=>p.id===b);
+    return groupIndex(pa&&pa.group)-groupIndex(pb&&pb.group) || rankIndex(pa&&pa.rank)-rankIndex(pb&&pb.rank);
+  });
+  return personIds.map(pid=>{
+    const p = state.personnel.find(pp=>pp.id===pid);
+    const rows = byPerson[pid].map(u=>`
+      <div class="row" style="margin-bottom:2px">
+        <span class="muted grow">・${u.allDay? '全天不能' : (u.start+'-'+u.end+' 不能')}${u.reason? `（${esc(u.reason)}）`:''}${u.leaveId?'　🏖️休假':''}</span>
+        <button class="ghost small danger" data-del-ua="${u.id}">刪除</button>
+      </div>`).join('');
+    return `<div class="list-item" style="flex-direction:column;align-items:stretch">
+      <div style="font-weight:600;margin-bottom:2px">${esc(p? p.name:'?')}${p? `（${p.group||'未分組'}·${p.rank}）` : ''}</div>
+      ${rows}
+    </div>`;
+  }).join('');
 }
 /* the full "休假名單" card — extracted to a standalone function so both
    休假/事故 and 統計 (which replaces its old plain 休假-reason card with this
@@ -2790,8 +2841,10 @@ function renderUnavail(){
       <div class="hint" id="uaRosterDefaultHint" style="margin-bottom:8px;display:none"></div>
       <div class="row wrap" style="margin-bottom:8px">
         <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text)">
-          <input type="checkbox" id="uaInCamp" style="width:auto" checked> 在營（人在營區，只是不排這天的勤務；取消勾選代表這天實際不在營區）
+          <input type="checkbox" id="uaInCamp" style="width:auto" checked> 在營
         </label>
+      </div>
+      <div class="hint" style="margin-bottom:8px">「在營」只代表人physically在營區，不代表能不能被排勤務——同樣在營，可能是：一般人員（其餘時段正常可排）、消防車/救護車待命駕駛（其餘時段可站哨/勤務，但不能再排另一個需要駕照的任務，這由「全天待命」項目設定另外控制）、或像主官這種完全不排勤務的人。取消勾選才代表這天實際不在營區。
       </div>
       <div class="row wrap" style="margin-bottom:8px">
         <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text)">
@@ -3195,7 +3248,24 @@ function renderUnavail(){
         });
       });
       reverseCheckedIds.clear();
-      saveState(); render();
+      saveState();
+      render();
+      const withLongTerm = checkedIds.filter(pid=>{
+        const person = state.personnel.find(p=>p.id===pid);
+        return person && personLongTerm(person).mode!=='off';
+      });
+      if(withLongTerm.length){
+        showConfirm(`勾選可排的人裡面，有 ${withLongTerm.length} 位名冊上原本設定了長期事故。要不要順便暫停他們「${dateLabel}」這幾天的長期事故（人少時常常需要重新確認每個人的任務，暫停後才能正常排班，名冊上的長期設定本身不會被更動；不暫停的話，他們今天可能還是會被系統當成不能排）？`, ()=>{
+          dates.forEach(d=>{
+            withLongTerm.forEach(pid=>{
+              if(!state.longTermSuspensions[d]) state.longTermSuspensions[d]=[];
+              if(!state.longTermSuspensions[d].includes(pid)) state.longTermSuspensions[d].push(pid);
+            });
+          });
+          saveState();
+          render();
+        });
+      }
     });
   };
   document.getElementById('uaAdd').onclick=()=>{
@@ -3758,7 +3828,7 @@ function renderStats(){
       }).join('')}
       <div class="hint">此數字已包含休假/事故、長期事故、補休、以及當天已排定的勤務。點任一小時列可展開看有空名單，並能搜尋姓名、篩選排組。</div>
 `);
-  const groupRankStatsHTML = collapsibleCardHTML('groupRankStats', '各排組人數統計（官/士/兵）', renderGroupRankStats());
+  const groupRankStatsHTML = collapsibleCardHTML('groupRankStats', '全部人員各排組人數（官/士/兵）', renderGroupRankStats());
   const onDutyHTML = onDutyCardHTML();
   const notInCampHTML = notInCampCardHTML();
   const incidentHTML = collapsibleCardHTML('incidentBreakdown', `${minguoLabel(currentDate)} 其他事故/管制分類（點各項展開名單）`, renderIncidentBreakdown(currentDate));
@@ -4049,7 +4119,16 @@ function renderSchedule(){
       <div id="dailyCheckOut"></div>
     </div>
   `;
-  document.getElementById('autoAssignBtn2').onclick=()=>{ autoAssignDay(currentDate); autoAssignMiscForDate(currentDate); render(); };
+  document.getElementById('autoAssignBtn2').onclick=()=>{
+    // 其他勤務 runs FIRST: rare qualifications (大客車駕照, EMT, 專長...) should
+    // get first pick of personnel, since 衛哨 (安全士官/橋哨/指管/打飯班) has no
+    // license/skill requirements at all and can be filled by almost anyone —
+    // running it first would let it use up the one person with a rare
+    // license on a duty that never needed that license in the first place.
+    autoAssignMiscForDate(currentDate);
+    autoAssignDay(currentDate);
+    render();
+  };
   document.querySelectorAll('[data-del-dutychange]').forEach(b=>{
     b.onclick=()=>{
       state.dutyChanges[currentDate] = (state.dutyChanges[currentDate]||[]).filter(ch=>ch.id!==b.dataset.delDutychange);
@@ -4064,6 +4143,17 @@ function renderSchedule(){
       const idx = state.miscPresets.findIndex(p=>p.role===b.dataset.editMiscPreset);
       if(idx>-1) openMiscPresetModal(idx);
       else showAlert('找不到這個項目的常用設定（可能已被刪除）。');
+    };
+  });
+  document.querySelectorAll('[data-clear-misc-preset]').forEach(b=>{
+    b.onclick=()=>{
+      const role = b.dataset.clearMiscPreset;
+      showConfirm(`確定要清除「${role}」今天所有時段已指派的人員嗎？項目本身跟時段設定不會被刪除。`, ()=>{
+        (state.misc[currentDate]||[]).filter(m=>m.role===role).forEach(m=>{
+          m.personIds = m.roles? m.roles.map(()=>undefined) : [];
+        });
+        saveState(); render();
+      });
     };
   });
   document.querySelectorAll('[data-del-misc-preset]').forEach(b=>{
@@ -4352,7 +4442,7 @@ function wireScheduleCardsDrag(){
 }
 function renderMiscDutyCard(role, entries, preset, dragIdx){
   const title = `<span data-drag-handle style="cursor:grab;padding-right:6px;color:var(--dim)">⠿</span>🗂 ${esc(role)}`;
-  const extraButtons = preset? `<label style="display:flex;align-items:center;gap:3px;font-size:11px"><input type="checkbox" class="card-exclude-cb" data-exclude-kind="misc" data-exclude-id="${esc(role)}" style="width:auto" ${preset.excludeFromExport?'checked':''}>不匯出</label><button class="ghost small" data-edit-misc-preset="${esc(role)}">設定</button><button class="ghost small danger" data-del-misc-preset="${esc(role)}">刪除此項目</button>` : '';
+  const extraButtons = preset? `<label style="display:flex;align-items:center;gap:3px;font-size:11px"><input type="checkbox" class="card-exclude-cb" data-exclude-kind="misc" data-exclude-id="${esc(role)}" style="width:auto" ${preset.excludeFromExport?'checked':''}>不匯出</label><button class="ghost small" data-edit-misc-preset="${esc(role)}">設定</button><button class="ghost small" data-clear-misc-preset="${esc(role)}">清除</button><button class="ghost small danger" data-del-misc-preset="${esc(role)}">刪除此項目</button>` : '';
   const inner = entries.map(m=>{
     if(m.id===miscInlineEditId) return miscEntryEditorHTML(m);
     const issues = validateMiscEntry(m);
@@ -4443,15 +4533,24 @@ function renderCategoryCard(cat, dragIdx){
 }
 
 function assignableOptions(cat, shift, selectedId, slotIdx){
-  const sorted=[...state.personnel].sort((a,b)=>dutySortIndex(a.rank,cat,slotIdx,shift)-dutySortIndex(b.rank,cat,slotIdx,shift) || groupIndex(a.group)-groupIndex(b.group));
-  return sorted.map(p=>{
-    const s=toMin(shift.start), e0=toMin(shift.end);
+  const s=toMin(shift.start), e0=toMin(shift.end);
+  const info = p=>{
     const excluded = rankExcludedFromCategory(p.rank, cat);
     const unavailable = excluded || isPersonUnavailable(p.id, currentDate, s, wrapEndMin(s, e0), {catId:cat.id, shiftId:shift.id});
-    let flag='';
-    if(excluded) flag=' 🚫階級不可排此類別';
-    else if(unavailable) flag=' 🚫不可排';
-    return `<option value="${p.id}" ${p.id===selectedId?'selected':''}>${esc(p.name)}（${p.group||'未分組'}·${p.rank}${p.license? '·🚗'+esc(p.license):''}）${flag}</option>`;
+    return {excluded, unavailable};
+  };
+  // available people first (in the usual priority/group order), unavailable
+  // ones pushed to the bottom — matches the same "eligible people on top"
+  // convention as the 其他勤務 picker, instead of mixing them in wherever
+  // their rank/group would otherwise place them
+  const sorted=[...state.personnel].sort((a,b)=>{
+    const ia=info(a), ib=info(b);
+    if(ia.unavailable!==ib.unavailable) return ia.unavailable? 1 : -1;
+    return dutySortIndex(a.rank,cat,slotIdx,shift)-dutySortIndex(b.rank,cat,slotIdx,shift) || groupIndex(a.group)-groupIndex(b.group);
+  });
+  return sorted.map(p=>{
+    const {unavailable} = info(p);
+    return `<option value="${p.id}" ${p.id===selectedId?'selected':''}>${unavailable?'❗ ':''}${esc(p.name)}（${p.group||'未分組'}·${p.rank}${p.license? '·🚗'+esc(p.license):''}）</option>`;
   }).join('');
 }
 
@@ -4842,16 +4941,23 @@ let miscSelectedRoles=null;
 let miscFreeformFilterState={search:'',group:''};
 let miscFreeformCheckedIds=new Set();
 let miscEditingId=null;
-let adhocQueryState={time:'10:00',officer:0,nco:0,enlisted:0,skill:'',hasRun:false,results:null};
+let adhocQueryState={time:'10:00',mode:'byRank',officer:0,nco:0,enlisted:0,anyCount:0,skill:'',license:'',needMedCert:false,hasRun:false,results:null};
+function adhocCandidateMatches(p){
+  if(adhocQueryState.skill && !(p.skills||[]).includes(adhocQueryState.skill)) return false;
+  if(adhocQueryState.license && p.license!==adhocQueryState.license) return false;
+  if(adhocQueryState.needMedCert && !p.medCert) return false;
+  return true;
+}
 function runAdhocQuery(){
-  const {time, officer, nco, enlisted, skill} = adhocQueryState;
+  const {time, officer, nco, enlisted, mode, anyCount} = adhocQueryState;
   const qMin = toMin(time);
   const wanted = {軍官:Number(officer)||0, 士官:Number(nco)||0, 士兵:Number(enlisted)||0};
   const byCategory = {軍官:[], 士官:[], 士兵:[]};
+  const anyList = [];
   state.personnel.forEach(p=>{
     const cat = rankCategory(p.rank);
     if(!cat) return;
-    if(skill && !(p.skills||[]).includes(skill)) return;
+    if(!adhocCandidateMatches(p)) return;
     if(isPersonUnavailable(p.id, currentDate, qMin, qMin+1)) return;
     const freeMin = freeDurationFrom(p.id, currentDate, qMin);
     const freeUntilMin = qMin+freeMin;
@@ -4860,33 +4966,41 @@ function runAdhocQuery(){
       const reasons = unavailabilityReasonsInRange(p.id, currentDate, freeUntilMin, Math.min(freeUntilMin+1,1440));
       if(reasons.length) nextCommitment = reasons[0];
     }
-    byCategory[cat].push({p, freeMin, freeUntilMin, nextCommitment});
+    const row = {p, freeMin, freeUntilMin, nextCommitment};
+    byCategory[cat].push(row);
+    anyList.push(row);
   });
   Object.keys(byCategory).forEach(cat=>{
     byCategory[cat].sort((a,b)=>b.freeMin-a.freeMin);
   });
-  adhocQueryState.results = {wanted, byCategory};
+  anyList.sort((a,b)=>b.freeMin-a.freeMin);
+  adhocQueryState.results = {mode, wanted, anyCount:Number(anyCount)||0, byCategory, anyList};
   adhocQueryState.hasRun = true;
 }
 function renderAdhocQueryResult(){
   if(!adhocQueryState.results) return '';
-  const {wanted, byCategory} = adhocQueryState.results;
+  const {mode, wanted, anyCount, byCategory, anyList} = adhocQueryState.results;
   const p2=n=>String(n).padStart(2,'0');
   const fmtMin=m=>`${p2(Math.floor(m/60)%24)}:${p2(m%60)}`;
-  const anyWanted = wanted.軍官||wanted.士官||wanted.士兵;
-  const cats = anyWanted? ['軍官','士官','士兵'] : ['軍官','士官','士兵']; // show all groups either way when a skill-only search is used
-  return cats.map(cat=>{
+  const rowHtml = ({p,freeMin,freeUntilMin,nextCommitment})=>`
+        <div class="row" style="align-items:flex-start;margin-bottom:4px">
+          <div class="muted grow">・${esc(p.name)}（${p.group||'未分組'}·${p.rank}${personBadges(p)}）：可用到 ${fmtMin(freeUntilMin)}（共${Math.floor(freeMin/60)}時${freeMin%60}分）${nextCommitment? ` → 之後：${esc(nextCommitment)}`:''}</div>
+          <button class="ghost small" data-adhoc-add="${p.id}" data-adhoc-start="${adhocQueryState.time}" data-adhoc-end="${fmtMin(freeUntilMin)}">加入</button>
+        </div>`;
+  if(mode==='anyCount'){
+    const enough = !anyCount || anyList.length>=anyCount;
+    return `<div style="margin-bottom:10px">
+      ${anyCount? `<div class="${enough?'hint':'badge-issue'}" style="margin-bottom:4px">${enough?'':'⚠️ '}需要 ${anyCount} 人，目前有空的共 ${anyList.length} 人</div>` : `<div class="hint" style="margin-bottom:4px">共 ${anyList.length} 人有空</div>`}
+      ${anyList.length? anyList.map(rowHtml).join('') : `<div class="empty">此時段沒有人有空</div>`}
+    </div>`;
+  }
+  return ['軍官','士官','士兵'].map(cat=>{
     const candidates = byCategory[cat];
     if(!wanted[cat] && !candidates.length) return '';
     const enough = !wanted[cat] || candidates.length >= wanted[cat];
     return `<div style="margin-bottom:10px">
       ${wanted[cat]? `<div class="${enough?'hint':'badge-issue'}" style="margin-bottom:4px">${enough?'':'⚠️ '}需要${cat} ${wanted[cat]} 人，目前有空的共 ${candidates.length} 人</div>` : `<div class="hint" style="margin-bottom:4px">${cat}（共 ${candidates.length} 人有空）</div>`}
-      ${candidates.length? candidates.map(({p,freeMin,freeUntilMin,nextCommitment})=>`
-        <div class="row" style="align-items:flex-start;margin-bottom:4px">
-          <div class="muted grow">・${esc(p.name)}（${p.group||'未分組'}·${p.rank}${personBadges(p)}）：可用到 ${fmtMin(freeUntilMin)}（共${Math.floor(freeMin/60)}時${freeMin%60}分）${nextCommitment? ` → 之後：${esc(nextCommitment)}`:''}</div>
-          <button class="ghost small" data-adhoc-add="${p.id}" data-adhoc-start="${adhocQueryState.time}" data-adhoc-end="${fmtMin(freeUntilMin)}">加入</button>
-        </div>
-      `).join('') : `<div class="empty">此時段沒有${cat}有空</div>`}
+      ${candidates.length? candidates.map(rowHtml).join('') : `<div class="empty">此時段沒有${cat}有空</div>`}
     </div>`;
   }).join('');
 }
@@ -5028,6 +5142,17 @@ function openMiscPresetModal(editIndex){
             <input type="checkbox" class="mp-req-skill" value="${esc(s)}" style="width:auto" ${existing&&(existing.requiredSkills||[]).includes(s)?'checked':''}> ${esc(s)}
           </label>`).join('')}
       </div>
+      ${existing && (existing.roles||[]).includes('車長')? `
+      <div class="divider"></div>
+      <h3>車長資格要求（分開設定，只套用在車長角色，駕駛不受影響）</h3>
+      <label>車長需具備特殊專長(可複選，不選代表不限，車長原本就需士官以上且階級高於駕駛，這裡是額外加嚴)</label>
+      <div style="margin-bottom:8px">
+        ${state.skillOptions.map(s=>`
+          <label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0">
+            <input type="checkbox" class="mp-chief-req-skill" value="${esc(s)}" style="width:auto" ${(existing.chiefRequiredSkills||[]).includes(s)?'checked':''}> ${esc(s)}
+          </label>`).join('')}
+      </div>
+      ` : ''}
       ${editing? `<button class="ghost small danger" id="deleteMiscPreset" style="width:100%;margin-bottom:8px">刪除此項目</button>`:''}
       <div class="divider"></div>
       <div class="section-title"><h3 style="margin:0">優先階級順序（適用於自由選人的項目）</h3><button class="ghost small" id="mpPriToggle">▼ 展開</button></div>
@@ -5112,12 +5237,14 @@ function openMiscPresetModal(editIndex){
     const requiredLicenses=[...document.querySelectorAll('.mp-req-license:checked')].map(cb=>cb.value);
     const requiredMedCert=document.getElementById('mpReqMedCert').checked;
     const requiredSkills=[...document.querySelectorAll('.mp-req-skill:checked')].map(cb=>cb.value);
+    const chiefRequiredSkills=[...document.querySelectorAll('.mp-chief-req-skill:checked')].map(cb=>cb.value);
     const defaultOrder = RANK_DEFS.map(r=>r.rank);
     const isDefaultOrder = rankPriorityDraft.length===defaultOrder.length && rankPriorityDraft.every((r,i)=>r===defaultOrder[i]);
     const rankPriority = isDefaultOrder? null : [...rankPriorityDraft];
     if(editing){
       existing.role=role; existing.times=timesDraft.map(t=>({...t})); existing.fixed=fixed; existing.isSentry=isSentry; existing.isAllDayAway=isAllDayAway; existing.standbyAllDay=standbyAllDay; existing.restUntil=restUntil;
       existing.requiredLicenses=requiredLicenses; existing.requiredMedCert=requiredMedCert; existing.requiredSkills=requiredSkills;
+      if((existing.roles||[]).includes('車長')) existing.chiefRequiredSkills=chiefRequiredSkills;
       existing.rankPriority=rankPriority;
       delete existing.start; delete existing.end;
     } else {
@@ -5248,9 +5375,8 @@ function miscEntryEditorHTML(m){
   if(m.roles){
     rolesHtml = m.roles.map((r,i)=>{
       let eligibleFn = ()=>true;
-      const needsMed = preset? preset.requiredMedCert : false;
       if(r==='駕駛') eligibleFn = p=>driverQualificationIssues(p, preset).length===0;
-      else if(r==='車長') eligibleFn = p=>['士官','軍官'].includes(rankCategory(p.rank)) && (!needsMed || p.medCert);
+      else if(r==='車長') eligibleFn = p=>chiefEligible(p, preset, null);
       else if(r.startsWith('話務')) eligibleFn = p=>!!p.license;
       return `<div class="row wrap" style="margin-bottom:6px">
         <div class="grow"><label>${esc(r)}</label>
@@ -5356,14 +5482,25 @@ function wireMiscCardEvents(){
 }
 function renderMisc(){
   const list = state.misc[currentDate]||[];
-  const adhocQueryHTML = collapsibleCardHTML('adhocQuery', `臨時任務查詢（指定時間+需要幾官幾士幾兵/專長，列出可用人選）`, `
+  const adhocQueryHTML = collapsibleCardHTML('adhocQuery', `臨時任務查詢（指定時間+需要人數/資格，列出可用人選）`, `
       <div class="row wrap" style="margin-bottom:8px">
         <div class="grow"><label>需要開始的時間</label>${timeSelectHTML('ahTime', adhocQueryState.time||'10:00')}</div>
       </div>
       <div class="row wrap" style="margin-bottom:8px">
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px">
+          <input type="radio" name="ahMode" value="byRank" ${adhocQueryState.mode!=='anyCount'?'checked':''} style="width:auto"> 分官/士/兵指定人數
+        </label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px">
+          <input type="radio" name="ahMode" value="anyCount" ${adhocQueryState.mode==='anyCount'?'checked':''} style="width:auto"> 不分階級，只要湊到人數就好
+        </label>
+      </div>
+      <div class="row wrap" id="ahByRankRow" style="margin-bottom:8px;display:${adhocQueryState.mode==='anyCount'?'none':'flex'}">
         <div class="grow"><label>需要軍官人數</label><input type="text" id="ahOfficer" value="${adhocQueryState.officer||0}"></div>
         <div class="grow"><label>需要士官人數</label><input type="text" id="ahNCO" value="${adhocQueryState.nco||0}"></div>
         <div class="grow"><label>需要士兵人數</label><input type="text" id="ahEnlisted" value="${adhocQueryState.enlisted||0}"></div>
+      </div>
+      <div class="row wrap" id="ahAnyCountRow" style="margin-bottom:8px;display:${adhocQueryState.mode==='anyCount'?'flex':'none'}">
+        <div class="grow"><label>需要人數</label><input type="text" id="ahAnyCount" value="${adhocQueryState.anyCount||0}"></div>
       </div>
       <div class="row wrap" style="margin-bottom:8px">
         <div class="grow"><label>需要專長(選填)</label>
@@ -5372,7 +5509,16 @@ function renderMisc(){
             ${state.skillOptions.map(s=>`<option value="${esc(s)}" ${adhocQueryState.skill===s?'selected':''}>${esc(s)}</option>`).join('')}
           </select>
         </div>
+        <div class="grow"><label>需要駕照(選填)</label>
+          <select id="ahLicense">
+            <option value="">（不限）</option>
+            ${['小型車','大型車','大客車'].map(l=>`<option value="${l}" ${adhocQueryState.license===l?'selected':''}>${l}</option>`).join('')}
+          </select>
+        </div>
       </div>
+      <label style="display:flex;align-items:center;gap:6px;font-size:13px;margin-bottom:8px">
+        <input type="checkbox" id="ahNeedMedCert" style="width:auto" ${adhocQueryState.needMedCert?'checked':''}> 需具備救護證照(EMT或醫生證書)
+      </label>
       <button class="primary" id="ahQueryBtn" style="width:100%;margin-bottom:8px">查詢可用人選</button>
       <div id="ahResult">${adhocQueryState.hasRun? renderAdhocQueryResult():''}</div>
       <div class="hint">查到的人選旁邊可以直接按「加入」，選擇建立新的其他勤務項目或加到今天已有的項目，不用再跳去「其他勤務」分頁重填一次。</div>
@@ -5399,11 +5545,10 @@ function renderMisc(){
         ${miscSelectedRoles.map((r,i)=>{
           let eligibleFn = ()=>false;
           const presetForForm = state.miscPresets.find(p=>p.role===miscSelectedPresetRole);
-          const needsMed = presetForForm? presetForForm.requiredMedCert : false;
           if(r==='駕駛'){
             eligibleFn = p=>driverQualificationIssues(p, presetForForm).length===0;
           } else if(r==='車長'){
-            eligibleFn = p=>['士官','軍官'].includes(rankCategory(p.rank)) && (!needsMed || p.medCert);
+            eligibleFn = p=>chiefEligible(p, presetForForm, null);
           }
           return `
           <div class="row wrap" style="margin-bottom:8px">
@@ -5421,6 +5566,26 @@ function renderMisc(){
           <label style="display:flex;align-items:center;gap:6px;font-size:13px">
             <input type="checkbox" id="mSkipAutoFill" style="width:auto"> 🔒此項目本次不自動排人（保持空白）
           </label>
+        </div>
+        <div class="section-title"><h3 style="margin:0">資格要求(選填)</h3><button class="ghost small" id="mReqToggle">▼ 展開</button></div>
+        <div id="mReqSection" style="display:none;margin-bottom:8px">
+          <label>需持有駕照(可複選，不選代表不限)</label>
+          <div style="margin-bottom:8px">
+            ${['小型車','大型車','大客車'].map(l=>`
+              <label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0">
+                <input type="checkbox" class="m-req-license" value="${l}" style="width:auto"> ${l}
+              </label>`).join('')}
+          </div>
+          <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text);margin-bottom:8px">
+            <input type="checkbox" id="mReqMedCert" style="width:auto"> 需具備救護證照(EMT或醫生證書)
+          </label>
+          <label>需具備特殊專長(可複選，不選代表不限)</label>
+          <div style="margin-bottom:8px">
+            ${state.skillOptions.map(s=>`
+              <label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0">
+                <input type="checkbox" class="m-req-skill" value="${esc(s)}" style="width:auto"> ${esc(s)}
+              </label>`).join('')}
+          </div>
         </div>
         <div class="row wrap" style="margin-bottom:8px">
           <div class="grow"><label>搜尋姓名</label><input type="text" id="mSearch" placeholder="輸入姓名關鍵字" value="${esc(miscFreeformFilterState.search)}"></div>
@@ -5578,6 +5743,14 @@ function renderMisc(){
   ['mEnd__h','mEnd__m'].forEach(id=>{ const el=document.getElementById(id); if(el) el.onchange=()=>{ refreshPeopleFlags(); updateNextDayHint(); }; });
   refreshPeopleFlags();
   updateNextDayHint();
+  if(document.getElementById('mReqToggle')){
+    document.getElementById('mReqToggle').onclick=()=>{
+      const sec=document.getElementById('mReqSection');
+      const expanded = sec.style.display!=='none';
+      sec.style.display = expanded? 'none':'block';
+      document.getElementById('mReqToggle').textContent = expanded? '▼ 展開':'▲ 收合';
+    };
+  }
   if(document.getElementById('mSearch')){
     function refreshMiscCheckboxes(){
       document.getElementById('mPeopleSummary').innerHTML = personListSummaryHTML(miscFreeformFilteredList(), state.personnel);
@@ -5614,8 +5787,7 @@ function renderMisc(){
         const chiefSel=document.getElementById('mRoleSel'+chiefIdx);
         const curVal=chiefSel.value;
         const presetForForm = state.miscPresets.find(p=>p.role===miscSelectedPresetRole);
-        const needsMed = presetForForm? presetForForm.requiredMedCert : false;
-        const eligibleFn = p=>['士官','軍官'].includes(rankCategory(p.rank)) && (!driver || rankIndex(p.rank)<rankIndex(driver.rank)) && (!needsMed || p.medCert);
+        const eligibleFn = p=>chiefEligible(p, presetForForm, driver);
         chiefSel.innerHTML = `<option value="">（未指派）</option>` + personOptionsPrioritized(curVal, eligibleFn);
         refreshPeopleFlags();
       });
@@ -5661,15 +5833,26 @@ function renderMisc(){
   });
   document.getElementById('ahQueryBtn').onclick=()=>{
     adhocQueryState.time=getTimeSelectValue('ahTime');
+    adhocQueryState.mode=document.querySelector('input[name="ahMode"]:checked').value;
     adhocQueryState.officer=Number(document.getElementById('ahOfficer').value)||0;
     adhocQueryState.nco=Number(document.getElementById('ahNCO').value)||0;
     adhocQueryState.enlisted=Number(document.getElementById('ahEnlisted').value)||0;
+    adhocQueryState.anyCount=Number(document.getElementById('ahAnyCount').value)||0;
     adhocQueryState.skill=document.getElementById('ahSkill').value;
+    adhocQueryState.license=document.getElementById('ahLicense').value;
+    adhocQueryState.needMedCert=document.getElementById('ahNeedMedCert').checked;
     runAdhocQuery();
     const resultEl = document.getElementById('ahResult');
     resultEl.innerHTML = renderAdhocQueryResult();
     wireAdhocAddButtons();
   };
+  document.querySelectorAll('input[name="ahMode"]').forEach(r=>{
+    r.addEventListener('change', ()=>{
+      const mode = document.querySelector('input[name="ahMode"]:checked').value;
+      document.getElementById('ahByRankRow').style.display = mode==='anyCount'? 'none':'flex';
+      document.getElementById('ahAnyCountRow').style.display = mode==='anyCount'? 'flex':'none';
+    });
+  });
   function wireAdhocAddButtons(){
     document.querySelectorAll('[data-adhoc-add]').forEach(b=>{
       b.onclick=()=>openAdhocAddModal(b.dataset.adhocAdd, b.dataset.adhocStart, b.dataset.adhocEnd);
@@ -5698,11 +5881,18 @@ function renderMisc(){
     } else {
       const personIds=[...miscFreeformCheckedIds];
       const skipAutoFill = document.getElementById('mSkipAutoFill') ? document.getElementById('mSkipAutoFill').checked : false;
+      const reqLicenseEls = document.querySelectorAll('.m-req-license:checked');
+      const requiredLicenses = reqLicenseEls.length? [...reqLicenseEls].map(cb=>cb.value) : undefined;
+      const reqMedCertEl = document.getElementById('mReqMedCert');
+      const requiredMedCert = reqMedCertEl && reqMedCertEl.checked ? true : undefined;
+      const reqSkillEls = document.querySelectorAll('.m-req-skill:checked');
+      const requiredSkills = reqSkillEls.length? [...reqSkillEls].map(cb=>cb.value) : undefined;
       if(existing){
         existing.role=role; existing.start=start; existing.end=end; existing.restUntil=miscSelectedRestUntil;
         existing.personIds=personIds; existing.skipAutoFill=skipAutoFill; delete existing.roles;
+        existing.requiredLicenses=requiredLicenses; existing.requiredMedCert=requiredMedCert; existing.requiredSkills=requiredSkills;
       } else {
-        state.misc[currentDate].push({id:uid(),role,start,end,restUntil:miscSelectedRestUntil,personIds,skipAutoFill});
+        state.misc[currentDate].push({id:uid(),role,start,end,restUntil:miscSelectedRestUntil,personIds,skipAutoFill,requiredLicenses,requiredMedCert,requiredSkills});
       }
       miscFreeformCheckedIds.clear();
     }
