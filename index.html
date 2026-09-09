@@ -110,7 +110,7 @@ textarea{min-height:50px;resize:vertical;}
     <div class="row" style="gap:6px;align-items:center">
       <button class="ghost small" id="undoBtn" title="復原上一步" disabled>↩️</button>
       <button class="ghost small" id="redoBtn" title="取消復原（重做）" disabled>↪️</button>
-      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v48</span></h1>
+      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v49</span></h1>
     </div>
     <div class="row" style="gap:6px;align-items:center">
       <select id="timeStepSelect" style="font-size:11px;padding:3px 6px;width:auto">
@@ -4008,6 +4008,24 @@ function renderSchedule(){
   document.querySelectorAll('[data-duty-change]').forEach(b=>{
     b.onclick=()=>openDutyChangeModal(b.dataset.dutyChange);
   });
+  document.querySelectorAll('[data-edit-misc-preset]').forEach(b=>{
+    b.onclick=()=>{
+      const idx = state.miscPresets.findIndex(p=>p.role===b.dataset.editMiscPreset);
+      if(idx>-1) openMiscPresetModal(idx);
+      else showAlert('找不到這個項目的常用設定（可能已被刪除）。');
+    };
+  });
+  document.querySelectorAll('[data-del-misc-preset]').forEach(b=>{
+    b.onclick=()=>{
+      const role = b.dataset.delMiscPreset;
+      showConfirm(`確定要刪除常用項目「${role}」嗎？已經存在的每日勤務紀錄不會被刪除，但之後不會再自動排入（若是固定項目），也不會再套用駕照/專長等資格要求判斷。`, ()=>{
+        state.miscPresets = state.miscPresets.filter(p=>p.role!==role);
+        saveState();
+        showAlert(`已刪除「${role}」。`);
+        render();
+      });
+    };
+  });
   document.getElementById('copyDayBtn').onclick=()=>{
     const from=document.getElementById('copyFromDate').value;
     const to=document.getElementById('copyToDate').value;
@@ -4267,7 +4285,7 @@ function wireScheduleCardsDrag(){
 }
 function renderMiscDutyCard(role, entries, preset, dragIdx){
   const title = `<span data-drag-handle style="cursor:grab;padding-right:6px;color:var(--dim)">⠿</span>🗂 ${esc(role)}`;
-  const extraButtons = preset? `<label style="display:flex;align-items:center;gap:3px;font-size:11px"><input type="checkbox" class="card-exclude-cb" data-exclude-kind="misc" data-exclude-id="${esc(role)}" style="width:auto" ${preset.excludeFromExport?'checked':''}>不匯出</label>` : '';
+  const extraButtons = preset? `<label style="display:flex;align-items:center;gap:3px;font-size:11px"><input type="checkbox" class="card-exclude-cb" data-exclude-kind="misc" data-exclude-id="${esc(role)}" style="width:auto" ${preset.excludeFromExport?'checked':''}>不匯出</label><button class="ghost small" data-edit-misc-preset="${esc(role)}">設定</button><button class="ghost small danger" data-del-misc-preset="${esc(role)}">刪除此項目</button>` : '';
   const inner = entries.map(m=>{
     if(m.id===miscInlineEditId) return miscEntryEditorHTML(m);
     const issues = validateMiscEntry(m);
