@@ -127,7 +127,7 @@ textarea{min-height:50px;resize:vertical;}
       <button class="ghost small" id="undoBtn" title="復原上一步" disabled>↩️</button>
       <button class="ghost small" id="redoBtn" title="取消復原（重做）" disabled>↪️</button>
       <button class="ghost small" id="dayResetBtn" title="還原這一天">♻️</button>
-      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v69</span></h1>
+      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v70</span></h1>
     </div>
     <div class="row" style="gap:6px;align-items:center">
       <select id="timeStepSelect" style="font-size:11px;padding:3px 6px;width:auto">
@@ -348,10 +348,10 @@ function combinedOrderList(){
 }
 /* preset quick-add templates for 其他勤務 (misc duty) with usual times, per unit SOP */
 const MISC_PRESETS=[
-  {role:'採買',times:[{start:'05:30',end:'08:00'}],roles:['駕駛','車長'],requiredLicenses:[],requiredMedCert:false,requiredSkills:[]},
+  {role:'採買',times:[{start:'05:30',end:'08:00'}],roles:['駕駛','車長'],requiredLicenses:['小型車'],requiredMedCert:false,requiredSkills:[],chiefRequiredLicenses:[],chiefRequiredMedCert:false,chiefRequiredSkills:[]},
   {role:'愛心便當',times:[{start:'16:00',end:'18:00'}],roles:['駕駛','車長'],requiredLicenses:[],requiredMedCert:false,requiredSkills:[]},
   {role:'消防車',times:[{start:'06:00',end:'08:00'}],roles:['駕駛','車長'],requiredLicenses:['大型車','大客車'],requiredMedCert:false,requiredSkills:[]},
-  {role:'救護車',times:[{start:'06:30',end:'06:30'}],roles:['駕駛','車長'],requiredLicenses:[],requiredMedCert:true,requiredSkills:[]},
+  {role:'救護車',times:[{start:'06:30',end:'06:30'}],roles:['駕駛','車長'],requiredLicenses:['小型車'],requiredMedCert:true,requiredSkills:[],chiefRequiredLicenses:[],chiefRequiredMedCert:true,chiefRequiredSkills:[]},
   {role:'技工',times:[{start:'06:30',end:'07:30'}],roles:null,requiredLicenses:[],requiredMedCert:false,requiredSkills:[]},
   {role:'話務',times:[{start:'06:30',end:'07:30'}],roles:['話務(需小型車以上駕照)'],requiredLicenses:[],requiredMedCert:false,requiredSkills:[]},
   {role:'督伙',times:[{start:'04:30',end:'20:00'}],roles:null,requiredLicenses:[],requiredMedCert:false,requiredSkills:[]},
@@ -735,6 +735,18 @@ const STANDBY_DEFAULTS = {startTime:'14:00', leaveStartTime:'16:00', endTime:'07
 if(!state.standbySubRoles) state.standbySubRoles = ['日督','夜督','話務','伙房'];
 /* user-draggable order of the preplan drawer entries */
 if(!state.preplanOrder) state.preplanOrder = PREPLAN_TYPES.map(t=>t.key);
+/* last-used times / rest-until values per preplan type, so recurring duties
+   don't have to be re-typed every single day — the editor opens pre-filled
+   with whatever was entered last time for that duty */
+if(!state.preplanDefaults) state.preplanDefaults = {};
+function preplanDefault(key, field, fallback){
+  const d = state.preplanDefaults[key];
+  return (d && d[field]!==undefined && d[field]!=='') ? d[field] : fallback;
+}
+function rememberPreplanDefaults(key, fields){
+  if(!state.preplanDefaults[key]) state.preplanDefaults[key]={};
+  Object.entries(fields).forEach(([k,v])=>{ if(v!==undefined && v!=='') state.preplanDefaults[key][k]=v; });
+}
 function orderedPreplanTypes(){
   const order = state.preplanOrder||[];
   const known = PREPLAN_TYPES.filter(t=>order.includes(t.key)).sort((a,b)=>order.indexOf(a.key)-order.indexOf(b.key));
@@ -1648,11 +1660,14 @@ function openPreplanDrawer(){
       <div id="drawerList">
       ${orderedPreplanTypes().map((t,i)=>{
         const store=state.preplan[t.key]||{};
+        /* count only days that actually hold something — an entry can exist
+           but be empty (e.g. everything cleared out of it), and counting
+           bare keys made "清空本月" look like it hadn't worked */
         const planned = t.key==='leave'
           ? Object.values(store).reduce((n,r)=>n+((r.dates||[]).length),0)
-          : Object.keys(store).length;
-        return `<div class="drawer-item" draggable="true" data-pp-idx="${i}" data-preplan-open="${t.key}">
-          <span data-pp-handle style="cursor:grab;color:var(--dim);padding-right:2px">⠿</span>
+          : Object.keys(store).filter(d=>preplanCellMark(t, store[d])).length;
+        return `<div class="drawer-item" data-pp-idx="${i}" data-preplan-open="${t.key}">
+          <span data-pp-handle style="cursor:grab;color:var(--dim);padding-right:2px;touch-action:none">⠿</span>
           <span style="font-size:18px">${t.icon}</span>
           <span class="grow">${t.name}<br><span class="hint">${planned? (t.key==='leave'? `已排 ${planned} 人日`:`已預排 ${planned} 天`):'尚未預排'}</span></span>
           <span style="color:var(--dim)">›</span>
@@ -1666,19 +1681,52 @@ function openPreplanDrawer(){
         close(); openPreplanCalendar(b.dataset.preplanOpen);
       };
     });
-    // drag to reorder
-    let dragIdx=null;
-    drawer.querySelectorAll('[data-pp-idx]').forEach(el=>{
-      el.addEventListener('dragstart', e=>{ dragIdx=Number(el.dataset.ppIdx); e.dataTransfer.effectAllowed='move'; });
-      el.addEventListener('dragover', e=>{ e.preventDefault(); });
-      el.addEventListener('drop', e=>{
+    /* reorder by dragging the ⠿ handle. HTML5 drag-and-drop doesn't fire on
+       touch screens, so this tracks touch/pointer movement directly and
+       works out which row the finger is currently over. */
+    let dragIdx=null, dragEl=null;
+    const rowAt=(clientY)=>{
+      let found=null;
+      drawer.querySelectorAll('[data-pp-idx]').forEach(el=>{
+        const r=el.getBoundingClientRect();
+        if(clientY>=r.top && clientY<=r.bottom) found=el;
+      });
+      return found;
+    };
+    const endDrag=(clientY)=>{
+      if(dragIdx===null) return;
+      if(dragEl) dragEl.style.opacity='';
+      const target=rowAt(clientY);
+      const to=target? Number(target.dataset.ppIdx) : null;
+      const from=dragIdx;
+      dragIdx=null; dragEl=null;
+      if(to===null || to===from) { drawDrawer(); return; }
+      const order=orderedPreplanTypes().map(t=>t.key);
+      const [moved]=order.splice(from,1);
+      order.splice(to,0,moved);
+      state.preplanOrder=order; saveState(); drawDrawer();
+    };
+    drawer.querySelectorAll('[data-pp-handle]').forEach(h=>{
+      const row=h.closest('[data-pp-idx]');
+      const start=(clientY)=>{ dragIdx=Number(row.dataset.ppIdx); dragEl=row; row.style.opacity='.5'; };
+      h.addEventListener('touchstart', e=>{ e.preventDefault(); e.stopPropagation(); start(e.touches[0].clientY); }, {passive:false});
+      h.addEventListener('touchmove', e=>{
+        if(dragIdx===null) return;
         e.preventDefault();
-        const to=Number(el.dataset.ppIdx);
-        if(dragIdx===null || dragIdx===to) return;
-        const order=orderedPreplanTypes().map(t=>t.key);
-        const [moved]=order.splice(dragIdx,1);
-        order.splice(to,0,moved);
-        state.preplanOrder=order; saveState(); drawDrawer();
+        const over=rowAt(e.touches[0].clientY);
+        drawer.querySelectorAll('[data-pp-idx]').forEach(el=>el.style.borderColor='');
+        if(over && Number(over.dataset.ppIdx)!==dragIdx) over.style.borderColor='var(--accent)';
+      }, {passive:false});
+      h.addEventListener('touchend', e=>{ e.preventDefault(); endDrag(e.changedTouches[0].clientY); }, {passive:false});
+      h.addEventListener('mousedown', e=>{
+        e.preventDefault(); e.stopPropagation(); start(e.clientY);
+        const mm=ev=>{
+          const over=rowAt(ev.clientY);
+          drawer.querySelectorAll('[data-pp-idx]').forEach(el=>el.style.borderColor='');
+          if(over && Number(over.dataset.ppIdx)!==dragIdx) over.style.borderColor='var(--accent)';
+        };
+        const mu=ev=>{ document.removeEventListener('mousemove',mm); document.removeEventListener('mouseup',mu); endDrag(ev.clientY); };
+        document.addEventListener('mousemove',mm); document.addEventListener('mouseup',mu);
       });
     });
   };
@@ -1768,7 +1816,7 @@ function openPreplanCalendar(key){
         <div class="cal-day">${d}</div><div class="cal-mark">${esc(mark)}</div>
       </div>`);
     }
-    const plannedCount=Object.keys(state.preplan[key]||{}).filter(d=>d.startsWith(ym)).length;
+    const plannedCount=Object.keys(state.preplan[key]||{}).filter(d=>d.startsWith(ym) && preplanCellMark(type, state.preplan[key][d])).length;
     modal.innerHTML=`
       <div class="section-title"><h2 style="margin:0">${type.icon} ${type.name}</h2><button class="ghost small" id="calClose">關閉</button></div>
       <div class="hint" style="margin-bottom:8px">${type.hint}</div>
@@ -1816,6 +1864,11 @@ function openPreplanCalendar(key){
     document.getElementById('calClearMonth').onclick=()=>{
       showConfirm(`確定要清空「${type.name}」本月的所有預排嗎？（只清預排，已經匯入到班表的內容不受影響）`, ()=>{
         Object.keys(state.preplan[key]||{}).filter(d=>d.startsWith(ym)).forEach(d=>delete state.preplan[key][d]);
+        // also drop any empty leftovers from other months so the drawer's
+        // "已預排 N 天" can't keep counting entries that show nothing
+        Object.keys(state.preplan[key]||{}).forEach(d=>{
+          if(!preplanCellMark(type, state.preplan[key][d])) delete state.preplan[key][d];
+        });
         saveState(); draw();
       });
     };
@@ -1967,7 +2020,7 @@ function openStandbyPeoplePicker(plan, onDone){
   };
   document.getElementById('spAll').onclick=()=>modal.querySelectorAll('.sp-person').forEach(cb=>{ if(cb.closest('label').style.display!=='none') cb.checked=true; });
   document.getElementById('spNone').onclick=()=>modal.querySelectorAll('.sp-person').forEach(cb=>cb.checked=false);
-  keepSearchFocusOnPick(document.getElementById('spList'));
+  keepSearchFocusOnPick(document.getElementById('spList'), document.getElementById('spSearch'));
   document.getElementById('spSave').onclick=()=>{
     plan.personIds=[...modal.querySelectorAll('.sp-person:checked')].map(cb=>cb.value);
     Object.keys(plan.overrides).forEach(pid=>{ if(!plan.personIds.includes(pid)) delete plan.overrides[pid]; });
@@ -2075,7 +2128,7 @@ function openStandbySubDutyEditor(plan, role, d, onDone){
     const term=se.value.trim();
     le.querySelectorAll('label').forEach(l=>{ l.style.display=(!term||l.textContent.includes(term))?'flex':'none'; });
   };
-  keepSearchFocusOnPick(le);
+  keepSearchFocusOnPick(le, se);
   document.getElementById('sdClear').onclick=()=>{
     if(plan.subDuties[role]) delete plan.subDuties[role][d];
     modal.remove(); onDone();
@@ -2147,8 +2200,8 @@ function openPreplanDayEditor(key, date, onSaved){
     </div>`;
   let body='';
   if(type.mode==='people'){
-    body = (type.editableTime? timeRow('ppT', plan.start||t0.start, plan.end||t0.end) : '')
-      + restRow('ppRest', plan.restUntil||(preset&&preset.restUntil)||'')
+    body = (type.editableTime? timeRow('ppT', plan.start||preplanDefault(key,'start',t0.start), plan.end||preplanDefault(key,'end',t0.end)) : '')
+      + restRow('ppRest', plan.restUntil||preplanDefault(key,'rest',(preset&&preset.restUntil)||''))
       + supportRow('ppSupport', plan.support)
       + searchBlock('ppSearch')
       + `<div class="row wrap" style="margin-bottom:6px">
@@ -2157,8 +2210,8 @@ function openPreplanDayEditor(key, date, onSaved){
          </div>`
       + listBox(checkRows(plan.personIds||[], 'pp-person'), 'ppList');
   } else if(type.mode==='roles'){
-    body = (type.editableTime? timeRow('ppT', plan.start||t0.start, plan.end||t0.end) : '')
-      + restRow('ppRest', plan.restUntil||(preset&&preset.restUntil)||'')
+    body = (type.editableTime? timeRow('ppT', plan.start||preplanDefault(key,'start',t0.start), plan.end||preplanDefault(key,'end',t0.end)) : '')
+      + restRow('ppRest', plan.restUntil||preplanDefault(key,'rest',(preset&&preset.restUntil)||''))
       + supportRow('ppSupport', plan.support)
       + type.roles.map((r,i)=>
           `<div class="hint" style="margin:6px 0 2px"><b>${esc(r)}</b></div>`
@@ -2169,13 +2222,13 @@ function openPreplanDayEditor(key, date, onSaved){
     const times = preset? presetTimes(preset) : [];
     const dt = times[0]||{start:'',end:''}, nt = times[1]||times[0]||{start:'',end:''};
     body = `<div class="hint" style="margin:6px 0 2px"><b>日班</b></div>`
-      + timeRow('ppDayT', plan.dayStart||dt.start, plan.dayEnd||dt.end)
-      + restRow('ppDayRest', plan.dayRestUntil||'', '日班補休至（選填）')
+      + timeRow('ppDayT', plan.dayStart||preplanDefault(key,'dayStart',dt.start), plan.dayEnd||preplanDefault(key,'dayEnd',dt.end))
+      + restRow('ppDayRest', plan.dayRestUntil||preplanDefault(key,'dayRest',''), '日班補休至（選填）')
       + searchBlock('ppSearchD')
       + listBox(radioRows(plan.dayPersonId||'', 'pp-day', 'ppday'), 'ppListD')
       + `<div class="divider"></div><div class="hint" style="margin:6px 0 2px"><b>夜班</b></div>`
-      + timeRow('ppNightT', plan.nightStart||nt.start, plan.nightEnd||nt.end)
-      + restRow('ppNightRest', plan.nightRestUntil||'', '夜班補休至（選填）')
+      + timeRow('ppNightT', plan.nightStart||preplanDefault(key,'nightStart',nt.start), plan.nightEnd||preplanDefault(key,'nightEnd',nt.end))
+      + restRow('ppNightRest', plan.nightRestUntil||preplanDefault(key,'nightRest',''), '夜班補休至（選填）')
       + searchBlock('ppSearchN')
       + listBox(radioRows(plan.nightPersonId||'', 'pp-night', 'ppnight'), 'ppListN')
       + supportRow('ppSupport', plan.support);
@@ -2192,7 +2245,7 @@ function openPreplanDayEditor(key, date, onSaved){
             </label>
           </div>
           <div class="pp-slot-body" data-slot-body="${i}" style="display:${on?'block':'none'}">
-            ${restRow('ppSlotRest'+i, cfg.restUntil||'')}
+            ${restRow('ppSlotRest'+i, cfg.restUntil||preplanDefault(key,'slotRest'+i,''))}
             ${searchBlock('ppSearchS'+i)}
             ${listBox(radioRows(cfg.personId||'', 'pp-slot'+i, 'ppslot'+i), 'ppListS'+i)}
           </div>
@@ -2221,7 +2274,7 @@ function openPreplanDayEditor(key, date, onSaved){
       const term=se.value.trim();
       le.querySelectorAll('label').forEach(l=>{ l.style.display=(!term||l.textContent.includes(term))?'flex':'none'; });
     };
-    keepSearchFocusOnPick(le);
+    keepSearchFocusOnPick(le, se);
   };
   if(type.mode==='people'){
     wireSearch('ppSearch','ppList');
@@ -2294,7 +2347,22 @@ function openPreplanDayEditor(key, date, onSaved){
     openPreplanCopyModal(key, date, ()=>{ close(); if(onSaved) onSaved(); });
   };
   document.getElementById('ppSave').onclick=()=>{
-    setPreplan(key, date, collect());
+    const value=collect();
+    setPreplan(key, date, value);
+    // remember the shape (times / rest) so the next day opens pre-filled
+    if(value){
+      if(type.mode==='dayNight'){
+        rememberPreplanDefaults(key,{dayStart:value.dayStart,dayEnd:value.dayEnd,
+          nightStart:value.nightStart,nightEnd:value.nightEnd,
+          dayRest:value.dayRestUntil,nightRest:value.nightRestUntil});
+      } else if(type.mode==='fixedSlots'){
+        const f={};
+        Object.entries(value.slots||{}).forEach(([i,cfg])=>{ if(cfg && cfg.restUntil) f['slotRest'+i]=cfg.restUntil; });
+        rememberPreplanDefaults(key,f);
+      } else {
+        rememberPreplanDefaults(key,{start:value.start,end:value.end,rest:value.restUntil});
+      }
+    }
     saveState(); close(); if(onSaved) onSaved();
   };
 }
@@ -2392,7 +2460,7 @@ function openLeaveTableEditor(date, onSaved){
       const term=se.value.trim();
       le.querySelectorAll('label').forEach(l=>{ l.style.display=(!term||l.textContent.includes(term))?'flex':'none'; });
     };
-    keepSearchFocusOnPick(le);
+    keepSearchFocusOnPick(le, se);
     document.getElementById('ltImport').onclick=()=>{
       const st=state.preplan.leave||{};
       const totalDays=Object.values(st).reduce((n,r)=>n+((r.dates||[]).filter(d=>d.startsWith(ym)).length),0);
@@ -2626,6 +2694,86 @@ function openDayResetModal(){
   };
 }
 document.getElementById('exportBtn').addEventListener('click', openExportModal);
+/* ---------------- 分工匯出/匯入 ----------------
+   Lets the roster be split across several people: export a date range as a
+   self-contained packet, hand it to another 承辦人 to fill in, then merge
+   their returned file back without disturbing anything outside that range.
+   The packet carries the roster and duty definitions read-only (so the
+   other person sees the same names/rules) plus the editable per-day data. */
+const SHARE_FORMAT='drs-share-v1';
+function buildSharePacket(fromDate, toDate, opts){
+  opts = opts || {};
+  const dates = dateRangeList(fromDate, toDate);
+  const days = {};
+  dates.forEach(d=>{
+    days[d] = {
+      assign: opts.includeAssign===false? undefined : (state.assign[d]||undefined),
+      misc: opts.includeMisc===false? undefined : (state.misc[d]||undefined),
+      unavail: opts.includeUnavail===false? undefined : (state.unavail[d]||undefined),
+      dailyShiftOverrides: state.dailyShiftOverrides[d]||undefined,
+      longTermSuspensions: state.longTermSuspensions[d]||undefined,
+      dutyChanges: state.dutyChanges[d]||undefined,
+    };
+  });
+  return {
+    format: SHARE_FORMAT,
+    createdAt: new Date().toISOString(),
+    range: {from: fromDate, to: toDate},
+    note: opts.note||'',
+    // reference data so the other person's app shows the same names and rules
+    personnel: state.personnel,
+    categories: state.categories,
+    categoryShiftDefaults: state.categoryShiftDefaults,
+    miscPresets: state.miscPresets,
+    skillOptions: state.skillOptions,
+    days,
+  };
+}
+/* what a packet would change if merged — shown for confirmation before
+   anything is written, so an incoming file can never silently clobber work */
+function summarizeSharePacket(packet){
+  if(!packet || packet.format!==SHARE_FORMAT) return {valid:false, reason:'這不是班表分工檔（格式不符）'};
+  if(!packet.range || !packet.range.from || !packet.range.to) return {valid:false, reason:'檔案缺少日期範圍'};
+  const dates = Object.keys(packet.days||{}).sort();
+  if(!dates.length) return {valid:false, reason:'檔案沒有任何日期資料'};
+  let assignDays=0, miscEntries=0, unavailEntries=0, overrideDays=0;
+  dates.forEach(d=>{
+    const day=packet.days[d]||{};
+    if(day.assign && Object.keys(day.assign).length) assignDays++;
+    if(day.misc) miscEntries+=day.misc.length;
+    if(day.unavail) unavailEntries+=day.unavail.length;
+    if(day.dailyShiftOverrides) overrideDays++;
+  });
+  // people in the packet who don't exist locally (renamed/added elsewhere)
+  const localIds=new Set(state.personnel.map(p=>p.id));
+  const unknown=(packet.personnel||[]).filter(p=>!localIds.has(p.id));
+  return {valid:true, dates, from:dates[0], to:dates[dates.length-1],
+    assignDays, miscEntries, unavailEntries, overrideDays,
+    unknownPeople:unknown, note:packet.note||'', createdAt:packet.createdAt};
+}
+/* merge a packet in. Only the dates it covers are touched, and only the
+   sections it actually carries — a packet exported without 事故 leaves the
+   local 事故 alone. Unknown personnel are added so their assignments
+   resolve to a name instead of a dangling id. */
+function mergeSharePacket(packet, opts){
+  opts = opts||{};
+  const s = summarizeSharePacket(packet);
+  if(!s.valid) return {ok:false, reason:s.reason};
+  (packet.personnel||[]).forEach(p=>{
+    if(!state.personnel.some(x=>x.id===p.id)) state.personnel.push(JSON.parse(JSON.stringify(p)));
+  });
+  let touched=0;
+  s.dates.forEach(d=>{
+    const day=packet.days[d]||{};
+    if(opts.assign!==false && day.assign!==undefined){ state.assign[d]=JSON.parse(JSON.stringify(day.assign)); touched++; }
+    if(opts.misc!==false && day.misc!==undefined){ state.misc[d]=JSON.parse(JSON.stringify(day.misc)); touched++; }
+    if(opts.unavail!==false && day.unavail!==undefined){ state.unavail[d]=JSON.parse(JSON.stringify(day.unavail)); touched++; }
+    if(day.dailyShiftOverrides!==undefined){ state.dailyShiftOverrides[d]=JSON.parse(JSON.stringify(day.dailyShiftOverrides)); }
+    if(day.longTermSuspensions!==undefined){ state.longTermSuspensions[d]=JSON.parse(JSON.stringify(day.longTermSuspensions)); }
+    if(day.dutyChanges!==undefined){ state.dutyChanges[d]=JSON.parse(JSON.stringify(day.dutyChanges)); }
+  });
+  return {ok:true, dates:s.dates, touched, addedPeople:s.unknownPeople.length};
+}
 function openExportModal(){
   const dataStr = JSON.stringify(state, null, 2);
   const fileName = 'duty-roster-backup-'+todayStr()+'.json';
@@ -4809,25 +4957,29 @@ function esc(s){ return (s||'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;',
    re-tapping the search field every time. Suppressing the default mousedown
    on the list keeps focus (and the keyboard) on the search input; the click
    still reaches the label and toggles the checkbox as usual. */
-function keepSearchFocusOnPick(listEl){
+/* On mobile, tapping a checkbox in a filtered list blurs the search box and
+   the keyboard slides away — so picking several people while filtering means
+   re-tapping the search field every time. Earlier this suppressed touchstart
+   outright, which also killed scrolling; instead let every gesture through
+   untouched and simply restore focus to the search box after a pick, which
+   keeps the keyboard up without interfering with scrolling or tapping. */
+function keepSearchFocusOnPick(listEl, searchEl){
   if(!listEl) return;
+  const findSearch=()=>searchEl || (listEl.closest('div,form')||document).querySelector('input[type="text"]');
   listEl.addEventListener('mousedown', e=>{
+    // desktop: preventing the default here stops focus leaving the input,
+    // and the click still reaches the label so the checkbox toggles
     if(e.target.closest('label')) e.preventDefault();
   });
-  listEl.addEventListener('touchstart', e=>{
-    if(e.target.closest('label')) e.preventDefault();
-  }, {passive:false});
-  // touchstart's preventDefault also suppresses the synthesised click, so
-  // drive the toggle ourselves for touch
-  listEl.addEventListener('touchend', e=>{
-    const label = e.target.closest('label');
-    if(!label) return;
-    const cb = label.querySelector('input[type="checkbox"]');
-    if(!cb) return;
-    e.preventDefault();
-    cb.checked = !cb.checked;
-    cb.dispatchEvent(new Event('change', {bubbles:true}));
-  }, {passive:false});
+  listEl.addEventListener('change', e=>{
+    if(!e.target.matches('input[type="checkbox"],input[type="radio"]')) return;
+    const se=findSearch();
+    if(se && document.activeElement!==se && se.value!==undefined && se.dataset.keepFocus!=='off'){
+      // only refocus if the user was actually filtering — otherwise popping
+      // the keyboard open unprompted is worse than losing it
+      if(se.value.trim()) se.focus({preventScroll:true});
+    }
+  });
 }
 /* shared "篩選出 X / 共 Y 人・N官M士K兵" summary line — every person-list
    table in the app (roster, checkbox pickers, on-duty/away lists, etc.)
@@ -5396,12 +5548,16 @@ function openDutyChangeModal(personId){
 /* one-glance counts for the whole day, so opening 排班 immediately shows
    what still needs work instead of requiring each card to be expanded */
 function dayProgressSummary(date){
-  let catFilled=0, catTotal=0;
+  /* 衛哨 and non-sentry categories (打飯班 etc.) are counted separately —
+     lumping them together made "0/29" ambiguous about what was actually
+     short-staffed */
+  let catFilled=0, catTotal=0, otherCatFilled=0, otherCatTotal=0;
   orderedCategories().forEach(cat=>{
     const dayAssign=(state.assign[date]||{})[cat.id]||{};
     effectiveShifts(cat, date).forEach(s=>{
-      catTotal += s.count;
-      catFilled += (dayAssign[s.id]||[]).filter(Boolean).length;
+      const filled=(dayAssign[s.id]||[]).filter(Boolean).length;
+      if(cat.isSentry){ catTotal += s.count; catFilled += filled; }
+      else { otherCatTotal += s.count; otherCatFilled += filled; }
     });
   });
   let miscFilled=0, miscTotal=0;
@@ -5416,17 +5572,20 @@ function dayProgressSummary(date){
     }
   });
   const pendingChanges = (state.dutyChanges[date]||[]).filter(ch=>ch.status!=='filled').length;
-  return {catFilled, catTotal, miscFilled, miscTotal, pendingChanges};
+  return {catFilled, catTotal, otherCatFilled, otherCatTotal, miscFilled, miscTotal, pendingChanges};
 }
 function dayProgressBarHTML(){
   const s = dayProgressSummary(currentDate);
-  const catShort = s.catFilled<s.catTotal, miscShort = s.miscFilled<s.miscTotal;
-  const allDone = !catShort && !miscShort && !s.pendingChanges;
+  const catShort = s.catFilled<s.catTotal;
+  const otherShort = s.otherCatFilled<s.otherCatTotal;
+  const miscShort = s.miscFilled<s.miscTotal;
+  const allDone = !catShort && !otherShort && !miscShort && !s.pendingChanges;
   return `<div class="card" style="padding:8px 12px">
     <div class="row wrap" style="gap:10px;align-items:center">
       <span style="font-size:13px;font-weight:600">${allDone? '✅ 今日排班已完成' : '📋 今日進度'}</span>
-      <span class="${catShort?'warn':'muted'}" style="font-size:12px">衛哨 ${s.catFilled}/${s.catTotal}${catShort?' ⚠️':''}</span>
-      <span class="${miscShort?'warn':'muted'}" style="font-size:12px">其他勤務 ${s.miscFilled}/${s.miscTotal}${miscShort?' ⚠️':''}</span>
+      ${s.catTotal? `<span class="${catShort?'warn':'muted'}" style="font-size:12px">衛哨 ${s.catFilled}/${s.catTotal}${catShort?' ⚠️':''}</span>`:''}
+      ${s.otherCatTotal? `<span class="${otherShort?'warn':'muted'}" style="font-size:12px">打飯班等 ${s.otherCatFilled}/${s.otherCatTotal}${otherShort?' ⚠️':''}</span>`:''}
+      ${s.miscTotal? `<span class="${miscShort?'warn':'muted'}" style="font-size:12px">其他勤務 ${s.miscFilled}/${s.miscTotal}${miscShort?' ⚠️':''}</span>`:''}
       ${s.pendingChanges? `<span class="warn" style="font-size:12px">未遞補異動 ${s.pendingChanges} ⚠️</span>`:''}
     </div>
   </div>`;
