@@ -111,7 +111,7 @@ textarea{min-height:50px;resize:vertical;}
       <button class="ghost small" id="undoBtn" title="復原上一步" disabled>↩️</button>
       <button class="ghost small" id="redoBtn" title="取消復原（重做）" disabled>↪️</button>
       <button class="ghost small" id="dayResetBtn" title="還原這一天">♻️</button>
-      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v57</span></h1>
+      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v58</span></h1>
     </div>
     <div class="row" style="gap:6px;align-items:center">
       <select id="timeStepSelect" style="font-size:11px;padding:3px 6px;width:auto">
@@ -379,25 +379,55 @@ function requirementOverlap(presetA, presetB){
 /* true if personId is already on a DIFFERENT 全天待命 duty today whose
    qualification requirements overlap with targetPreset — meaning they
    need to stay reachable for that standby duty and shouldn't be pulled
-   into this one too, regardless of what time targetPreset is scheduled */
+   into this one too, regardless of what time targetPreset is scheduled.
+   Only applies to the "flexible" standby type — "exclusive" is handled
+   separately by isPersonOnExclusiveStandby, which blocks EVERYTHING else
+   rather than just same-skill conflicts. */
 function personHasConflictingStandby(personId, date, targetPreset, excludeMiscId){
   if(!targetPreset) return false;
   return (state.misc[date]||[]).some(m=>{
     if(m.id===excludeMiscId) return false;
     if(!(m.personIds||[]).includes(personId)) return false;
     const preset = presetForEntry(m);
-    if(!preset || !preset.standbyAllDay || preset.role===targetPreset.role) return false;
+    if(!preset || preset.standbyMode!=='flexible' || preset.role===targetPreset.role) return false;
     return requirementOverlap(preset, targetPreset);
+  });
+}
+/* true if personId is on an "exclusive" 全天待命 duty today (e.g. 值班
+   that must be reachable at all times, not just free of same-skill
+   conflicts) — this blocks them from EVERY other assignment that day,
+   both 衛哨 categories and other 其他勤務 items, not just ones needing
+   the same qualification. excludeMiscId skips the standby entry itself
+   so checking a person's eligibility for their OWN standby slot doesn't
+   self-block. */
+function isPersonOnExclusiveStandby(personId, date, excludeMiscId){
+  return (state.misc[date]||[]).some(m=>{
+    if(m.id===excludeMiscId) return false;
+    if(!(m.personIds||[]).includes(personId)) return false;
+    const preset = presetForEntry(m);
+    return preset && preset.standbyMode==='exclusive';
   });
 }
 /* driver requirement checks, data-driven from the preset's configured
    requiredLicenses/requiredMedCert/requiredSkills — returns a list of
    human-readable reasons the given person fails to qualify (empty = OK) */
+/* 小型車 < 大型車 < 大客車 — a bigger license also qualifies for anything a
+   smaller one would (someone with 大客車 can obviously also drive a
+   小型車), so every license check in the app compares against this
+   hierarchy instead of requiring an exact match */
+const LICENSE_HIERARCHY = ['小型車','大型車','大客車'];
+function licenseCovers(personLicense, requiredLicense){
+  if(!personLicense) return false;
+  const pIdx = LICENSE_HIERARCHY.indexOf(personLicense);
+  const rIdx = LICENSE_HIERARCHY.indexOf(requiredLicense);
+  if(pIdx===-1 || rIdx===-1) return personLicense===requiredLicense;
+  return pIdx>=rIdx;
+}
 function driverQualificationIssues(person, preset){
   if(!preset) return [];
   const issues=[];
   const reqLic=preset.requiredLicenses||[];
-  if(reqLic.length && (!person.license || !reqLic.includes(person.license))) issues.push(`需持有${reqLic.join('或')}駕照`);
+  if(reqLic.length && !reqLic.some(l=>licenseCovers(person.license, l))) issues.push(`需持有${reqLic.join('或')}駕照`);
   if(preset.requiredMedCert && !person.medCert) issues.push('需具備EMT或醫生證書');
   (preset.requiredSkills||[]).forEach(sk=>{
     if(!(person.skills||[]).includes(sk)) issues.push(`需具備${sk}專長`);
@@ -512,7 +542,7 @@ state.miscPresets.forEach((p,i)=>{
   if(p.excludeFromExport===undefined) p.excludeFromExport=false;
   if(p.isSentry===undefined) p.isSentry=false;
   if(p.isAllDayAway===undefined) p.isAllDayAway=false;
-  if(p.standbyAllDay===undefined) p.standbyAllDay=false;
+  if(p.standbyMode===undefined) p.standbyMode = p.standbyAllDay? 'flexible' : 'off';
 });
 let currentTab='people';
 /* the currently-viewed date persists across reloads (separate from the
@@ -1095,7 +1125,8 @@ function autoAssignDay(date){
       if(!arr[idx]){
         const rawCandidatesAll = state.personnel.filter(p=>
           !arr.includes(p.id) && !rankExcludedFromCategory(p.rank,cat) &&
-          !isPersonUnavailable(p.id, date, sMin, eMin, {catId:cat.id, shiftId:s.id})
+          !isPersonUnavailable(p.id, date, sMin, eMin, {catId:cat.id, shiftId:s.id}) &&
+          !isPersonOnExclusiveStandby(p.id, date)
         );
         const rawCandidates = ncoStillNeeded>0
           ? rawCandidatesAll.filter(p=>['士官','軍官'].includes(rankCategory(p.rank)))
@@ -1189,7 +1220,8 @@ function autoAssignMiscForDate(date){
         const candidates = state.personnel.filter(p=>
           !(sMin!==null && eMinRaw!==null && isPersonUnavailable(p.id, date, sMin, wrapEndMin(sMin, eMinRaw))) &&
           driverQualificationIssues(p, presetForSort).length===0 &&
-          !personHasConflictingStandby(p.id, date, presetForSort, entry.id)
+          !personHasConflictingStandby(p.id, date, presetForSort, entry.id) &&
+          !isPersonOnExclusiveStandby(p.id, date, entry.id)
         );
         if(candidates.length){
           candidates.sort((a,b)=>{
@@ -1226,7 +1258,8 @@ function autoAssignMiscForDate(date){
       const candidates = state.personnel.filter(p=>
         !entry.personIds.includes(p.id) && eligibleFn(p) &&
         !(sMin!==null && eMinRaw!==null && isPersonUnavailable(p.id, date, sMin, wrapEndMin(sMin, eMinRaw))) &&
-        !personHasConflictingStandby(p.id, date, preset, entry.id)
+        !personHasConflictingStandby(p.id, date, preset, entry.id) &&
+        !isPersonOnExclusiveStandby(p.id, date, entry.id)
       );
       if(candidates.length){
         candidates.sort((a,b)=>rankPriorityIndex(a.rank,preset)-rankPriorityIndex(b.rank,preset) || groupIndex(a.group)-groupIndex(b.group));
@@ -1407,8 +1440,8 @@ function openDayResetModal(){
       <button class="ghost" id="dayResetPeople" style="width:100%;margin-bottom:8px;text-align:left">
         <b>清空人員資訊（班表不動）</b><br><span class="hint">清空這天的事故/休假登記、衛哨已排人員、其他勤務已排人員；班別結構跟其他勤務項目本身都保留。</span>
       </button>
-      <button class="ghost danger" id="dayResetFull" style="width:100%;margin-bottom:8px;text-align:left">
-        <b>完全恢復成新的一天</b><br><span class="hint">連班別的當日專屬設定、其他勤務項目本身都一起清掉，這天變回完全沒被動過的空白日期。</span>
+      <button class="ghost" id="dayResetFull" style="width:100%;margin-bottom:8px;text-align:left">
+        <b style="color:var(--danger)">完全恢復成新的一天</b><br><span class="hint">連班別的當日專屬設定、其他勤務項目本身都一起清掉，這天變回完全沒被動過的空白日期。</span>
       </button>
       <button class="ghost grow" id="dayResetCancel" style="width:100%">取消</button>
     </div>`;
@@ -3512,7 +3545,7 @@ function uaPeopleCheckboxesHTML(groupFilter, date, searchFilter){
    ordinary time-availability issues, so the role-picker list (below) can
    show one clean "🚫不可排（reason・reason）" line per person instead of
    the old select's un-deduplicated, repeated text */
-function roleIneligibilityReasons(person, role, preset, driver, date, s, eRaw){
+function roleIneligibilityReasons(person, role, preset, driver, date, s, eRaw, excludeMiscId){
   const reasons=[];
   if(role==='駕駛'){
     driverQualificationIssues(person, preset).forEach(r=>reasons.push(r));
@@ -3530,6 +3563,8 @@ function roleIneligibilityReasons(person, role, preset, driver, date, s, eRaw){
       unavailabilityReasonsInRange(person.id, date, s, e).forEach(r=>reasons.push(r));
     }
   }
+  if(preset && personHasConflictingStandby(person.id, date, preset, excludeMiscId)) reasons.push('今天已擔任其他全天待命勤務，資格衝突');
+  if(isPersonOnExclusiveStandby(person.id, date, excludeMiscId)) reasons.push('今天已擔任只能待命的勤務，不能再接其他任務');
   return [...new Set(reasons)];
 }
 /* single-person picker rendered as a searchable tap-list — same look as
@@ -4678,7 +4713,7 @@ function assignableOptions(cat, shift, selectedId, slotIdx){
   const s=toMin(shift.start), e0=toMin(shift.end);
   const info = p=>{
     const excluded = rankExcludedFromCategory(p.rank, cat);
-    const unavailable = excluded || isPersonUnavailable(p.id, currentDate, s, wrapEndMin(s, e0), {catId:cat.id, shiftId:shift.id});
+    const unavailable = excluded || isPersonUnavailable(p.id, currentDate, s, wrapEndMin(s, e0), {catId:cat.id, shiftId:shift.id}) || isPersonOnExclusiveStandby(p.id, currentDate);
     return {excluded, unavailable};
   };
   // available people first (in the usual priority/group order), unavailable
@@ -5086,7 +5121,7 @@ let miscEditingId=null;
 let adhocQueryState={time:'10:00',mode:'byRank',officer:0,nco:0,enlisted:0,anyCount:0,skill:'',license:'',needMedCert:false,hasRun:false,results:null};
 function adhocCandidateMatches(p){
   if(adhocQueryState.skill && !(p.skills||[]).includes(adhocQueryState.skill)) return false;
-  if(adhocQueryState.license && p.license!==adhocQueryState.license) return false;
+  if(adhocQueryState.license && !licenseCovers(p.license, adhocQueryState.license)) return false;
   if(adhocQueryState.needMedCert && !p.medCert) return false;
   return true;
 }
@@ -5260,11 +5295,17 @@ function openMiscPresetModal(editIndex){
       </div>
       <div class="hint" style="margin-bottom:8px">勾選後，被排到這個項目的人仍會留在「在勤人員」名單裡（他們有任務在身，只是人在營外），但名單上會加註「🚗營外」標示這個任務（例如整天在外的採買、督伙）。</div>
       <div class="row wrap" style="margin-bottom:8px">
-        <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text)">
-          <input type="checkbox" id="mpStandbyAllDay" style="width:auto" ${existing&&existing.standbyAllDay?'checked':''}> 全天待命（排定時段外仍需保持待命）
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px">
+          <input type="radio" name="mpStandbyMode" value="off" ${(!existing||!existing.standbyMode||existing.standbyMode==='off')?'checked':''} style="width:auto"> 不待命
+        </label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px">
+          <input type="radio" name="mpStandbyMode" value="flexible" ${existing&&existing.standbyMode==='flexible'?'checked':''} style="width:auto"> 待命，但可支援其他勤務
+        </label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px">
+          <input type="radio" name="mpStandbyMode" value="exclusive" ${existing&&existing.standbyMode==='exclusive'?'checked':''} style="width:auto"> 只能待命，不接其他任務
         </label>
       </div>
-      <div class="hint" style="margin-bottom:8px">適用於消防車、救護車這類：雖然只排一段時間（例如08:00-10:30），但當事人整天都要能隨時支援，只是那段時間以外可以順便去站哨或支援別的勤務——唯獨不能同時被排到「另一個也需要駕照/救護證照/專長」的項目，避免真的需要出動時人被卡在別的任務上抽不開身。勾選後，系統排班（含自動補空缺）時會避免把這種衝突排在一起。</div>
+      <div class="hint" style="margin-bottom:8px">適用於消防車、救護車、值班這類：雖然只排一段時間（例如08:00-10:30），但當事人整天都要能隨時支援。「待命，但可支援其他勤務」——那段時間以外可以順便去站哨或支援別的勤務，唯獨不能同時被排到「另一個也需要駕照/救護證照/專長」的項目，避免真的需要出動時人被卡在別的任務上抽不開身（例如消防車、救護車）。「只能待命，不接其他任務」——這個人今天完全不能被排任何其他衛哨或勤務，只能專心待命（例如需要隨時待命應答的值班）。</div>
       <div class="divider"></div>
       <h3>資格要求（若項目分「駕駛/車長」，以下套用在駕駛；若為單一人員項目，套用在該人員）</h3>
       <label>需持有駕照(可複選，不選代表不限)</label>
@@ -5374,7 +5415,7 @@ function openMiscPresetModal(editIndex){
     const fixed=document.getElementById('mpFixed').checked;
     const isSentry=document.getElementById('mpSentry').checked;
     const isAllDayAway=document.getElementById('mpAllDayAway').checked;
-    const standbyAllDay=document.getElementById('mpStandbyAllDay').checked;
+    const standbyMode=document.querySelector('input[name="mpStandbyMode"]:checked').value;
     const restUntil=getTimeSelectValue('mpRest');
     const requiredLicenses=[...document.querySelectorAll('.mp-req-license:checked')].map(cb=>cb.value);
     const requiredMedCert=document.getElementById('mpReqMedCert').checked;
@@ -5384,13 +5425,13 @@ function openMiscPresetModal(editIndex){
     const isDefaultOrder = rankPriorityDraft.length===defaultOrder.length && rankPriorityDraft.every((r,i)=>r===defaultOrder[i]);
     const rankPriority = isDefaultOrder? null : [...rankPriorityDraft];
     if(editing){
-      existing.role=role; existing.times=timesDraft.map(t=>({...t})); existing.fixed=fixed; existing.isSentry=isSentry; existing.isAllDayAway=isAllDayAway; existing.standbyAllDay=standbyAllDay; existing.restUntil=restUntil;
+      existing.role=role; existing.times=timesDraft.map(t=>({...t})); existing.fixed=fixed; existing.isSentry=isSentry; existing.isAllDayAway=isAllDayAway; existing.standbyMode=standbyMode; existing.restUntil=restUntil;
       existing.requiredLicenses=requiredLicenses; existing.requiredMedCert=requiredMedCert; existing.requiredSkills=requiredSkills;
       if((existing.roles||[]).includes('車長')) existing.chiefRequiredSkills=chiefRequiredSkills;
       existing.rankPriority=rankPriority;
       delete existing.start; delete existing.end;
     } else {
-      state.miscPresets.push({role,times:timesDraft.map(t=>({...t})),roles:null,fixed,isSentry,isAllDayAway,standbyAllDay,restUntil,requiredLicenses,requiredMedCert,requiredSkills,rankPriority,sortOrder:nextSortOrder(),excludeFromExport:false});
+      state.miscPresets.push({role,times:timesDraft.map(t=>({...t})),roles:null,fixed,isSentry,isAllDayAway,standbyMode,restUntil,requiredLicenses,requiredMedCert,requiredSkills,rankPriority,sortOrder:nextSortOrder(),excludeFromExport:false});
     }
     saveState(); modal.remove(); render();
   };
@@ -5430,6 +5471,7 @@ function isPersonBusyForMiscEdit(personId, date, s, eRaw, excludeEntryId){
     if(mm.start && mm.end && (mm.personIds||[]).includes(personId) && windowsOverlapOnce(s,e,toMin(mm.start),toMin(mm.end))) return true;
     if(mm.restUntil && mm.end && (mm.personIds||[]).includes(personId) && windowsOverlapRecurring(s,e,toMin(mm.end),toMin(mm.restUntil))) return true;
   }
+  if(isPersonOnExclusiveStandby(personId, date, excludeEntryId)) return true;
   return false;
 }
 function miscEditBusyReasons(personId, date, s, eRaw, excludeEntryId){
@@ -5463,6 +5505,7 @@ function miscEditBusyReasons(personId, date, s, eRaw, excludeEntryId){
     if(mm.start && mm.end && windowsOverlapOnce(s,e,toMin(mm.start),toMin(mm.end))) out.push(`勤務中：${mm.role}${mm.start&&mm.end?` (${mm.start}-${mm.end})`:''}`);
     else if(mm.restUntil && mm.end && windowsOverlapRecurring(s,e,toMin(mm.end),toMin(mm.restUntil))) out.push(`補休中（${mm.role} 後，至 ${mm.restUntil}）`);
   });
+  if(isPersonOnExclusiveStandby(personId, date, excludeEntryId)) out.push('今天已擔任只能待命的勤務，不能再接其他任務');
   return [...new Set(out)];
 }
 /* the searchable, sorted (available-first) person checkbox list used by the
@@ -5496,6 +5539,7 @@ function inlineMiscPeopleListHTML(m, searchFilter){
     }
     if(preset) driverQualificationIssues(p, preset).forEach(r=>reasons.push(r));
     if(preset && personHasConflictingStandby(p.id, currentDate, preset, m.id)) reasons.push('今天已擔任其他全天待命勤務，資格衝突（避免真的需要出動時人被卡住）');
+    if(isPersonOnExclusiveStandby(p.id, currentDate, m.id)) reasons.push('今天已擔任只能待命的勤務，不能再接其他任務');
     return {p, checked:checkedIds.has(p.id), reasons};
   });
   withInfo.sort((a,b)=>{
@@ -5523,7 +5567,7 @@ function miscEntryEditorHTML(m){
         const driverIdx=m.roles.indexOf('駕駛');
         if(driverIdx>-1) driver = state.personnel.find(p=>p.id===m.personIds[driverIdx]);
       }
-      const reasonsFn = p=>roleIneligibilityReasons(p, r, preset, driver, currentDate, sMin, eMinRaw);
+      const reasonsFn = p=>roleIneligibilityReasons(p, r, preset, driver, currentDate, sMin, eMinRaw, m.id);
       return `<div class="row wrap" style="margin-bottom:6px">
         <div class="grow"><label>${esc(r)}</label>
           ${rolePickerHTML('inlineRoleSel-'+m.id+'-'+i, m.personIds[i]||'', reasonsFn)}
@@ -5601,7 +5645,7 @@ function wireMiscInlineEditors(){
               driver = driverInput? state.personnel.find(p=>p.id===driverInput.value) : null;
             }
           }
-          const reasonsFn = p=>roleIneligibilityReasons(p, r, preset, driver, currentDate, sMin, eMinRaw);
+          const reasonsFn = p=>roleIneligibilityReasons(p, r, preset, driver, currentDate, sMin, eMinRaw, m.id);
           const sorted=[...state.personnel].sort((a,b)=>{
             const ra=reasonsFn(a), rb=reasonsFn(b);
             const pa=ra.length?1:0, pb=rb.length?1:0;
@@ -5850,6 +5894,8 @@ function renderMisc(){
             unavailabilityReasonsInRange(pid, currentDate, s, wrapEndMin(s, e0)).forEach(msg=>reasons.push(msg));
           }
           if(presetForForm) driverQualificationIssues(person, presetForForm).forEach(m=>reasons.push(m));
+          if(presetForForm && personHasConflictingStandby(pid, currentDate, presetForForm, miscEditingId)) reasons.push('今天已擔任其他全天待命勤務，資格衝突');
+          if(isPersonOnExclusiveStandby(pid, currentDate, miscEditingId)) reasons.push('今天已擔任只能待命的勤務，不能再接其他任務');
         }
         return {pid, person, checked, reasons};
       }).filter(x=>x.person);
@@ -5881,7 +5927,7 @@ function renderMisc(){
           driver = driverInput? state.personnel.find(p=>p.id===driverInput.value) : null;
         }
       }
-      const reasonsFn = p=>roleIneligibilityReasons(p, r, presetForForm, driver, currentDate, s, e0);
+      const reasonsFn = p=>roleIneligibilityReasons(p, r, presetForForm, driver, currentDate, s, e0, miscEditingId);
       const sorted=[...state.personnel].sort((a,b)=>{
         const ra=reasonsFn(a), rb=reasonsFn(b);
         const pa=ra.length?1:0, pb=rb.length?1:0;
