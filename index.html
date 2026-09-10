@@ -111,7 +111,7 @@ textarea{min-height:50px;resize:vertical;}
       <button class="ghost small" id="undoBtn" title="復原上一步" disabled>↩️</button>
       <button class="ghost small" id="redoBtn" title="取消復原（重做）" disabled>↪️</button>
       <button class="ghost small" id="dayResetBtn" title="還原這一天">♻️</button>
-      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v59</span></h1>
+      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v63</span></h1>
     </div>
     <div class="row" style="gap:6px;align-items:center">
       <select id="timeStepSelect" style="font-size:11px;padding:3px 6px;width:auto">
@@ -546,6 +546,11 @@ state.categories.forEach(c=>{ if(c.excludeFromExport===undefined) c.excludeFromE
    default true, everything else (including custom categories) defaults
    false, matching how a fresh install seeds them in defaultCategories(). */
 state.categories.forEach(c=>{ if(c.isSentry===undefined) c.isSentry=['safety','bridge','control'].includes(c.id); });
+/* 安全士官 outranks (or matches) everyone else on duty in the same window —
+   it's the supervising post, so a lower-ranked person there than at the
+   posts they oversee is a real problem worth flagging. Defaults on for the
+   built-in 安全士官 category only. */
+state.categories.forEach(c=>{ if(c.mustOutrankOthers===undefined) c.mustOutrankOthers = (c.id==='safety'); });
 state.miscPresets.forEach((p,i)=>{
   if(p.sortOrder===undefined) p.sortOrder = 1000+i*10;
   if(p.excludeFromExport===undefined) p.excludeFromExport=false;
@@ -1108,6 +1113,34 @@ function minAdjacentGap(personId, date, cat, shift){
    skip anyone unavailable/already double-booked for that slot, then rank
    candidates by (fewest rest-rule issues, duty priority for that category,
    fewest shifts already given out today, roster rank order). */
+/* would placing `person` in this category's shift break the supervising-rank
+   rule, either because this IS the supervising post and someone senior is
+   already on another overlapping post, or because this is an ordinary post
+   and the person would outrank whoever holds the supervising post? */
+function wouldBreakOutrankRule(person, cat, shift, date, arr, idx){
+  const sMin = toMin(shift.start), eMin = wrapEndMin(sMin, toMin(shift.end));
+  const dayAssign = state.assign[date]||{};
+  const overlappingAssigned = [];
+  orderedCategories().forEach(other=>{
+    const otherAssign = dayAssign[other.id]||{};
+    effectiveShifts(other, date).forEach(osft=>{
+      const oS = toMin(osft.start), oE = wrapEndMin(oS, toMin(osft.end));
+      if(!windowsOverlapOnce(sMin,eMin,oS,oE)) return;
+      (otherAssign[osft.id]||[]).forEach((opid,oidx)=>{
+        if(!opid) return;
+        if(other.id===cat.id && osft.id===shift.id && oidx===idx) return; // the slot being filled
+        const op = state.personnel.find(p=>p.id===opid);
+        if(op) overlappingAssigned.push({cat:other, person:op});
+      });
+    });
+  });
+  if(cat.mustOutrankOthers){
+    // this is the supervising post — nobody else overlapping may outrank it
+    return overlappingAssigned.some(a=>!a.cat.mustOutrankOthers && rankIndex(a.person.rank) < rankIndex(person.rank));
+  }
+  // ordinary post — must not outrank whoever holds a supervising post
+  return overlappingAssigned.some(a=>a.cat.mustOutrankOthers && rankIndex(person.rank) < rankIndex(a.person.rank));
+}
 function autoAssignDay(date){
   if(!state.assign[date]) state.assign[date]={};
   const assignCount={};
@@ -1140,9 +1173,15 @@ function autoAssignDay(date){
         const rawCandidates = ncoStillNeeded>0
           ? rawCandidatesAll.filter(p=>['士官','軍官'].includes(rankCategory(p.rank)))
           : rawCandidatesAll;
-        const candidates = cat.enforceRest
+        const restOk = cat.enforceRest
           ? rawCandidates.filter(p=>restIssues(p.id,date,cat.id,s).length===0 && !assignedSameShiftYesterday(p.id,date,cat.id,s.id) && !wouldRestWindowConflict(p.id,date,s,{catId:cat.id,shiftId:s.id}) && !prepGapConflict(p.id,date,cat,s))
           : rawCandidates;
+        /* 安全士官-style rank supervision is applied as a PREFERENCE, not a
+           hard filter: prefer candidates that keep the ranking valid, but
+           if none exist, still fill the slot rather than leaving a hole
+           (the card will show a ⚠️ so it's visible and fixable by hand). */
+        const rankOk = restOk.filter(p=>!wouldBreakOutrankRule(p, cat, s, date, arr, idx));
+        const candidates = rankOk.length? rankOk : restOk;
         if(candidates.length){
         candidates.sort((a,b)=>{
           const aCnt=assignCount[a.id]||0, bCnt=assignCount[b.id]||0;
@@ -1254,30 +1293,65 @@ function autoAssignMiscForDate(date){
     }
     if(!entry.personIds) entry.personIds=entry.roles.map(()=>undefined);
     const preset=presetForEntry(entry);
+    const sMinEntry = entry.start? toMin(entry.start) : null;
+    const eMinRawEntry = entry.end? toMin(entry.end) : null;
+    const freeForEntry = p=>
+      !entry.personIds.includes(p.id) &&
+      !(sMinEntry!==null && eMinRawEntry!==null && isPersonUnavailable(p.id, date, sMinEntry, wrapEndMin(sMinEntry, eMinRawEntry))) &&
+      !personHasConflictingStandby(p.id, date, preset, entry.id) &&
+      !isPersonOnExclusiveStandby(p.id, date, entry.id);
+    /* 駕駛+車長 must be solved as a PAIR, not one slot at a time. Filling
+       駕駛 greedily with the highest-priority candidate can strand the
+       車長 slot: 車長 may not rank below 駕駛, so picking the most senior
+       qualified person as driver leaves nobody eligible to be chief, and
+       the slot silently stays empty even when a workable pairing existed
+       (e.g. 上士+中士 both EMT-qualified → should be 駕駛=中士,
+       車長=上士, not 駕駛=上士 + empty). Search valid (driver, chief)
+       combinations and prefer the one that fills BOTH slots. */
+    const driverIdx = entry.roles.indexOf('駕駛');
+    const chiefIdx = entry.roles.indexOf('車長');
+    if(driverIdx>-1 && chiefIdx>-1 && !entry.personIds[driverIdx] && !entry.personIds[chiefIdx]
+       && !(entry.lockedSlots && (entry.lockedSlots[driverIdx] || entry.lockedSlots[chiefIdx]))){
+      const driverPool = state.personnel.filter(p=>freeForEntry(p) && driverQualificationIssues(p, preset).length===0);
+      const chiefPool = state.personnel.filter(p=>freeForEntry(p) && chiefEligible(p, preset, null));
+      const rankOf = p=>rankPriorityIndex(p.rank,preset);
+      let best=null;
+      driverPool.forEach(d=>{
+        chiefPool.forEach(c=>{
+          if(c.id===d.id) return;
+          if(!chiefEligible(c, preset, d)) return;
+          // prefer the pairing whose combined priority is best, so the
+          // usual "lower rank drives" outcome falls out naturally
+          const score = rankOf(d)+rankOf(c);
+          if(!best || score<best.score) best={d,c,score};
+        });
+      });
+      if(best){
+        entry.personIds[driverIdx]=best.d.id;
+        entry.personIds[chiefIdx]=best.c.id;
+      } else {
+        // no pairing fills both — fall back to filling whichever single
+        // slot we can, rather than leaving the whole item untouched
+        if(driverPool.length) entry.personIds[driverIdx]=driverPool.sort((a,b)=>rankOf(a)-rankOf(b))[0].id;
+        else if(chiefPool.length) entry.personIds[chiefIdx]=chiefPool.sort((a,b)=>rankOf(a)-rankOf(b))[0].id;
+      }
+    }
     entry.roles.forEach((r,i)=>{
       if(entry.personIds[i]) return;
       if(entry.lockedSlots && entry.lockedSlots[i]) return;
-      const needsMed = preset? preset.requiredMedCert : false;
       let eligibleFn;
       if(r==='駕駛'){
         eligibleFn = p=>driverQualificationIssues(p, preset).length===0;
       } else if(r==='車長'){
-        const driverIdx=entry.roles.indexOf('駕駛');
-        const driver = driverIdx>-1? state.personnel.find(p=>p.id===entry.personIds[driverIdx]) : null;
+        const dIdx=entry.roles.indexOf('駕駛');
+        const driver = dIdx>-1? state.personnel.find(p=>p.id===entry.personIds[dIdx]) : null;
         eligibleFn = p=>chiefEligible(p, preset, driver);
       } else if(r.startsWith('話務')){
         eligibleFn = p=>!!p.license;
       } else {
         eligibleFn = ()=>true;
       }
-      const sMin = entry.start? toMin(entry.start) : null;
-      const eMinRaw = entry.end? toMin(entry.end) : null;
-      const candidates = state.personnel.filter(p=>
-        !entry.personIds.includes(p.id) && eligibleFn(p) &&
-        !(sMin!==null && eMinRaw!==null && isPersonUnavailable(p.id, date, sMin, wrapEndMin(sMin, eMinRaw))) &&
-        !personHasConflictingStandby(p.id, date, preset, entry.id) &&
-        !isPersonOnExclusiveStandby(p.id, date, entry.id)
-      );
+      const candidates = state.personnel.filter(p=>freeForEntry(p) && eligibleFn(p));
       if(candidates.length){
         candidates.sort((a,b)=>rankPriorityIndex(a.rank,preset)-rankPriorityIndex(b.rank,preset) || groupIndex(a.group)-groupIndex(b.group));
         let chosen = candidates[0];
@@ -4236,6 +4310,306 @@ function openDutyChangeModal(personId){
     });
   };
 }
+/* ---------------- 當日進度摘要 ---------------- */
+/* one-glance counts for the whole day, so opening 排班 immediately shows
+   what still needs work instead of requiring each card to be expanded */
+function dayProgressSummary(date){
+  let catFilled=0, catTotal=0;
+  orderedCategories().forEach(cat=>{
+    const dayAssign=(state.assign[date]||{})[cat.id]||{};
+    effectiveShifts(cat, date).forEach(s=>{
+      catTotal += s.count;
+      catFilled += (dayAssign[s.id]||[]).filter(Boolean).length;
+    });
+  });
+  let miscFilled=0, miscTotal=0;
+  (state.misc[date]||[]).forEach(m=>{
+    if(m.roles){
+      miscTotal += m.roles.length;
+      miscFilled += m.personIds.filter((pid,i)=>pid || (m.lockedSlots&&m.lockedSlots[i])).length;
+    } else {
+      const n=(m.personIds||[]).filter(Boolean).length;
+      miscTotal += Math.max(1,n);
+      miscFilled += n;
+    }
+  });
+  const pendingChanges = (state.dutyChanges[date]||[]).filter(ch=>ch.status!=='filled').length;
+  return {catFilled, catTotal, miscFilled, miscTotal, pendingChanges};
+}
+function dayProgressBarHTML(){
+  const s = dayProgressSummary(currentDate);
+  const catShort = s.catFilled<s.catTotal, miscShort = s.miscFilled<s.miscTotal;
+  const allDone = !catShort && !miscShort && !s.pendingChanges;
+  return `<div class="card" style="padding:8px 12px">
+    <div class="row wrap" style="gap:10px;align-items:center">
+      <span style="font-size:13px;font-weight:600">${allDone? '✅ 今日排班已完成' : '📋 今日進度'}</span>
+      <span class="${catShort?'warn':'muted'}" style="font-size:12px">衛哨 ${s.catFilled}/${s.catTotal}${catShort?' ⚠️':''}</span>
+      <span class="${miscShort?'warn':'muted'}" style="font-size:12px">其他勤務 ${s.miscFilled}/${s.miscTotal}${miscShort?' ⚠️':''}</span>
+      ${s.pendingChanges? `<span class="warn" style="font-size:12px">未遞補異動 ${s.pendingChanges} ⚠️</span>`:''}
+    </div>
+  </div>`;
+}
+/* ---------------- 找補位 ---------------- */
+/* Ranks candidates for a specific empty (or to-be-vacated) slot by how
+   disruptive picking them would be, so the common case — "someone dropped
+   out mid-day, find cover without unravelling everyone else's schedule" —
+   surfaces the people who cost nothing to move first.
+   tier 0: free at that time AND has nothing else all day
+   tier 1: free at that time but already has other duties today
+   tier 2: busy at that time — taking them means dropping that other duty */
+/* the non-negotiable part of unavailability: leave, incidents, long-term
+   settings and comp-rest — i.e. everything EXCEPT being assigned to another
+   duty, which is the movable part the substitute finder is willing to
+   trade away. Returns [] when the person is genuinely free. */
+function hardUnavailabilityReasons(personId, date, s, e){
+  const out=[];
+  const person = state.personnel.find(p=>p.id===personId);
+  if(person){
+    const lt = effectiveLongTerm(person, date);
+    if(lt.mode==='allday') out.push('長期事故：全天不可排');
+    else if(lt.mode==='range' && lt.start && lt.end && windowsOverlapRecurring(s,e,toMin(lt.start),toMin(lt.end))) out.push(`長期事故：每天 ${lt.start}-${lt.end} 不可排`);
+  }
+  (state.unavail[date]||[]).filter(u=>u.personId===personId).forEach(u=>{
+    const hit = u.allDay || windowsOverlapOnce(s,e,toMin(u.start),toMin(u.end));
+    if(hit) out.push(`${u.allDay? '全天':`${u.start}-${u.end}`}${u.reason? '（'+u.reason+'）':'（未註記原因）'}`);
+  });
+  for(const w of personCompRestWindows(personId, date)){
+    if(windowsOverlapRecurring(s,e,toMin(w.start),toMin(w.end))) out.push(`補休中（${w.catName} ${w.label} 後，至 ${w.end}）`);
+  }
+  return [...new Set(out)];
+}
+function findSubstitutes(date, opts){
+  const {sMin, eMin, excludeIds=[], eligibleFn, catId, shiftId, cat, shift} = opts;
+  const out=[];
+  state.personnel.forEach(p=>{
+    if(excludeIds.includes(p.id)) return;
+    if(eligibleFn && !eligibleFn(p)){
+      out.push({person:p, tier:3, note:'不符合這個位置的資格要求', blockers:[]});
+      return;
+    }
+    if(isPersonOnExclusiveStandby(p.id, date)){
+      out.push({person:p, tier:3, note:'只能待命，不接其他任務', blockers:[]});
+      return;
+    }
+    const hardReasons = hardUnavailabilityReasons(p.id, date, sMin, eMin);
+    if(hardReasons.length){
+      out.push({person:p, tier:3, note:hardReasons.join('・'), blockers:[]});
+      return;
+    }
+    // what they're actually doing right now (the movable part)
+    const blockers = personDutiesInWindow(p.id, date, sMin, eMin, {catId, shiftId});
+    const dutiesToday = personDutySummary(p.id, date);
+    if(blockers.length){
+      out.push({person:p, tier:2, note:'目前在：'+blockers.map(b=>b.label).join('、'), blockers});
+    } else if(dutiesToday.length){
+      out.push({person:p, tier:1, note:'今日已有：'+dutiesToday.join('、'), blockers:[]});
+    } else {
+      out.push({person:p, tier:0, note:'今日完全沒有任務', blockers:[]});
+    }
+  });
+  // within a tier prefer whoever is carrying the lightest load today, then
+  // the category's own rank preference — spreads duty instead of always
+  // landing on the same person
+  out.sort((a,b)=>{
+    if(a.tier!==b.tier) return a.tier-b.tier;
+    const la=personDutySummary(a.person.id,date).length, lb=personDutySummary(b.person.id,date).length;
+    if(la!==lb) return la-lb;
+    if(cat && shift) return dutySortIndex(a.person.rank,cat,0,shift)-dutySortIndex(b.person.rank,cat,0,shift);
+    return rankIndex(a.person.rank)-rankIndex(b.person.rank);
+  });
+  return out;
+}
+/* every duty (category shift or misc entry) the person occupies that
+   overlaps the given window — the things that would have to be dropped
+   for them to cover this slot instead */
+function personDutiesInWindow(personId, date, sMin, eMin, exclude){
+  const out=[];
+  const dayAssign = state.assign[date]||{};
+  orderedCategories().forEach(cat=>{
+    const catAssign = dayAssign[cat.id]||{};
+    effectiveShifts(cat, date).forEach(sft=>{
+      if(exclude && exclude.catId===cat.id && exclude.shiftId===sft.id) return;
+      const arr = catAssign[sft.id]||[];
+      const idx = arr.indexOf(personId);
+      if(idx>-1 && windowsOverlapOnce(sMin,eMin,shiftBusyStartMin(cat,sft),wrapEndMin(toMin(sft.start),toMin(sft.end)))){
+        out.push({kind:'cat', catId:cat.id, shiftId:sft.id, slotIdx:idx, label:`${cat.name} ${sft.label||sft.start+'-'+sft.end}`});
+      }
+    });
+  });
+  (state.misc[date]||[]).forEach(m=>{
+    if(!m.start || !m.end) return;
+    (m.personIds||[]).forEach((pid,idx)=>{
+      if(pid!==personId) return;
+      if(windowsOverlapOnce(sMin,eMin,toMin(m.start),wrapEndMin(toMin(m.start),toMin(m.end)))){
+        out.push({kind:'misc', miscId:m.id, slotIdx:idx, label:`${m.role}${m.start&&m.end?` (${m.start}-${m.end})`:''}`});
+      }
+    });
+  });
+  return out;
+}
+function openSubstituteModal(source){
+  const date = currentDate;
+  let sMin, eMin, label, eligibleFn, cat=null, shift=null, currentPersonId=null, excludeIds=[];
+  if(source.kind==='cat'){
+    cat = state.categories.find(c=>c.id===source.catId);
+    shift = effectiveShifts(cat, date).find(s=>s.id===source.shiftId);
+    if(!cat || !shift) return;
+    sMin = toMin(shift.start); eMin = wrapEndMin(sMin, toMin(shift.end));
+    label = `${cat.name} ${shift.label||shift.start+'-'+shift.end}`;
+    const arr = ((state.assign[date]||{})[cat.id]||{})[shift.id]||[];
+    currentPersonId = arr[source.slotIdx]||null;
+    excludeIds = arr.filter((id,i)=>id && i!==source.slotIdx);
+    eligibleFn = p=>!rankExcludedFromCategory(p.rank, cat);
+  } else {
+    const entry = (state.misc[date]||[]).find(m=>m.id===source.miscId);
+    if(!entry) return;
+    const preset = presetForEntry(entry);
+    if(!entry.start || !entry.end){ showAlert('這個項目沒有設定時間，無法判斷誰有空，請先設定時段。'); return; }
+    sMin = toMin(entry.start); eMin = wrapEndMin(sMin, toMin(entry.end));
+    const roleName = entry.roles? entry.roles[source.slotIdx] : null;
+    label = `${entry.role}${roleName? '・'+roleName:''} (${entry.start}-${entry.end})`;
+    currentPersonId = (entry.personIds||[])[source.slotIdx]||null;
+    excludeIds = (entry.personIds||[]).filter((id,i)=>id && i!==source.slotIdx);
+    if(roleName==='駕駛') eligibleFn = p=>driverQualificationIssues(p, preset).length===0;
+    else if(roleName==='車長'){
+      const dIdx = entry.roles.indexOf('駕駛');
+      const driver = dIdx>-1? state.personnel.find(p=>p.id===entry.personIds[dIdx]) : null;
+      eligibleFn = p=>chiefEligible(p, preset, driver);
+    }
+    else if(roleName && roleName.startsWith('話務')) eligibleFn = p=>!!p.license;
+    else eligibleFn = p=>!preset || driverQualificationIssues(p, preset).length===0;
+  }
+  if(currentPersonId) excludeIds = excludeIds.concat([currentPersonId]);
+  const results = findSubstitutes(date, {sMin, eMin, excludeIds, eligibleFn, catId:source.catId, shiftId:source.shiftId, cat, shift});
+  const tierMeta = {
+    0:{icon:'🟢', title:'完全有空（補進來不影響任何人）'},
+    1:{icon:'🟡', title:'有空，但今天已有其他勤務'},
+    2:{icon:'🔄', title:'同時段在別的位置（會互換，不會多補人力）'},
+    3:{icon:'⛔', title:'不可排'},
+  };
+  const grouped = {0:[],1:[],2:[],3:[]};
+  results.forEach(r=>grouped[r.tier].push(r));
+  const modal=document.createElement('div');
+  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:70;display:flex;align-items:flex-end;';
+  modal.innerHTML=`
+    <div style="background:var(--panel);width:100%;max-height:88vh;overflow:auto;border-radius:12px 12px 0 0;padding:14px;">
+      <div class="section-title"><h2 style="margin:0">找補位：${esc(label)}</h2><button class="ghost small" id="closeModal">關閉</button></div>
+      <div class="hint" style="margin-bottom:8px">${currentPersonId? `目前是 <b>${esc(personName(currentPersonId))}</b>，選一位補上會把他換掉並留下異動紀錄。`:'這一格目前是空的，選一位補上。'}依「補進來要付出多少代價」由低到高排序，同一層裡今天班較少的人排前面。</div>
+      <div class="row wrap" style="margin-bottom:8px">
+        <div class="grow"><label>搜尋姓名</label><input type="text" id="subSearch" placeholder="輸入姓名關鍵字"></div>
+      </div>
+      <div id="subList">
+      ${[0,1,2,3].map(t=>{
+        if(!grouped[t].length) return '';
+        return `<div style="margin-bottom:10px">
+          <div class="hint" style="margin-bottom:4px"><b>${tierMeta[t].icon} ${tierMeta[t].title}（${grouped[t].length}）</b></div>
+          ${grouped[t].map(r=>`
+            <div class="row sub-row" data-sub-name="${esc(r.person.name)}" style="align-items:flex-start;margin-bottom:4px">
+              <span class="muted grow">・${esc(r.person.name)}（${r.person.group||'未分組'}·${r.person.rank}${personBadges(r.person)}）<br><span style="font-size:11px;color:var(--dim)">${esc(r.note)}</span></span>
+              ${t===3
+                ? `<button class="ghost small danger" data-sub-pick="${r.person.id}" data-sub-tier="${t}" data-sub-note="${esc(r.note)}">仍要排</button>`
+                : t===2
+                  ? `<button class="ghost small" data-sub-pick="${r.person.id}" data-sub-tier="${t}">互換</button>`
+                  : `<button class="ghost small" data-sub-pick="${r.person.id}" data-sub-tier="${t}">補上</button>`}
+            </div>`).join('')}
+        </div>`;
+      }).join('') || `<div class="empty">找不到可以補位的人</div>`}
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+  document.getElementById('closeModal').onclick=()=>modal.remove();
+  document.getElementById('subSearch').oninput=(e)=>{
+    const term=e.target.value.trim();
+    modal.querySelectorAll('.sub-row').forEach(row=>{
+      row.style.display = (!term || row.dataset.subName.includes(term))? 'flex':'none';
+    });
+  };
+  modal.querySelectorAll('[data-sub-pick]').forEach(btn=>{
+    btn.onclick=()=>{
+      const pid = btn.dataset.subPick;
+      const tier = Number(btn.dataset.subTier);
+      const r = results.find(x=>x.person.id===pid);
+      const writeSlot = (src, personId)=>{
+        if(src.kind==='cat'){
+          if(!state.assign[date]) state.assign[date]={};
+          if(!state.assign[date][src.catId]) state.assign[date][src.catId]={};
+          if(!state.assign[date][src.catId][src.shiftId]) state.assign[date][src.catId][src.shiftId]=[];
+          state.assign[date][src.catId][src.shiftId][src.slotIdx]=personId;
+        } else {
+          const entry=(state.misc[date]||[]).find(m=>m.id===src.miscId);
+          if(entry){ if(!entry.personIds) entry.personIds=[]; entry.personIds[src.slotIdx]=personId; }
+        }
+      };
+      const doIt = ()=>{
+        const replaced = currentPersonId;
+        /* tier 2 = the candidate is busy at this very time on another
+           position. Pulling them one-way just moves the hole, so instead
+           SWAP: they come here, whoever was here goes to their old slot.
+           When this slot was empty there's nobody to send back, so it
+           degrades to a plain move and we offer to refill the vacated
+           slot afterwards. */
+        const swapTarget = (tier===2 && r.blockers.length)? r.blockers[0] : null;
+        if(swapTarget){
+          clearDutySlot(date, swapTarget);
+          writeSlot(source, pid);
+          if(replaced) writeSlot(swapTarget, replaced);
+          if(!state.dutyChanges[date]) state.dutyChanges[date]=[];
+          state.dutyChanges[date].push({
+            id:uid(), personId:replaced||pid, personName:personName(replaced||pid), label,
+            source, reason: replaced? `與 ${personName(pid)} 互換位置（原${swapTarget.label}）` : `由 ${swapTarget.label} 調來`,
+            status:'filled', filledPersonId:pid
+          });
+          saveState(); modal.remove(); render();
+          if(!replaced){
+            showConfirm(`已把 ${r.person.name} 調到「${label}」，但他原本的「${swapTarget.label}」現在空出來了。要現在接著找人補那一格嗎？`, ()=>{
+              openSubstituteModal(swapTarget.kind==='cat'
+                ? {kind:'cat', catId:swapTarget.catId, shiftId:swapTarget.shiftId, slotIdx:swapTarget.slotIdx}
+                : {kind:'misc', miscId:swapTarget.miscId, slotIdx:swapTarget.slotIdx});
+            });
+          }
+          return;
+        }
+        writeSlot(source, pid);
+        if(!state.dutyChanges[date]) state.dutyChanges[date]=[];
+        if(replaced){
+          state.dutyChanges[date].push({
+            id:uid(), personId:replaced, personName:personName(replaced), label,
+            source, reason:'臨時換手', status:'filled', filledPersonId:pid,
+            override: tier===3? (btn.dataset.subNote||'') : undefined
+          });
+        } else if(tier===3){
+          // no one was replaced, but this pick broke a rule — still record it
+          // so the exception is visible afterwards rather than silently applied
+          state.dutyChanges[date].push({
+            id:uid(), personId:pid, personName:personName(pid), label,
+            source, reason:'例外指派', status:'filled', filledPersonId:pid,
+            override: btn.dataset.subNote||''
+          });
+        }
+        saveState(); modal.remove(); render();
+      };
+      if(tier===3){
+        showConfirm(`⚠️ ${r.person.name} 目前的狀態是「${btn.dataset.subNote||'不可排'}」，正常情況下不該排這一格。仍要指派嗎？（會在「今日異動紀錄」標註為例外指派）`, doIt);
+      } else if(tier===2 && r.blockers.length){
+        const swapMsg = currentPersonId
+          ? `${r.person.name} 目前在「${r.blockers[0].label}」，同一個時段。確定要讓他跟 ${personName(currentPersonId)} 互換位置嗎？（兩邊都有人，總人力不變）`
+          : `${r.person.name} 目前在「${r.blockers[0].label}」，同一個時段。把他調來這裡的話，那個位置會空出來需要再找人（總人力不會增加）。確定嗎？`;
+        showConfirm(swapMsg, doIt);
+      } else doIt();
+    };
+  });
+}
+/* if this exact slot currently holds someone who was placed there as a
+   deliberate rule-breaking exception (tier-3 pick in 找補位), surface that
+   right on the schedule card — otherwise the exception is only visible in
+   今日異動紀錄 and easy to forget about when reading the roster */
+function overrideBadgeHTML(date, pid, source){
+  const rec = (state.dutyChanges[date]||[]).find(ch=>ch.override && ch.filledPersonId===pid && ch.source &&
+    ch.source.kind===source.kind && ch.source.slotIdx===source.slotIdx &&
+    (source.kind==='cat'? (ch.source.catId===source.catId && ch.source.shiftId===source.shiftId) : ch.source.miscId===source.miscId));
+  if(!rec) return '';
+  return `<div class="badge-issue">⚠️ 例外指派：${esc(personName(pid))} 當時的狀態是「${esc(rec.override)}」</div>`;
+}
 function dutyChangeCardHTML(){
   const list = state.dutyChanges[currentDate]||[];
   if(!list.length) return '';
@@ -4243,8 +4617,12 @@ function dutyChangeCardHTML(){
     const statusHtml = ch.status==='filled'
       ? `<span class="ok">✅ 已由 ${esc(personName(ch.filledPersonId))} 遞補</span>`
       : `<span class="warn">⚠️ 尚未遞補</span>`;
+    const headline = ch.reason==='例外指派'
+      ? `${esc(ch.label)}：例外指派 ${esc(ch.personName)}`
+      : `${esc(ch.label)}：原本 ${esc(ch.personName)}${ch.reason? `（${esc(ch.reason)}）`:''}`;
     return `<div class="list-item" style="flex-direction:column;align-items:stretch">
-      <div class="row"><span class="grow">${esc(ch.label)}：原本 ${esc(ch.personName)}${ch.reason? `（${esc(ch.reason)}）`:''}</span></div>
+      <div class="row"><span class="grow">${headline}</span></div>
+      ${ch.override? `<div class="badge-issue">⚠️ 例外指派：此人當時的狀態是「${esc(ch.override)}」</div>`:''}
       <div class="row"><span class="grow">${statusHtml}</span><button class="ghost small danger" data-del-dutychange="${ch.id}">移除紀錄</button></div>
     </div>`;
   }).join('');
@@ -4255,6 +4633,7 @@ function renderSchedule(){
   const defaults = defaultCategories();
   const missingDefaults = defaults.filter(d=>!state.categories.some(c=>c.id===d.id));
   app.innerHTML = `
+    ${dayProgressBarHTML()}
     <div class="card">
       <div class="hint">此日期代表勤務「結束日」：實際勤務時段是 ${dutyDateRangeLabel(currentDate)}（前一天22:00開始，到選定日期22:00結束）。</div>
     </div>
@@ -4331,6 +4710,12 @@ function renderSchedule(){
       state.dutyChanges[currentDate] = (state.dutyChanges[currentDate]||[]).filter(ch=>ch.id!==b.dataset.delDutychange);
       saveState(); render();
     };
+  });
+  document.querySelectorAll('[data-find-sub-cat]').forEach(b=>{
+    b.onclick=()=>openSubstituteModal({kind:'cat', catId:b.dataset.findSubCat, shiftId:b.dataset.findSubShift, slotIdx:Number(b.dataset.findSubIdx)});
+  });
+  document.querySelectorAll('[data-find-sub-misc]').forEach(b=>{
+    b.onclick=()=>openSubstituteModal({kind:'misc', miscId:b.dataset.findSubMisc, slotIdx:Number(b.dataset.findSubIdx)});
   });
   document.querySelectorAll('[data-duty-change]').forEach(b=>{
     b.onclick=()=>openDutyChangeModal(b.dataset.dutyChange);
@@ -4638,7 +5023,10 @@ function wireScheduleCardsDrag(){
   });
 }
 function renderMiscDutyCard(role, entries, preset, dragIdx){
-  const title = `<span data-drag-handle style="cursor:grab;padding-right:6px;color:var(--dim)">⠿</span>🗂 ${esc(role)}`;
+  const miscFilled = entries.reduce((n,m)=>n+(m.roles? m.personIds.filter((pid,i)=>pid||(m.lockedSlots&&m.lockedSlots[i])).length : (m.personIds||[]).filter(Boolean).length),0);
+  const miscTotal = entries.reduce((n,m)=>n+(m.roles? m.roles.length : Math.max(1,(m.personIds||[]).filter(Boolean).length)),0);
+  const miscShort = miscFilled<miscTotal;
+  const title = `<span data-drag-handle style="cursor:grab;padding-right:6px;color:var(--dim)">⠿</span>🗂 ${esc(role)}<span class="${miscShort?'warn':'muted'}" style="margin-left:6px">已排 ${miscFilled}/${miscTotal}${miscShort?' ⚠️':''}</span>`;
   const extraButtons = preset? `<label style="display:flex;align-items:center;gap:3px;font-size:11px"><input type="checkbox" class="card-exclude-cb" data-exclude-kind="misc" data-exclude-id="${esc(role)}" style="width:auto" ${preset.excludeFromExport?'checked':''}>不匯出</label><button class="ghost small" data-edit-misc-preset="${esc(role)}">設定</button><button class="ghost small" data-clear-misc-preset="${esc(role)}">清除</button><button class="ghost small danger" data-del-misc-preset="${esc(role)}">刪除此項目</button>` : '';
   const inner = entries.map(m=>{
     if(m.id===miscInlineEditId) return miscEntryEditorHTML(m);
@@ -4646,9 +5034,12 @@ function renderMiscDutyCard(role, entries, preset, dragIdx){
     const peopleLabel = m.roles
       ? m.roles.map((r,i)=>{
           const pid=m.personIds[i];
-          return `${r}：${pid? esc(personName(pid))+` <button class="ghost small" data-duty-change="${pid}" title="臨時異動">⚡</button>` : ((m.lockedSlots&&m.lockedSlots[i])? '🔒保留空白':'（未指派）')}`;
+          const sub = `<button class="ghost small" data-find-sub-misc="${m.id}" data-find-sub-idx="${i}" title="找補位">🔍</button>`;
+          return `${r}：${pid? esc(personName(pid))+` <button class="ghost small" data-duty-change="${pid}" title="臨時異動">⚡</button>`+sub : ((m.lockedSlots&&m.lockedSlots[i])? '🔒保留空白':'（未指派）'+sub)}`;
         }).join('　')
-      : ((m.personIds||[]).filter(Boolean).length? m.personIds.filter(Boolean).map(pid=>`${esc(personName(pid))} <button class="ghost small" data-duty-change="${pid}" title="臨時異動">⚡</button>`).join('、') : '（未指派）');
+      : ((m.personIds||[]).filter(Boolean).length
+          ? m.personIds.map((pid,i)=>pid? `${esc(personName(pid))} <button class="ghost small" data-duty-change="${pid}" title="臨時異動">⚡</button><button class="ghost small" data-find-sub-misc="${m.id}" data-find-sub-idx="${i}" title="找補位">🔍</button>`:'').filter(Boolean).join('、')
+          : `（未指派）<button class="ghost small" data-find-sub-misc="${m.id}" data-find-sub-idx="0" title="找補位">🔍</button>`);
     return `
       <div class="list-item" style="flex-direction:column;align-items:stretch">
         <div class="row">
@@ -4657,6 +5048,7 @@ function renderMiscDutyCard(role, entries, preset, dragIdx){
           <button class="ghost small danger" data-del-misc="${m.id}">刪除</button>
         </div>
         ${issues.map(i=>`<div class="badge-issue">⚠️ ${esc(i)}</div>`).join('')}
+        ${(m.personIds||[]).map((pid,i)=>pid? overrideBadgeHTML(currentDate, pid, {kind:'misc', miscId:m.id, slotIdx:i}):'').join('')}
       </div>`;
   }).join('');
   return `<div data-misc-card="${esc(role)}" data-drag-idx="${dragIdx}">${collapsibleCardHTML('misccard-'+role, title, inner, extraButtons)}</div>`;
@@ -4666,6 +5058,36 @@ function renderMiscDutyCard(role, entries, preset, dragIdx){
    "people are available but none of them are 士官以上", since those call
    for different action (wait/reassign elsewhere vs. can't be filled at all
    without pulling someone from another duty) */
+/* for a category flagged mustOutrankOthers (安全士官): everyone assigned to
+   OTHER sentry categories overlapping this shift must not outrank the
+   person holding this post. Returns the offending assignments, or [] when
+   the ranking is fine. */
+function outrankViolations(pid, cat, shift, date){
+  if(!cat.mustOutrankOthers || !pid) return [];
+  const holder = state.personnel.find(p=>p.id===pid);
+  if(!holder) return [];
+  const sMin = toMin(shift.start), eMin = wrapEndMin(sMin, toMin(shift.end));
+  const out=[];
+  const dayAssign = state.assign[date]||{};
+  orderedCategories().forEach(other=>{
+    if(other.id===cat.id) return;
+    const otherAssign = dayAssign[other.id]||{};
+    effectiveShifts(other, date).forEach(osft=>{
+      const oS = toMin(osft.start), oE = wrapEndMin(oS, toMin(osft.end));
+      if(!windowsOverlapOnce(sMin,eMin,oS,oE)) return;
+      (otherAssign[osft.id]||[]).forEach(opid=>{
+        if(!opid) return;
+        const op = state.personnel.find(p=>p.id===opid);
+        if(!op) return;
+        // lower rankIndex = higher rank; violation when the other post outranks this one
+        if(rankIndex(op.rank) < rankIndex(holder.rank)){
+          out.push(`${other.name} ${osft.label||osft.start+'-'+osft.end} 的 ${op.name}（${op.rank}）階級高於此處的 ${holder.name}（${holder.rank}）`);
+        }
+      });
+    });
+  });
+  return out;
+}
 function minNCOStatusHTML(cat, s, date, assigned, ncoCount){
   if(ncoCount>=s.minNCO) return `<div class="hint" style="margin-bottom:6px">此班需至少 ${s.minNCO} 位士官(含)以上，目前 ${ncoCount} 位</div>`;
   const sMin=toMin(s.start), eMin=wrapEndMin(sMin, toMin(s.end));
@@ -4685,7 +5107,7 @@ function renderCategoryCard(cat, dragIdx){
   const filledCount = shifts.reduce((sum,s)=>sum+(dayAssign[s.id]||[]).filter(Boolean).length,0);
   const totalCount = shifts.reduce((sum,s)=>sum+s.count,0);
   const title = `<span data-drag-handle style="cursor:grab;padding-right:6px;color:var(--dim)">⠿</span>${esc(cat.name)}
-        <span class="muted" style="margin-left:6px">已排 ${filledCount}/${totalCount}</span>`;
+        <span class="${filledCount<totalCount?'warn':'muted'}" style="margin-left:6px">已排 ${filledCount}/${totalCount}${filledCount<totalCount?' ⚠️':''}</span>`;
   const tagsRow = `${cat.enforceRest?'<span class="tag" style="margin-right:4px">6hr規則</span>':''}
         ${cat.preferLowRank?'<span class="tag" style="margin-right:4px">建議低階</span>':''}
         ${cat.needsNCO?'<span class="tag" style="margin-right:4px">需士官帶隊</span>':''}
@@ -4714,12 +5136,15 @@ function renderCategoryCard(cat, dragIdx){
                 ${assignableOptions(cat, s, pid, idx)}
               </select>
               ${pid? `<button class="ghost small" data-duty-change="${pid}" title="臨時異動">⚡</button>`:''}
+              <button class="ghost small" data-find-sub-cat="${cat.id}" data-find-sub-shift="${s.id}" data-find-sub-idx="${idx}" title="找補位">🔍</button>
             </div>
             ${pid && issues.length? issues.map(i=>`<div class="badge-issue">⚠️ ${esc(personName(pid))}：${esc(i)}</div>`).join('') : ''}
             ${pid && cat.enforceRest && assignedSameShiftYesterday(pid,currentDate,cat.id,s.id)? `<div class="badge-issue">⚠️ ${esc(personName(pid))}：昨天也值這個時段，建議換人</div>`:''}
             ${pid && cat.enforceRest && wouldRestWindowConflict(pid,currentDate,s,{catId:cat.id,shiftId:s.id})? `<div class="badge-issue">⚠️ ${esc(personName(pid))}：下班補休時段跟其他已排的勤務衝突</div>`:''}
             ${pid && cat.enforceRest && prepGapConflict(pid,currentDate,cat,s)? `<div class="badge-issue">⚠️ ${esc(personName(pid))}：這班開始前不到30分鐘還在忙其他勤務，沒時間準備</div>`:''}
             ${pid && cat.preferLowRank && rankCategory(personRank(pid))==='軍官'? `<div class="badge-issue">⚠️ 建議優先排下士，其次其他士兵/士官，非必要不派軍官</div>`:''}
+            ${pid? overrideBadgeHTML(currentDate, pid, {kind:'cat', catId:cat.id, shiftId:s.id, slotIdx:idx}):''}
+            ${pid? outrankViolations(pid, cat, s, currentDate).map(v=>`<div class="badge-issue">⚠️ ${esc(v)}</div>`).join(''):''}
             ${pid && cat.needsNCO && rankCategory(personRank(pid))==='軍官'? `<div class="badge-issue">⚠️ 建議盡量避免安排軍官擔任打飯班</div>`:''}
           </div>`;
         }).join('')}
@@ -4790,8 +5215,10 @@ function openCategoryEditor(catId){
         <label style="display:flex;align-items:center;gap:6px;font-size:13px"><input type="checkbox" id="catLow" style="width:auto" ${cat.preferLowRank?'checked':''}> 建議低階</label>
         <label style="display:flex;align-items:center;gap:6px;font-size:13px"><input type="checkbox" id="catNCO" style="width:auto" ${cat.needsNCO?'checked':''}> 需士官帶隊</label>
         <label style="display:flex;align-items:center;gap:6px;font-size:13px"><input type="checkbox" id="catSentry" style="width:auto" ${cat.isSentry?'checked':''}> 是衛哨類別</label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px"><input type="checkbox" id="catOutrank" style="width:auto" ${cat.mustOutrankOthers?'checked':''}> 階級須不低於同時段其他哨</label>
       </div>
       <div class="hint" style="margin-bottom:8px">「是衛哨類別」用於判斷「可外散宿人員」：勾選後，這個類別裡開始時間落在22:00-06:00的班別會排除當事人的外散宿資格；沒勾選的類別（例如打飯班）不會被這樣排除。</div>
+      <div class="hint" style="margin-bottom:8px">「階級須不低於同時段其他哨」用於安全士官這種督導性質的位置：勾選後，如果同一個時段有其他哨的人階級比這裡高，會標示警告提醒你調整（平階可以，只擋比這裡更高階的）。</div>
       <div class="row wrap" style="margin-bottom:8px">
         <div class="grow"><label>不可排階級（硬性，如：訓練役不可站安全士官）</label>
           <select id="catExclude" multiple size="4">${RANK_DEFS.map(r=>`<option value="${r.rank}" ${(cat.excludeRanks||[]).includes(r.rank)?'selected':''}>${r.rank}</option>`).join('')}</select>
@@ -5024,6 +5451,7 @@ function openCategoryEditor(catId){
     cat.preferLowRank=document.getElementById('catLow').checked;
     cat.needsNCO=document.getElementById('catNCO').checked;
     cat.isSentry=document.getElementById('catSentry').checked;
+    cat.mustOutrankOthers=document.getElementById('catOutrank').checked;
     cat.excludeRanks=[...document.getElementById('catExclude').selectedOptions].map(o=>o.value);
     cat.avoidRanks=[...document.getElementById('catAvoid').selectedOptions].map(o=>o.value);
     cat.customPriority=[...priorityDraft];
@@ -5741,6 +6169,12 @@ function wireMiscInlineEditors(){
    其他勤務 tab's own list and the 排班 tab's per-role misc cards, since both
    render the same entries and both need the same inline-edit behavior */
 function wireMiscCardEvents(){
+  app.querySelectorAll('[data-find-sub-misc]').forEach(b=>{
+    b.onclick=()=>openSubstituteModal({kind:'misc', miscId:b.dataset.findSubMisc, slotIdx:Number(b.dataset.findSubIdx)});
+  });
+  app.querySelectorAll('[data-duty-change]').forEach(b=>{
+    b.onclick=()=>openDutyChangeModal(b.dataset.dutyChange);
+  });
   app.querySelectorAll('[data-edit-misc]').forEach(b=>{
     b.onclick=()=>{ miscInlineEditId = b.dataset.editMisc; render(); };
   });
