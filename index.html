@@ -132,7 +132,7 @@ textarea{min-height:50px;resize:vertical;}
       <button class="ghost small" id="undoBtn" title="復原上一步" disabled>↩️</button>
       <button class="ghost small" id="redoBtn" title="取消復原（重做）" disabled>↪️</button>
       <button class="ghost small" id="dayResetBtn" title="還原這一天">♻️</button>
-      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v72</span></h1>
+      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v73</span></h1>
     </div>
     <div class="row" style="gap:6px;align-items:center">
       <select id="timeStepSelect" style="font-size:11px;padding:3px 6px;width:auto">
@@ -1668,6 +1668,48 @@ document.getElementById('preplanDrawerBtn').addEventListener('click', (e)=>{ fla
    never touched. */
 /* ---------------- 預排 UI ---------------- */
 let preplanMonth = null; // 'YYYY-MM' currently shown in the calendar
+/* import a whole 預排 dump exported from this device (or another). Replaces
+   state.preplan entirely with what's in the file — this is meant for
+   moving the whole plan somewhere else or restoring a hand-typed backup,
+   not for merging a partial slice (use 分工匯出/匯入 on the schedule tab
+   for that instead). */
+function openPreplanImportModal(onDone){
+  const modal=document.createElement('div');
+  modal.className='sheet-modal'; modal.style.zIndex='96';
+  modal.innerHTML=`
+    <div class="sheet-inner">
+      <div class="section-title"><h2 style="margin:0">匯入預排</h2><button class="ghost small" id="piClose">關閉</button></div>
+      <div class="hint" style="margin-bottom:8px">貼上先前「匯出所有預排」的內容（或手打符合格式的內容）。匯入會整個取代目前的預排資料。</div>
+      <textarea id="piText" placeholder="貼上內容…" style="min-height:160px;font-family:monospace;font-size:11px;margin-bottom:8px"></textarea>
+      <button class="primary" id="piCheck" style="width:100%">檢查並匯入</button>
+      <div id="piResult" style="margin-top:10px"></div>
+    </div>`;
+  document.body.appendChild(modal);
+  document.getElementById('piClose').onclick=()=>modal.remove();
+  document.getElementById('piCheck').onclick=()=>{
+    let data=null;
+    try{ data=JSON.parse(document.getElementById('piText').value); }
+    catch(e){ showAlert('內容不是有效的 JSON，請確認完整貼上。'); return; }
+    if(!data || data.format!=='drs-preplan-v1' || !data.preplan){
+      document.getElementById('piResult').innerHTML=`<div class="badge-issue">⚠️ 這不是預排匯出檔（格式不符）</div>`;
+      return;
+    }
+    const counts=Object.entries(data.preplan).map(([k,v])=>{
+      const t=PREPLAN_TYPES.find(x=>x.key===k);
+      const n=k==='leave'? Object.values(v).reduce((a,r)=>a+((r.dates||[]).length),0) : Object.keys(v).length;
+      return `${t?t.name:k}：${n}`;
+    }).join('、');
+    showConfirm(`確定要匯入嗎？這會整個取代目前的預排資料（${counts||'無內容'}）。已經匯入到實際班表的內容不受影響。`, ()=>{
+      state.preplan=data.preplan;
+      if(data.standbySubRoles) state.standbySubRoles=data.standbySubRoles;
+      if(data.preplanOrder) state.preplanOrder=data.preplanOrder;
+      saveState();
+      showAlert('已匯入預排資料。');
+      modal.remove();
+      if(onDone) onDone();
+    });
+  };
+}
 function openPreplanDrawer(){
   const backdrop=document.createElement('div');
   backdrop.className='drawer-backdrop';
@@ -1693,8 +1735,18 @@ function openPreplanDrawer(){
           <span style="color:var(--dim)">›</span>
         </div>`;
       }).join('')}
+      </div>
+      <div class="divider"></div>
+      <button class="ghost" id="ppExportAll" style="width:100%;margin-bottom:6px">📤 匯出所有預排</button>
+      <button class="ghost" id="ppImportAll" style="width:100%">📥 匯入預排</button>
       </div>`;
     document.getElementById('drawerClose').onclick=close;
+    document.getElementById('ppExportAll').onclick=()=>{
+      const payload={format:'drs-preplan-v1', createdAt:new Date().toISOString(),
+        preplan:state.preplan, standbySubRoles:state.standbySubRoles, preplanOrder:state.preplanOrder};
+      openTextShareModal('所有預排資料', JSON.stringify(payload, null, 2));
+    };
+    document.getElementById('ppImportAll').onclick=()=>openPreplanImportModal(drawDrawer);
     drawer.querySelectorAll('[data-preplan-open]').forEach(b=>{
       b.onclick=(e)=>{
         if(e.target.hasAttribute('data-pp-handle')) return;
@@ -1797,14 +1849,26 @@ function preplanCellMark(type, plan){
     return ids.length? ids.map(nm).join('･') : '';
   }
   if(type.mode==='dayNight'){
+    const dayIds=plan.dayPersonIds||(plan.dayPersonId?[plan.dayPersonId]:[]);
+    const nightIds=plan.nightPersonIds||(plan.nightPersonId?[plan.nightPersonId]:[]);
     const parts=[];
-    if(plan.dayPersonId) parts.push('日'+nm(plan.dayPersonId));
-    if(plan.nightPersonId) parts.push('夜'+nm(plan.nightPersonId));
+    if(dayIds.length) parts.push('日'+dayIds.map(nm).join('/'));
+    if(nightIds.length) parts.push('夜'+nightIds.map(nm).join('/'));
     return parts.join('･');
   }
-  if(type.mode==='presetSlots'){
-    const n=Object.values(plan.slots||{}).filter(Boolean).length;
-    return n? `${n}班` : '';
+  if(type.mode==='fixedSlots'){
+    // show the actual shift time for each filled slot (e.g. "00-02") rather
+    // than just a count, so the month view says WHEN something's on, not
+    // just how many
+    const parts=[];
+    Object.entries(plan.slots||{}).forEach(([idx,cfg])=>{
+      const ids=cfg&&(cfg.personIds||(cfg.personId?[cfg.personId]:[]));
+      if(!ids||!ids.length) return;
+      const label=type.slots[Number(idx)]||'';
+      const short=label.replace(/:\d\d/g,'');  // "00:00-02:00" -> "00-02"
+      parts.push(short);
+    });
+    return parts.join('･');
   }
   return '';
 }
@@ -1940,9 +2004,13 @@ function openStandbyEditor(date, onSaved){
           const p=state.personnel.find(x=>x.id===pid);
           if(!p) return '';
           const ov=plan.overrides[pid]||{};
+          const blockDates=(plan.startDate<=plan.endDate)? dateRangeList(plan.startDate,plan.endDate):[];
+          const leaveDates=((state.preplan.leave||{})[pid]||{}).dates||[];
+          const clash=blockDates.filter(d=>leaveDates.includes(d));
           return `<div class="list-item" style="flex-direction:column;align-items:stretch">
             <div class="row"><span class="grow">${esc(p.name)}（${p.group||'未分組'}·${p.rank}）</span>
               <button class="ghost small danger" data-sb-remove="${pid}">移除</button></div>
+            ${clash.length? `<div class="badge-issue">⚠️ 休假大表已排他 ${clash.length} 天休假（${clash.map(d=>minguoLabel(d)).join('、')}），跟留守衝突</div>`:''}
             ${(ov.start||ov.end)? `<div class="hint">個別調整：${ov.start? '留守至 '+ov.start : ''}${ov.end? ' ／ 提早於 '+ov.end+' 離營':''}</div>`:''}
             <div class="row"><button class="ghost small" data-sb-override="${pid}">個別調整時間</button></div>
           </div>`;
@@ -2201,18 +2269,22 @@ function openPreplanDayEditor(key, date, onSaved){
     </div>`;
   const listBox = (inner, id)=>`<div id="${id}" class="pp-picklist" style="max-height:40vh;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:8px;margin-bottom:8px">${inner}</div>`;
   const checkRows = (selectedIds, cls)=>pool.length? pool.map(p=>`
-      <label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0">
-        <input type="checkbox" class="${cls}" value="${p.id}" style="width:auto" ${selectedIds.includes(p.id)?'checked':''}>
-        ${esc(p.name)}（${p.group||'未分組'}·${p.rank}${personBadges(p)}）
+      <label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:6px 0;border-bottom:1px solid var(--line)">
+        <input type="checkbox" class="${cls}" value="${p.id}" style="width:auto;flex-shrink:0" ${selectedIds.includes(p.id)?'checked':''}>
+        <span>${esc(p.name)}（${p.group||'未分組'}·${p.rank}${personBadges(p)}）</span>
       </label>`).join('') : `<div class="empty">沒有符合資格的人員</div>`;
-  const radioRows = (selectedId, cls, name)=>pool.length? `
-      <label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0">
+  const radioRows = (selectedId, cls, name, reasonsFn)=>{
+    if(!pool.length) return `<div class="empty">沒有符合資格的人員</div>`;
+    const withReasons = pool.map(p=>({p, reasons: reasonsFn? reasonsFn(p) : []}));
+    withReasons.sort((a,b)=>(a.reasons.length>0)-(b.reasons.length>0));
+    return `<label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0">
         <input type="radio" name="${name}" class="${cls}" value="" style="width:auto" ${!selectedId?'checked':''}> （未指派）
-      </label>`+pool.map(p=>`
-      <label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0">
-        <input type="radio" name="${name}" class="${cls}" value="${p.id}" style="width:auto" ${p.id===selectedId?'checked':''}>
-        ${esc(p.name)}（${p.group||'未分組'}·${p.rank}${personBadges(p)}）
-      </label>`).join('') : `<div class="empty">沒有符合資格的人員</div>`;
+      </label>`+withReasons.map(({p,reasons})=>`
+      <label style="display:flex;align-items:flex-start;gap:6px;font-size:13px;padding:6px 0;border-bottom:1px solid var(--line);${reasons.length?'opacity:.6':''}">
+        <input type="radio" name="${name}" class="${cls}" value="${p.id}" style="width:auto;margin-top:2px" ${p.id===selectedId?'checked':''}>
+        <span>${esc(p.name)}（${p.group||'未分組'}·${p.rank}${personBadges(p)}）${reasons.length? `<br><span class="warn" style="font-size:11px">🚫${esc(reasons.join('・'))}</span>`:''}</span>
+      </label>`).join('');
+  };
   const timeRow = (idBase, st, en, label)=>`
     <div class="row wrap" style="margin-bottom:6px">
       <div class="grow"><label>${label||'開始'}</label>${timeSelectHTML(idBase+'Start', st, {allowEmpty:true})}</div>
@@ -2238,14 +2310,24 @@ function openPreplanDayEditor(key, date, onSaved){
          </div>`
       + listBox(checkRows(plan.personIds||[], 'pp-person'), 'ppList');
   } else if(type.mode==='roles'){
+    const driverIdx=type.roles.indexOf('駕駛'), chiefIdx=type.roles.indexOf('車長');
+    const currentDriver = driverIdx>-1? state.personnel.find(p=>p.id===(plan.personIds||[])[driverIdx]) : null;
     body = (type.editableTime? timeRow('ppT', plan.start||preplanDefault(key,'start',t0.start), plan.end||preplanDefault(key,'end',t0.end)) : '')
       + restRow('ppRest', plan.restUntil||preplanDefault(key,'rest',(preset&&preset.restUntil)||''))
       + supportRow('ppSupport', plan.support)
-      + type.roles.map((r,i)=>
-          `<div class="hint" style="margin:6px 0 2px"><b>${esc(r)}</b></div>`
-          + searchBlock('ppSearch'+i)
-          + listBox(radioRows((plan.personIds||[])[i]||'', 'pp-role'+i, 'pprole'+i), 'ppList'+i)
-        ).join('');
+      + type.roles.map((r,i)=>{
+          const reasonsFn = (r==='車長')? (p=>{
+            const reasons=[];
+            if(!['士官','軍官'].includes(rankCategory(p.rank))) reasons.push('需為士官以上');
+            if(currentDriver && rankIndex(p.rank)>rankIndex(currentDriver.rank)) reasons.push('階級不可低於駕駛');
+            if(preset && preset.chiefRequiredMedCert && !p.medCert) reasons.push('需具備EMT或醫生證書');
+            if(preset && (preset.chiefRequiredLicenses||[]).length && !preset.chiefRequiredLicenses.some(l=>licenseCovers(p.license,l))) reasons.push('需持有'+preset.chiefRequiredLicenses.join('或')+'駕照');
+            return reasons;
+          }) : (r==='駕駛' && preset)? (p=>driverQualificationIssues(p, preset)) : null;
+          return `<div class="hint" style="margin:6px 0 2px"><b>${esc(r)}</b></div>`
+            + searchBlock('ppSearch'+i)
+            + listBox(radioRows((plan.personIds||[])[i]||'', 'pp-role'+i, 'pprole'+i, reasonsFn), 'ppList'+i);
+        }).join('');
   } else if(type.mode==='dayNight'){
     const times = preset? presetTimes(preset) : [];
     const dt = times[0]||{start:'',end:''}, nt = times[1]||times[0]||{start:'',end:''};
@@ -2253,18 +2335,19 @@ function openPreplanDayEditor(key, date, onSaved){
       + timeRow('ppDayT', plan.dayStart||preplanDefault(key,'dayStart',dt.start), plan.dayEnd||preplanDefault(key,'dayEnd',dt.end))
       + restRow('ppDayRest', plan.dayRestUntil||preplanDefault(key,'dayRest',''), '日班補休至（選填）')
       + searchBlock('ppSearchD')
-      + listBox(radioRows(plan.dayPersonId||'', 'pp-day', 'ppday'), 'ppListD')
+      + listBox(checkRows(plan.dayPersonIds||(plan.dayPersonId?[plan.dayPersonId]:[]), 'pp-day'), 'ppListD')
       + `<div class="divider"></div><div class="hint" style="margin:6px 0 2px"><b>夜班</b></div>`
       + timeRow('ppNightT', plan.nightStart||preplanDefault(key,'nightStart',nt.start), plan.nightEnd||preplanDefault(key,'nightEnd',nt.end))
       + restRow('ppNightRest', plan.nightRestUntil||preplanDefault(key,'nightRest',''), '夜班補休至（選填）')
       + searchBlock('ppSearchN')
-      + listBox(radioRows(plan.nightPersonId||'', 'pp-night', 'ppnight'), 'ppListN')
+      + listBox(checkRows(plan.nightPersonIds||(plan.nightPersonId?[plan.nightPersonId]:[]), 'pp-night'), 'ppListN')
       + supportRow('ppSupport', plan.support);
   } else if(type.mode==='fixedSlots'){
     body = supportRow('ppSupport', plan.support)
       + type.slots.map((sl,i)=>{
         const cfg=(plan.slots||{})[i]||{};
-        const on=!!cfg.personId;
+        const ids=cfg.personIds||(cfg.personId?[cfg.personId]:[]);
+        const on=ids.length>0;
         return `<div class="card" style="padding:8px 10px">
           <div class="row" style="align-items:center;margin-bottom:4px">
             <label style="display:flex;align-items:center;gap:6px;font-size:13px" class="grow">
@@ -2275,7 +2358,7 @@ function openPreplanDayEditor(key, date, onSaved){
           <div class="pp-slot-body" data-slot-body="${i}" style="display:${on?'block':'none'}">
             ${restRow('ppSlotRest'+i, cfg.restUntil||preplanDefault(key,'slotRest'+i,''))}
             ${searchBlock('ppSearchS'+i)}
-            ${listBox(radioRows(cfg.personId||'', 'pp-slot'+i, 'ppslot'+i), 'ppListS'+i)}
+            ${listBox(checkRows(ids, 'pp-slot'+i), 'ppListS'+i)}
           </div>
         </div>`;
       }).join('');
@@ -2310,6 +2393,30 @@ function openPreplanDayEditor(key, date, onSaved){
     document.getElementById('ppClearAll').onclick=()=>modal.querySelectorAll('.pp-person').forEach(cb=>cb.checked=false);
   } else if(type.mode==='roles'){
     type.roles.forEach((_,i)=>wireSearch('ppSearch'+i,'ppList'+i));
+    const driverIdx=type.roles.indexOf('駕駛'), chiefIdx=type.roles.indexOf('車長');
+    if(driverIdx>-1 && chiefIdx>-1){
+      // picking 駕駛 changes who's eligible/ranked-in for 車長, so the chief
+      // list has to be regenerated live rather than staying frozen from
+      // whatever the driver was when the sheet first opened
+      modal.querySelectorAll('.pp-role'+driverIdx).forEach(radio=>{
+        radio.addEventListener('change', ()=>{
+          const driverId=radio.value;
+          const driver=driverId? state.personnel.find(p=>p.id===driverId) : null;
+          const reasonsFn = p=>{
+            const reasons=[];
+            if(!['士官','軍官'].includes(rankCategory(p.rank))) reasons.push('需為士官以上');
+            if(driver && rankIndex(p.rank)>rankIndex(driver.rank)) reasons.push('階級不可低於駕駛');
+            if(preset && preset.chiefRequiredMedCert && !p.medCert) reasons.push('需具備EMT或醫生證書');
+            if(preset && (preset.chiefRequiredLicenses||[]).length && !preset.chiefRequiredLicenses.some(l=>licenseCovers(p.license,l))) reasons.push('需持有'+preset.chiefRequiredLicenses.join('或')+'駕照');
+            return reasons;
+          };
+          const chiefListEl=document.getElementById('ppList'+chiefIdx);
+          const currentChief=modal.querySelector('.pp-role'+chiefIdx+':checked');
+          const currentVal=currentChief? currentChief.value : '';
+          if(chiefListEl) chiefListEl.innerHTML=radioRows(currentVal, 'pp-role'+chiefIdx, 'pprole'+chiefIdx, reasonsFn);
+        });
+      });
+    }
   } else if(type.mode==='dayNight'){
     wireSearch('ppSearchD','ppListD'); wireSearch('ppSearchN','ppListN');
   } else if(type.mode==='fixedSlots'){
@@ -2343,10 +2450,10 @@ function openPreplanDayEditor(key, date, onSaved){
         restUntil:getTimeSelectValue('ppRest')};
     }
     if(type.mode==='dayNight'){
-      const d=modal.querySelector('.pp-day:checked'), n=modal.querySelector('.pp-night:checked');
-      const dayP=d&&d.value? d.value:undefined, nightP=n&&n.value? n.value:undefined;
-      if(!dayP && !nightP && !support) return null;
-      return {dayPersonId:dayP, nightPersonId:nightP, support,
+      const dayIds=[...modal.querySelectorAll('.pp-day:checked')].map(cb=>cb.value);
+      const nightIds=[...modal.querySelectorAll('.pp-night:checked')].map(cb=>cb.value);
+      if(!dayIds.length && !nightIds.length && !support) return null;
+      return {dayPersonIds:dayIds, nightPersonIds:nightIds, support,
         dayStart:getTimeSelectValue('ppDayTStart'), dayEnd:getTimeSelectValue('ppDayTEnd'),
         nightStart:getTimeSelectValue('ppNightTStart'), nightEnd:getTimeSelectValue('ppNightTEnd'),
         dayRestUntil:getTimeSelectValue('ppDayRest'), nightRestUntil:getTimeSelectValue('ppNightRest')};
@@ -2356,8 +2463,8 @@ function openPreplanDayEditor(key, date, onSaved){
       type.slots.forEach((_,i)=>{
         const on=modal.querySelector(`.pp-slot-on[data-slot="${i}"]`);
         if(!on||!on.checked) return;
-        const sel=modal.querySelector(`.pp-slot${i}:checked`);
-        slots[i]={personId:(sel&&sel.value)||undefined, restUntil:getTimeSelectValue('ppSlotRest'+i)};
+        const ids=[...modal.querySelectorAll(`.pp-slot${i}:checked`)].map(cb=>cb.value);
+        slots[i]={personIds:ids, restUntil:getTimeSelectValue('ppSlotRest'+i)};
       });
       if(!Object.keys(slots).length && !support) return null;
       return {slots, support};
@@ -2405,7 +2512,12 @@ function openPreplanCopyModal(key, fromDate, onDone){
   modal.innerHTML=`
     <div class="sheet-inner">
       <div class="section-title"><h2 style="margin:0">複製「${type.name} ${minguoLabel(fromDate)}」</h2><button class="ghost small" id="pcClose">關閉</button></div>
-      <div class="hint" style="margin-bottom:8px">勾選要套用同樣內容的日期（會覆蓋那些日期原本的這個項目）。</div>
+      <div class="hint" style="margin-bottom:8px">勾選要套用同樣內容的日期（會覆蓋那些日期原本的這個項目），或直接框一段日期範圍快速勾選。</div>
+      <div class="row wrap" style="margin-bottom:8px">
+        <div class="grow"><label>從</label><input type="date" id="pcRangeFrom"></div>
+        <div class="grow"><label>到</label><input type="date" id="pcRangeTo"></div>
+        <button class="ghost small" id="pcRangeApply" style="align-self:flex-end">套用範圍</button>
+      </div>
       <div style="max-height:50vh;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:8px;margin-bottom:8px">
         ${Array.from({length:total},(_,i)=>{
           const d=`${ym}-${String(i+1).padStart(2,'0')}`;
@@ -2421,6 +2533,12 @@ function openPreplanCopyModal(key, fromDate, onDone){
     </div>`;
   document.body.appendChild(modal);
   document.getElementById('pcClose').onclick=()=>{ modal.remove(); if(onDone) onDone(); };
+  document.getElementById('pcRangeApply').onclick=()=>{
+    const from=document.getElementById('pcRangeFrom').value, to=document.getElementById('pcRangeTo').value;
+    if(!from||!to||from>to){ showAlert('請確認範圍正確'); return; }
+    const range=new Set(dateRangeList(from,to));
+    modal.querySelectorAll('.pc-date').forEach(cb=>{ if(range.has(cb.value)) cb.checked=true; });
+  };
   document.getElementById('pcSave').onclick=()=>{
     const dates=[...modal.querySelectorAll('.pc-date:checked')].map(cb=>cb.value);
     if(!dates.length){ showAlert('請至少勾選一個日期'); return; }
@@ -2613,14 +2731,15 @@ function openPersonDayEditor(personId, date, onDone){
 function openLeaveTableEditor(date, onSaved){
   let ym = monthOf(date);
   let selectedPid = null;
-  let picked = new Set();      // dates ticked in the current month
-  let honor = false;
+  let picked = new Set();       // dates ticked in the current month
+  let honorDates = new Set();   // subset of picked that are 榮譽假
   const modal=document.createElement('div');
   modal.className='fullscreen-modal'; modal.style.zIndex='93';
   const store=()=>state.preplan.leave||{};
   const loadPerson=()=>{
-    picked = new Set(((store()[selectedPid]||{}).dates||[]).filter(d=>d.startsWith(ym)));
-    honor = !!(store()[selectedPid]||{}).honor;
+    const rec=store()[selectedPid]||{};
+    picked = new Set((rec.dates||[]).filter(d=>d.startsWith(ym)));
+    honorDates = new Set((rec.honorDates||(rec.honor? rec.dates||[] : [])).filter(d=>picked.has(d)));
   };
   const draw=()=>{
     const person = selectedPid? state.personnel.find(p=>p.id===selectedPid) : null;
@@ -2632,10 +2751,11 @@ function openLeaveTableEditor(date, onSaved){
     for(let d=1;d<=total;d++){
       const ds=`${ym}-${String(d).padStart(2,'0')}`;
       const on = picked.has(ds);
+      const isHonor = on && honorDates.has(ds);
       const hol = isHolidayDate(ds);
       const sb = person? standbyStatusFor(person.id, ds) : null;
       // 留守 already decided for this person -> show it so the two planners agree
-      let mark = on? '休' : (sb==='staying'? '留守' : '');
+      let mark = isHonor? '12休' : (on? '休' : (sb==='staying'? '留守' : ''));
       const cls = on? 'has' : (sb==='staying'? 'standby-marked':'');
       cells.push(`<div class="cal-cell ${cls} ${hol?'holiday':''}" data-lt-date="${ds}">
         <div class="cal-day">${d}</div><div class="cal-mark">${mark}</div>
@@ -2644,7 +2764,7 @@ function openLeaveTableEditor(date, onSaved){
     const allDates=((store()[selectedPid]||{}).dates||[]);
     modal.innerHTML=`
       <div class="section-title"><h2 style="margin:0">🏖️ 休假大表</h2><button class="ghost small" id="ltClose">關閉</button></div>
-      <div class="hint" style="margin-bottom:8px">先選人，再點月曆上他要休的日子（可重複點取消）。按「確認休假」儲存。假日若沒點休假，代表他那天留守。</div>
+      <div class="hint" style="margin-bottom:8px">先選人，再點月曆：點一下＝休假，再點一下＝榮譽假（顯示「12休」，從前一天12:00提早開始），第三下取消。按「確認休假」儲存。假日若沒點休假，代表他那天留守。</div>
       <div class="row wrap" style="margin-bottom:6px">
         <div class="grow"><label>搜尋姓名</label><input type="text" id="ltSearch" placeholder="輸入姓名關鍵字"></div>
       </div>
@@ -2668,9 +2788,7 @@ function openLeaveTableEditor(date, onSaved){
           ${['日','一','二','三','四','五','六'].map(w=>`<div class="cal-head">${w}</div>`).join('')}
           ${cells.join('')}
         </div>
-        <label style="display:flex;align-items:center;gap:6px;font-size:13px;margin-bottom:8px">
-          <input type="checkbox" id="ltHonor" style="width:auto" ${honor?'checked':''}> 榮譽假（假期從前一天 18:00 提早到 12:00 開始）
-        </label>
+        <div class="hint" style="margin-bottom:8px">「休」＝一般休假（前一天18:00起）；「12休」＝榮譽假（前一天12:00起）；「留守」＝留守表已排他這天留守，跟這裡無關聯除非你也點成休假。榮譽假若整段（含前後緩衝）超過5天，匯入時會自動退回一般休假並提示你。</div>
         <div class="row wrap" style="margin-bottom:8px">
           <button class="ghost grow" id="ltClearMonth">清空本月</button>
           <button class="primary grow" id="ltSave">確認休假</button>
@@ -2678,7 +2796,7 @@ function openLeaveTableEditor(date, onSaved){
       ` : `<div class="empty">請先選擇一位人員</div>`}
       <div class="divider"></div>
       <button class="primary" id="ltImport" style="width:100%">📥 匯入本月休假到實際班表</button>
-      <div class="hint">連續的日子會自動合併成一段（含前後緩衝）。重複匯入不會疊加。</div>`;
+      <div class="hint">連續的日子會自動合併成一段（含前後緩衝，以每段第一天是否設為榮譽假來判斷）。重複匯入不會疊加。</div>`;
     document.getElementById('ltClose').onclick=()=>modal.remove();
     const se=document.getElementById('ltSearch'), le=document.getElementById('ltPeople');
     se.oninput=()=>{
@@ -2693,31 +2811,43 @@ function openLeaveTableEditor(date, onSaved){
       const st=store();
       const totalDays=Object.values(st).reduce((n,r)=>n+((r.dates||[]).filter(d=>d.startsWith(ym)).length),0);
       if(!totalDays){ showAlert('本月還沒有排任何休假。'); return; }
-      showConfirm(`確定要把本月已排的 ${totalDays} 人日休假匯入實際班表嗎？（同一人重複匯入會先移除舊的再重建，不會疊加）`, ()=>{
-        const n=importLeaveTable(ym);
-        saveState(); showAlert(`已建立 ${n} 段休假。`); render(); draw();
+      showConfirm(`確定要把本月已排的 ${totalDays} 人日休假，依連續日期自動合併並匯入實際班表嗎？每個人在這個月範圍內原本的休假紀錄會被清除重建（不會疊加），範圍外的休假不受影響。`, ()=>{
+        const {count,downgraded}=importLeaveTable(ym);
+        saveState();
+        let msg=`已建立 ${count} 段休假。`;
+        if(downgraded.length){
+          msg+=`\n\n⚠️ 有 ${downgraded.length} 段因為含前後緩衝超過5天，榮譽假已自動退回一般休假（18:00起）：\n`
+             + downgraded.slice(0,8).map(d=>`・${d.name}：${minguoLabel(d.start)}~${minguoLabel(d.end)}`).join('\n')
+             + (downgraded.length>8? `\n…還有 ${downgraded.length-8} 段`:'');
+        }
+        showAlert(msg);
+        render(); draw();
       });
     };
     if(person){
       modal.querySelectorAll('[data-lt-date]').forEach(c=>{
         c.onclick=()=>{
           const ds=c.dataset.ltDate;
-          if(picked.has(ds)) picked.delete(ds); else picked.add(ds);
+          // cycle: off -> 休 -> 12休 -> off
+          if(!picked.has(ds)){ picked.add(ds); }
+          else if(!honorDates.has(ds)){ honorDates.add(ds); }
+          else { picked.delete(ds); honorDates.delete(ds); }
           draw();
         };
       });
-      document.getElementById('ltHonor').onchange=(e)=>{ honor=e.target.checked; };
       document.getElementById('ltPrev').onclick=()=>{ ym=shiftMonth(ym,-1); preplanMonth=ym; loadPerson(); draw(); };
       document.getElementById('ltNext').onclick=()=>{ ym=shiftMonth(ym,1); preplanMonth=ym; loadPerson(); draw(); };
-      document.getElementById('ltClearMonth').onclick=()=>{ picked=new Set(); draw(); };
+      document.getElementById('ltClearMonth').onclick=()=>{ picked=new Set(); honorDates=new Set(); draw(); };
       document.getElementById('ltSave').onclick=()=>{
-        const cur=((store()[selectedPid]||{}).dates||[]).filter(d=>!d.startsWith(ym));
-        const merged=[...cur, ...picked].sort();
+        const curDates=((store()[selectedPid]||{}).dates||[]).filter(d=>!d.startsWith(ym));
+        const curHonor=((store()[selectedPid]||{}).honorDates||[]).filter(d=>!d.startsWith(ym));
+        const mergedDates=[...curDates, ...picked].sort();
+        const mergedHonor=[...curHonor, ...honorDates].sort();
         if(!state.preplan.leave) state.preplan.leave={};
-        if(merged.length) state.preplan.leave[selectedPid]={dates:merged, honor};
+        if(mergedDates.length) state.preplan.leave[selectedPid]={dates:mergedDates, honorDates:mergedHonor};
         else delete state.preplan.leave[selectedPid];
         saveState();
-        showAlert(`已儲存 ${person.name} 的休假（本月 ${picked.size} 天）。`);
+        showAlert(`已儲存 ${person.name} 的休假（本月 ${picked.size} 天，其中榮譽假 ${honorDates.size} 天）。`);
         draw(); if(onSaved) onSaved();
       };
     }
@@ -2815,17 +2945,19 @@ function importPreplanForDate(key, date){
   } else if(type.mode==='dayNight'){
     const dayT = times[0]||{start:'',end:''};
     const nightT = times[1]||times[0]||{start:'',end:''};
+    const dayIds=(plan.dayPersonIds||(plan.dayPersonId?[plan.dayPersonId]:[])).filter(Boolean);
+    const nightIds=(plan.nightPersonIds||(plan.nightPersonId?[plan.nightPersonId]:[])).filter(Boolean);
     let wrote=false;
-    if(plan.dayPersonId){
+    if(dayIds.length){
       state.misc[date].push({id:uid(), role:roleName,
         start:plan.dayStart||dayT.start, end:plan.dayEnd||dayT.end,
-        restUntil:plan.dayRestUntil||'', personIds:[plan.dayPersonId], shiftLabel:'日班', ...sup});
+        restUntil:plan.dayRestUntil||'', personIds:dayIds, shiftLabel:'日班', ...sup});
       wrote=true;
     }
-    if(plan.nightPersonId){
+    if(nightIds.length){
       state.misc[date].push({id:uid(), role:roleName,
         start:plan.nightStart||nightT.start, end:plan.nightEnd||nightT.end,
-        restUntil:plan.nightRestUntil||(preset&&preset.restUntil)||'', personIds:[plan.nightPersonId], shiftLabel:'夜班', ...sup});
+        restUntil:plan.nightRestUntil||(preset&&preset.restUntil)||'', personIds:nightIds, shiftLabel:'夜班', ...sup});
       wrote=true;
     }
     return wrote;
@@ -2835,9 +2967,10 @@ function importPreplanForDate(key, date){
       const label=type.slots[Number(idx)];
       if(!label || !cfg) return;
       const [st,en]=label.split('-');
-      if(!cfg.personId && !plan.support) return;
+      const ids=(cfg.personIds||(cfg.personId?[cfg.personId]:[])).filter(Boolean);
+      if(!ids.length && !plan.support) return;
       state.misc[date].push({id:uid(), role:roleName, start:st, end:en,
-        restUntil:cfg.restUntil||'', personIds:cfg.personId? [cfg.personId]:[], ...sup});
+        restUntil:cfg.restUntil||'', personIds:ids, ...sup});
       wrote=true;
     });
     return wrote;
@@ -2847,12 +2980,20 @@ function importPreplanForDate(key, date){
 /* 休假大表 import: turn each person's ticked dates into proper leave blocks,
    merging consecutive days into one block so buffers land in the right
    places (rather than one buffered block per day). */
+/* imports the 休假大表 into real leave blocks. Consecutive days merge into
+   one block; a block is 榮譽假 if its FIRST day was marked honor (honor is
+   a per-day flag on the calendar, not a whole-person setting, since the
+   same person might want it for one stretch but not another). Returns the
+   segment count plus any requests that got silently downgraded (buffer
+   >5 days) so the caller can tell the user instead of it happening quietly. */
 function importLeaveTable(monthPrefix){
   const store=state.preplan.leave||{};
   let count=0;
+  const downgraded=[];
   Object.entries(store).forEach(([pid, rec])=>{
     const dates=(rec.dates||[]).filter(d=>!monthPrefix || d.startsWith(monthPrefix)).sort();
     if(!dates.length) return;
+    const honorSet=new Set(rec.honorDates||(rec.honor? dates:[]));
     // drop this person's existing generated blocks that fall in range first
     dates.forEach(d=>{
       const lid=findLeaveIdForPerson(pid, d);
@@ -2860,14 +3001,19 @@ function importLeaveTable(monthPrefix){
     });
     // group consecutive days
     let runStart=dates[0], prev=dates[0];
-    const flush=(end)=>{ createLeaveSegment(pid, runStart, end, !!rec.honor); count++; };
+    const person=state.personnel.find(p=>p.id===pid);
+    const flush=(end)=>{
+      const r=createLeaveSegment(pid, runStart, end, honorSet.has(runStart));
+      count++;
+      if(r.honorDowngraded) downgraded.push({personId:pid, name:person?person.name:pid, start:runStart, end});
+    };
     for(let i=1;i<dates.length;i++){
       if(dates[i]===nextDateStr(prev)){ prev=dates[i]; continue; }
       flush(prev); runStart=dates[i]; prev=dates[i];
     }
     flush(prev);
   });
-  return count;
+  return {count, downgraded};
 }
 function openDayResetModal(){
   const date = currentDate;
@@ -3817,6 +3963,10 @@ function createLeaveSegment(personId, s, e, honorRequested){
   });
   if(!state.unavail[lastRoster]) state.unavail[lastRoster]=[];
   state.unavail[lastRoster].push({id:uid(),personId,allDay:false,start:'00:00',end:'07:30',reason:reasonLabel,leaveId,leaveStart:s,leaveEnd:e});
+  // report back whether the requested 榮譽假 actually took effect, so callers
+  // (like the leave-table importer) can surface it instead of it silently
+  // falling back to a normal 18:00 start
+  return {honorApplied: honorApplies, honorDowngraded: !!honorRequested && !honorApplies, leaveId};
 }
 function deleteLeaveById(leaveId){
   Object.keys(state.unavail).forEach(d=>{
@@ -3931,7 +4081,7 @@ function openQuickIncidentModal(personId, date, onDone){
   if(!person) return;
   const existing = (state.unavail[date]||[]).filter(u=>u.personId===personId && !u.leaveId && !isLeaveBufferEntry(u));
   const modal=document.createElement('div');
-  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:70;display:flex;align-items:flex-end;';
+  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:150;display:flex;align-items:flex-end;';
   modal.innerHTML=`
     <div class="sheet-inner">
       <div class="section-title"><h2 style="margin:0">登記/編輯事故：${esc(person.name)}</h2><button class="ghost small" id="closeModal">關閉</button></div>
@@ -3939,10 +4089,11 @@ function openQuickIncidentModal(personId, date, onDone){
       <div id="qiExistingList" style="margin-bottom:8px">${existing.length? existing.map(u=>`
         <div class="list-item">
           <span class="grow">${u.allDay? '全天':`${u.start}-${u.end}`}${u.reason? `（${esc(u.reason)}）`:''}${u.inCamp===false? ' 🚫不在營':''}</span>
+          <button class="ghost small" data-qi-edit="${u.id}">編輯</button>
           <button class="ghost small danger" data-qi-del="${u.id}">刪除</button>
         </div>`).join('') : `<div class="empty">今天還沒有登記</div>`}</div>
       <div class="divider"></div>
-      <h3>新增一筆</h3>
+      <h3 id="qiFormTitle">新增一筆</h3>
       <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text);margin-bottom:8px">
         <input type="checkbox" id="qiAllDay" style="width:auto" checked> 全天不能排
       </label>
@@ -3976,25 +4127,44 @@ function openQuickIncidentModal(personId, date, onDone){
       <button class="primary" id="qiAdd" style="width:100%">新增</button>
     </div>`;
   document.body.appendChild(modal);
-  document.getElementById('closeModal').onclick=()=>modal.remove();
+  let editingId=null;
+  const refresh=()=>{ modal.remove(); openQuickIncidentModal(personId, date, onDone); };
+  document.getElementById('closeModal').onclick=()=>{ modal.remove(); if(onDone) onDone(); };
   document.getElementById('qiAllDay').onchange=(e)=>{
     document.getElementById('qiTimeRow').style.display = e.target.checked? 'none':'flex';
   };
   document.getElementById('qiReasonPreset').onchange=(e)=>{
     document.getElementById('qiReasonCustomRow').style.display = e.target.value==='__custom'? 'flex':'none';
   };
-  function wireDelButtons(){
-    document.querySelectorAll('[data-qi-del]').forEach(b=>{
-      b.onclick=()=>{
-        state.unavail[date] = (state.unavail[date]||[]).filter(u=>u.id!==b.dataset.qiDel);
-        saveState();
-        modal.remove();
-        if(onDone) onDone(); else render();
-      };
-    });
-  }
-  wireDelButtons();
+  document.querySelectorAll('[data-qi-del]').forEach(b=>{
+    b.onclick=()=>{
+      state.unavail[date] = (state.unavail[date]||[]).filter(u=>u.id!==b.dataset.qiDel);
+      saveState();
+      refresh();
+    };
+  });
+  document.querySelectorAll('[data-qi-edit]').forEach(b=>{
+    b.onclick=()=>{
+      const u=(state.unavail[date]||[]).find(x=>x.id===b.dataset.qiEdit);
+      if(!u) return;
+      editingId=u.id;
+      document.getElementById('qiFormTitle').textContent='編輯這筆';
+      document.getElementById('qiAllDay').checked=u.allDay;
+      document.getElementById('qiTimeRow').style.display=u.allDay?'none':'flex';
+      if(!u.allDay){ setTimeSelectValue('qiStart',u.start); setTimeSelectValue('qiEnd',u.end); }
+      const presetSel=document.getElementById('qiReasonPreset');
+      const known=[...presetSel.options].some(o=>o.value===u.reason);
+      if(known){ presetSel.value=u.reason; }
+      else if(u.reason){ presetSel.value='__custom'; document.getElementById('qiReasonCustomRow').style.display='flex'; document.getElementById('qiReasonCustom').value=u.reason; }
+      document.getElementById('qiInCamp').checked = u.inCamp!==false;
+      document.getElementById('qiAdd').textContent='儲存修改';
+      modal.querySelector('.sheet-inner').scrollTop = modal.querySelector('.sheet-inner').scrollHeight;
+    };
+  });
   document.getElementById('qiAdd').onclick=()=>{
+    if(editingId){
+      state.unavail[date] = (state.unavail[date]||[]).filter(u=>u.id!==editingId);
+    }
     const allDay = document.getElementById('qiAllDay').checked;
     const start = allDay? '' : getTimeSelectValue('qiStart');
     const end = allDay? '' : getTimeSelectValue('qiEnd');
@@ -4012,8 +4182,9 @@ function openQuickIncidentModal(personId, date, onDone){
       const mode = existingLt.mode!=='off' ? existingLt.mode : 'allday';
       person.longTerm = {...existingLt, mode, reason, inCamp};
     }
-    saveState(); modal.remove();
-    if(onDone) onDone(); else render();
+    saveState();
+    editingId=null;
+    refresh();
   };
 }
 function openLeaveEditModal(leaveId){
@@ -5326,7 +5497,7 @@ function wireReasonPoolDeleteButtons(){
 
 function showAlert(message){
   const modal=document.createElement('div');
-  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:80;display:flex;align-items:center;justify-content:center;padding:20px;';
+  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:200;display:flex;align-items:center;justify-content:center;padding:20px;';
   modal.innerHTML=`
     <div style="background:var(--panel);max-width:320px;width:100%;border-radius:10px;padding:16px;border:1px solid var(--line);">
       <div style="margin-bottom:14px;font-size:14px;line-height:1.5;color:var(--text)">${esc(message)}</div>
@@ -5351,7 +5522,7 @@ function wireCloseConfirm(modal, closeBtn){
 }
 function showConfirm(message, onConfirm){
   const modal=document.createElement('div');
-  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:80;display:flex;align-items:center;justify-content:center;padding:20px;';
+  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:200;display:flex;align-items:center;justify-content:center;padding:20px;';
   modal.innerHTML=`
     <div style="background:var(--panel);max-width:320px;width:100%;border-radius:10px;padding:16px;border:1px solid var(--line);">
       <div style="margin-bottom:14px;font-size:14px;line-height:1.5;color:var(--text)">${esc(message)}</div>
@@ -5366,7 +5537,7 @@ function showConfirm(message, onConfirm){
 }
 function showPrompt(message, defaultValue, onSubmit){
   const modal=document.createElement('div');
-  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:80;display:flex;align-items:center;justify-content:center;padding:20px;';
+  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:200;display:flex;align-items:center;justify-content:center;padding:20px;';
   modal.innerHTML=`
     <div style="background:var(--panel);max-width:320px;width:100%;border-radius:10px;padding:16px;border:1px solid var(--line);">
       <div style="margin-bottom:8px;font-size:14px;line-height:1.5;color:var(--text)">${esc(message)}</div>
