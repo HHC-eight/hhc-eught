@@ -111,7 +111,7 @@ textarea{min-height:50px;resize:vertical;}
       <button class="ghost small" id="undoBtn" title="復原上一步" disabled>↩️</button>
       <button class="ghost small" id="redoBtn" title="取消復原（重做）" disabled>↪️</button>
       <button class="ghost small" id="dayResetBtn" title="還原這一天">♻️</button>
-      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v58</span></h1>
+      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v59</span></h1>
     </div>
     <div class="row" style="gap:6px;align-items:center">
       <select id="timeStepSelect" style="font-size:11px;padding:3px 6px;width:auto">
@@ -434,14 +434,16 @@ function driverQualificationIssues(person, preset){
   });
   return issues;
 }
-/* 車長 eligibility: NCO+ outranking the driver (if one's picked yet),
-   plus the preset's shared EMT requirement, plus chiefRequiredSkills —
-   the chief's OWN separate skill requirement, independent of whatever
-   requiredSkills applies to the driver */
+/* 車長 eligibility: NCO+ outranking (or equal to) the driver (if one's
+   picked yet), plus the preset's shared EMT requirement, plus the chief's
+   OWN separate license/EMT/skill requirements — independent of whatever
+   requiredLicenses/requiredMedCert/requiredSkills applies to the driver */
 function chiefEligible(person, preset, driver){
   if(!['士官','軍官'].includes(rankCategory(person.rank))) return false;
   if(driver && rankIndex(person.rank)>rankIndex(driver.rank)) return false;
   if(preset && preset.requiredMedCert && !person.medCert) return false;
+  if(preset && (preset.chiefRequiredMedCert) && !person.medCert) return false;
+  if(preset && (preset.chiefRequiredLicenses||[]).length && !preset.chiefRequiredLicenses.some(l=>licenseCovers(person.license, l))) return false;
   if(preset && (preset.chiefRequiredSkills||[]).some(sk=>!(person.skills||[]).includes(sk))) return false;
   return true;
 }
@@ -484,9 +486,14 @@ function validateMiscEntry(entry){
     if(chief && !['士官','軍官'].includes(rankCategory(chief.rank))) issues.push(`車長 ${chief.name}：需為士官以上`);
     if(chief && driver && rankIndex(chief.rank)>rankIndex(driver.rank)) issues.push(`車長 ${chief.name} 階級不可低於駕駛 ${driver.name}`);
     if(chief && preset && preset.requiredMedCert && !chief.medCert) issues.push(`車長 ${chief.name}：需具備EMT或醫生證書`);
+    if(chief && preset && preset.chiefRequiredMedCert && !chief.medCert) issues.push(`車長 ${chief.name}：需具備EMT或醫生證書`);
+    if(chief && preset && (preset.chiefRequiredLicenses||[]).length && !preset.chiefRequiredLicenses.some(l=>licenseCovers(chief.license, l))){
+      issues.push(`車長 ${chief.name}：需持有${preset.chiefRequiredLicenses.join('或')}駕照`);
+    }
     if(chief && preset) (preset.chiefRequiredSkills||[]).forEach(sk=>{
       if(!(chief.skills||[]).includes(sk)) issues.push(`車長 ${chief.name}：需具備${sk}專長`);
     });
+    if(chief && driver && chief.id===driver.id) issues.push(`車長跟駕駛不能是同一人（${chief.name}）`);
   }
   entry.roles.forEach((r,i)=>{
     if(r.startsWith('話務')){
@@ -520,6 +527,8 @@ state.miscPresets.forEach(p=>{
   if(p.requiredMedCert===undefined) p.requiredMedCert = p.role==='救護車';
   if(p.requiredSkills===undefined) p.requiredSkills = [];
   if(p.chiefRequiredSkills===undefined) p.chiefRequiredSkills = [];
+  if(p.chiefRequiredLicenses===undefined) p.chiefRequiredLicenses = [];
+  if(p.chiefRequiredMedCert===undefined) p.chiefRequiredMedCert = false;
   if(p.rankPriority===undefined) p.rankPriority = null; // null = default rank order (RANK_DEFS)
 });
 /* unified display/export order shared across 排班類別 AND 其他勤務常用項目 —
@@ -1187,10 +1196,13 @@ function autoAssignMiscForDate(date){
     });
   });
   /* process entries with the strictest requirements first (most required
-     license/EMT/skill types), so a rare qualification (e.g. the only
-     person with a 大客車 license) doesn't get used up by an earlier, less
-     picky entry that could have been filled by almost anyone. Entries
-     tied on requirement count fall back to the card's own display order
+     license/EMT/skill types, weighted by how many of the entry's role
+     slots actually need one — an item where BOTH driver and chief need
+     EMT is harder to fill than one where only the driver does, so it
+     should get first pick of the few EMT-qualified people), so a rare
+     qualification doesn't get used up by an earlier, less picky entry
+     that could have been filled by almost anyone. Entries tied on
+     requirement count fall back to the card's own display order
      (sortOrder) — this only reorders the AUTO-ASSIGN pass itself, not the
      entries' stored order or how they're displayed. */
   function miscEntryRequirementScore(entry){
@@ -1200,7 +1212,12 @@ function autoAssignMiscForDate(date){
     if((preset.requiredLicenses||[]).length) score++;
     if(preset.requiredMedCert) score++;
     if((preset.requiredSkills||[]).length) score++;
-    if((preset.chiefRequiredSkills||[]).length) score++;
+    if(entry.roles && entry.roles.includes('車長')){
+      if(preset.requiredMedCert) score++; // chief shares the same EMT requirement as the driver
+      if(preset.chiefRequiredMedCert) score++;
+      if((preset.chiefRequiredLicenses||[]).length) score++;
+      if((preset.chiefRequiredSkills||[]).length) score++;
+    }
     return score;
   }
   const processingOrder = [...state.misc[date]].sort((a,b)=>{
@@ -3545,14 +3562,17 @@ function uaPeopleCheckboxesHTML(groupFilter, date, searchFilter){
    ordinary time-availability issues, so the role-picker list (below) can
    show one clean "🚫不可排（reason・reason）" line per person instead of
    the old select's un-deduplicated, repeated text */
-function roleIneligibilityReasons(person, role, preset, driver, date, s, eRaw, excludeMiscId){
+function roleIneligibilityReasons(person, role, preset, driver, date, s, eRaw, excludeMiscId, otherSelectedIds){
   const reasons=[];
+  if(otherSelectedIds && otherSelectedIds.includes(person.id)) reasons.push('已擔任這個項目的其他角色');
   if(role==='駕駛'){
     driverQualificationIssues(person, preset).forEach(r=>reasons.push(r));
   } else if(role==='車長'){
     if(!['士官','軍官'].includes(rankCategory(person.rank))) reasons.push('需為士官以上');
     if(driver && rankIndex(person.rank)>rankIndex(driver.rank)) reasons.push('階級不可低於駕駛');
     if(preset && preset.requiredMedCert && !person.medCert) reasons.push('需具備EMT或醫生證書');
+    if(preset && preset.chiefRequiredMedCert && !person.medCert) reasons.push('需具備EMT或醫生證書');
+    if(preset && (preset.chiefRequiredLicenses||[]).length && !preset.chiefRequiredLicenses.some(l=>licenseCovers(person.license, l))) reasons.push(`需持有${preset.chiefRequiredLicenses.join('或')}駕照`);
     ((preset&&preset.chiefRequiredSkills)||[]).forEach(sk=>{ if(!(person.skills||[]).includes(sk)) reasons.push(`需具備${sk}專長`); });
   } else if(role.startsWith('話務')){
     if(!person.license) reasons.push('需至少小型車駕照');
@@ -5328,6 +5348,16 @@ function openMiscPresetModal(editIndex){
       ${existing && (existing.roles||[]).includes('車長')? `
       <div class="divider"></div>
       <h3>車長資格要求（分開設定，只套用在車長角色，駕駛不受影響）</h3>
+      <label>車長需持有駕照(可複選，不選代表不限)</label>
+      <div style="margin-bottom:8px">
+        ${['小型車','大型車','大客車'].map(l=>`
+          <label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0">
+            <input type="checkbox" class="mp-chief-req-license" value="${l}" style="width:auto" ${(existing.chiefRequiredLicenses||[]).includes(l)?'checked':''}> ${l}
+          </label>`).join('')}
+      </div>
+      <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text);margin-bottom:8px">
+        <input type="checkbox" id="mpChiefReqMedCert" style="width:auto" ${existing.chiefRequiredMedCert?'checked':''}> 車長需具備救護證照(EMT或醫生證書)
+      </label>
       <label>車長需具備特殊專長(可複選，不選代表不限，車長原本就需士官以上且階級不低於駕駛，這裡是額外加嚴)</label>
       <div style="margin-bottom:8px">
         ${state.skillOptions.map(s=>`
@@ -5421,13 +5451,20 @@ function openMiscPresetModal(editIndex){
     const requiredMedCert=document.getElementById('mpReqMedCert').checked;
     const requiredSkills=[...document.querySelectorAll('.mp-req-skill:checked')].map(cb=>cb.value);
     const chiefRequiredSkills=[...document.querySelectorAll('.mp-chief-req-skill:checked')].map(cb=>cb.value);
+    const chiefRequiredLicenses=[...document.querySelectorAll('.mp-chief-req-license:checked')].map(cb=>cb.value);
+    const chiefReqMedCertEl=document.getElementById('mpChiefReqMedCert');
+    const chiefRequiredMedCert=chiefReqMedCertEl? chiefReqMedCertEl.checked : undefined;
     const defaultOrder = RANK_DEFS.map(r=>r.rank);
     const isDefaultOrder = rankPriorityDraft.length===defaultOrder.length && rankPriorityDraft.every((r,i)=>r===defaultOrder[i]);
     const rankPriority = isDefaultOrder? null : [...rankPriorityDraft];
     if(editing){
       existing.role=role; existing.times=timesDraft.map(t=>({...t})); existing.fixed=fixed; existing.isSentry=isSentry; existing.isAllDayAway=isAllDayAway; existing.standbyMode=standbyMode; existing.restUntil=restUntil;
       existing.requiredLicenses=requiredLicenses; existing.requiredMedCert=requiredMedCert; existing.requiredSkills=requiredSkills;
-      if((existing.roles||[]).includes('車長')) existing.chiefRequiredSkills=chiefRequiredSkills;
+      if((existing.roles||[]).includes('車長')){
+        existing.chiefRequiredSkills=chiefRequiredSkills;
+        existing.chiefRequiredLicenses=chiefRequiredLicenses;
+        existing.chiefRequiredMedCert=chiefRequiredMedCert;
+      }
       existing.rankPriority=rankPriority;
       delete existing.start; delete existing.end;
     } else {
@@ -5567,7 +5604,8 @@ function miscEntryEditorHTML(m){
         const driverIdx=m.roles.indexOf('駕駛');
         if(driverIdx>-1) driver = state.personnel.find(p=>p.id===m.personIds[driverIdx]);
       }
-      const reasonsFn = p=>roleIneligibilityReasons(p, r, preset, driver, currentDate, sMin, eMinRaw, m.id);
+      const otherSelectedIds = m.personIds.filter((pid,idx)=>idx!==i && pid);
+      const reasonsFn = p=>roleIneligibilityReasons(p, r, preset, driver, currentDate, sMin, eMinRaw, m.id, otherSelectedIds);
       return `<div class="row wrap" style="margin-bottom:6px">
         <div class="grow"><label>${esc(r)}</label>
           ${rolePickerHTML('inlineRoleSel-'+m.id+'-'+i, m.personIds[i]||'', reasonsFn)}
@@ -5645,7 +5683,12 @@ function wireMiscInlineEditors(){
               driver = driverInput? state.personnel.find(p=>p.id===driverInput.value) : null;
             }
           }
-          const reasonsFn = p=>roleIneligibilityReasons(p, r, preset, driver, currentDate, sMin, eMinRaw, m.id);
+          const otherSelectedIds = m.roles.map((_,idx)=>{
+            if(idx===i) return null;
+            const otherInput = document.getElementById('inlineRoleSel-'+m.id+'-'+idx);
+            return otherInput? otherInput.value : null;
+          }).filter(Boolean);
+          const reasonsFn = p=>roleIneligibilityReasons(p, r, preset, driver, currentDate, sMin, eMinRaw, m.id, otherSelectedIds);
           const sorted=[...state.personnel].sort((a,b)=>{
             const ra=reasonsFn(a), rb=reasonsFn(b);
             const pa=ra.length?1:0, pb=rb.length?1:0;
@@ -5927,7 +5970,12 @@ function renderMisc(){
           driver = driverInput? state.personnel.find(p=>p.id===driverInput.value) : null;
         }
       }
-      const reasonsFn = p=>roleIneligibilityReasons(p, r, presetForForm, driver, currentDate, s, e0, miscEditingId);
+      const otherSelectedIds = miscSelectedRoles.map((_,i2)=>{
+        if(i2===idx) return null;
+        const otherInput = document.getElementById('mRoleSel'+i2);
+        return otherInput? otherInput.value : null;
+      }).filter(Boolean);
+      const reasonsFn = p=>roleIneligibilityReasons(p, r, presetForForm, driver, currentDate, s, e0, miscEditingId, otherSelectedIds);
       const sorted=[...state.personnel].sort((a,b)=>{
         const ra=reasonsFn(a), rb=reasonsFn(b);
         const pa=ra.length?1:0, pb=rb.length?1:0;
