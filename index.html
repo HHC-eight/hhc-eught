@@ -110,7 +110,8 @@ textarea{min-height:50px;resize:vertical;}
     <div class="row" style="gap:6px;align-items:center">
       <button class="ghost small" id="undoBtn" title="復原上一步" disabled>↩️</button>
       <button class="ghost small" id="redoBtn" title="取消復原（重做）" disabled>↪️</button>
-      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v55</span></h1>
+      <button class="ghost small" id="dayResetBtn" title="還原這一天">♻️</button>
+      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v57</span></h1>
     </div>
     <div class="row" style="gap:6px;align-items:center">
       <select id="timeStepSelect" style="font-size:11px;padding:3px 6px;width:auto">
@@ -409,7 +410,7 @@ function driverQualificationIssues(person, preset){
    requiredSkills applies to the driver */
 function chiefEligible(person, preset, driver){
   if(!['士官','軍官'].includes(rankCategory(person.rank))) return false;
-  if(driver && rankIndex(person.rank)>=rankIndex(driver.rank)) return false;
+  if(driver && rankIndex(person.rank)>rankIndex(driver.rank)) return false;
   if(preset && preset.requiredMedCert && !person.medCert) return false;
   if(preset && (preset.chiefRequiredSkills||[]).some(sk=>!(person.skills||[]).includes(sk))) return false;
   return true;
@@ -451,7 +452,7 @@ function validateMiscEntry(entry){
       driverQualificationIssues(driver, preset).forEach(msg=>issues.push(`駕駛 ${driver.name}：${msg}`));
     }
     if(chief && !['士官','軍官'].includes(rankCategory(chief.rank))) issues.push(`車長 ${chief.name}：需為士官以上`);
-    if(chief && driver && rankIndex(chief.rank)>=rankIndex(driver.rank)) issues.push(`車長 ${chief.name} 階級須高於駕駛 ${driver.name}`);
+    if(chief && driver && rankIndex(chief.rank)>rankIndex(driver.rank)) issues.push(`車長 ${chief.name} 階級不可低於駕駛 ${driver.name}`);
     if(chief && preset && preset.requiredMedCert && !chief.medCert) issues.push(`車長 ${chief.name}：需具備EMT或醫生證書`);
     if(chief && preset) (preset.chiefRequiredSkills||[]).forEach(sk=>{
       if(!(chief.skills||[]).includes(sk)) issues.push(`車長 ${chief.name}：需具備${sk}專長`);
@@ -1389,6 +1390,60 @@ function flashPressed(btn){
 document.getElementById('undoBtn').addEventListener('click', (e)=>{ flashPressed(e.currentTarget); undoLastAction(); });
 document.getElementById('redoBtn').addEventListener('click', (e)=>{ flashPressed(e.currentTarget); redoLastAction(); });
 refreshUndoButton();
+document.getElementById('dayResetBtn').addEventListener('click', (e)=>{ flashPressed(e.currentTarget); openDayResetModal(); });
+/* two levels of "start this date over", both scoped to currentDate only:
+   level 1 keeps the day's structural setup (per-day 班別 overrides, 其他
+   勤務 item definitions) and just clears who's assigned / what's
+   registered; level 2 wipes the date out of every per-day state object
+   entirely, so it falls back to looking exactly like a date that was
+   never touched. */
+function openDayResetModal(){
+  const date = currentDate;
+  const modal=document.createElement('div');
+  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:70;display:flex;align-items:center;justify-content:center;padding:20px;';
+  modal.innerHTML=`
+    <div style="background:var(--panel);max-width:360px;width:100%;border-radius:10px;padding:16px;border:1px solid var(--line);">
+      <h2 style="margin:0 0 10px">還原 ${minguoLabel(date)}</h2>
+      <button class="ghost" id="dayResetPeople" style="width:100%;margin-bottom:8px;text-align:left">
+        <b>清空人員資訊（班表不動）</b><br><span class="hint">清空這天的事故/休假登記、衛哨已排人員、其他勤務已排人員；班別結構跟其他勤務項目本身都保留。</span>
+      </button>
+      <button class="ghost danger" id="dayResetFull" style="width:100%;margin-bottom:8px;text-align:left">
+        <b>完全恢復成新的一天</b><br><span class="hint">連班別的當日專屬設定、其他勤務項目本身都一起清掉，這天變回完全沒被動過的空白日期。</span>
+      </button>
+      <button class="ghost grow" id="dayResetCancel" style="width:100%">取消</button>
+    </div>`;
+  document.body.appendChild(modal);
+  document.getElementById('dayResetCancel').onclick=()=>modal.remove();
+  document.getElementById('dayResetPeople').onclick=()=>{
+    modal.remove();
+    showConfirm(`確定要清空「${minguoLabel(date)}」的所有事故/休假登記、衛哨已排人員、其他勤務已排人員嗎？班別結構跟其他勤務項目本身不會被刪除。`, ()=>{
+      delete state.unavail[date];
+      delete state.assign[date];
+      delete state.longTermSuspensions[date];
+      delete state.dutyChanges[date];
+      (state.misc[date]||[]).forEach(m=>{
+        m.personIds = m.roles? m.roles.map(()=>undefined) : [];
+      });
+      saveState();
+      showAlert('已清空這天的人員資訊。');
+      render();
+    });
+  };
+  document.getElementById('dayResetFull').onclick=()=>{
+    modal.remove();
+    showConfirm(`確定要把「${minguoLabel(date)}」完全恢復成新的一天嗎？連班別的當日專屬設定、其他勤務項目本身都會一起清掉，這天會變回完全沒被動過的空白日期（如果清錯了，可以用左上角的復原（↩️）按鈕還原）。`, ()=>{
+      delete state.unavail[date];
+      delete state.assign[date];
+      delete state.longTermSuspensions[date];
+      delete state.dutyChanges[date];
+      delete state.misc[date];
+      delete state.dailyShiftOverrides[date];
+      saveState();
+      showAlert('這天已經完全恢復成新的一天。');
+      render();
+    });
+  };
+}
 document.getElementById('exportBtn').addEventListener('click', openExportModal);
 function openExportModal(){
   const dataStr = JSON.stringify(state, null, 2);
@@ -3463,7 +3518,7 @@ function roleIneligibilityReasons(person, role, preset, driver, date, s, eRaw){
     driverQualificationIssues(person, preset).forEach(r=>reasons.push(r));
   } else if(role==='車長'){
     if(!['士官','軍官'].includes(rankCategory(person.rank))) reasons.push('需為士官以上');
-    if(driver && rankIndex(person.rank)>=rankIndex(driver.rank)) reasons.push('階級須高於駕駛');
+    if(driver && rankIndex(person.rank)>rankIndex(driver.rank)) reasons.push('階級不可低於駕駛');
     if(preset && preset.requiredMedCert && !person.medCert) reasons.push('需具備EMT或醫生證書');
     ((preset&&preset.chiefRequiredSkills)||[]).forEach(sk=>{ if(!(person.skills||[]).includes(sk)) reasons.push(`需具備${sk}專長`); });
   } else if(role.startsWith('話務')){
@@ -5232,7 +5287,7 @@ function openMiscPresetModal(editIndex){
       ${existing && (existing.roles||[]).includes('車長')? `
       <div class="divider"></div>
       <h3>車長資格要求（分開設定，只套用在車長角色，駕駛不受影響）</h3>
-      <label>車長需具備特殊專長(可複選，不選代表不限，車長原本就需士官以上且階級高於駕駛，這裡是額外加嚴)</label>
+      <label>車長需具備特殊專長(可複選，不選代表不限，車長原本就需士官以上且階級不低於駕駛，這裡是額外加嚴)</label>
       <div style="margin-bottom:8px">
         ${state.skillOptions.map(s=>`
           <label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0">
@@ -5522,9 +5577,48 @@ function wireMiscInlineEditors(){
         const el=document.getElementById(subId);
         if(el) el.addEventListener('change', refreshList);
       });
+      wireRolePickers();
+    } else if(m && m.roles){
+      // re-render every role-picker's rows for THIS entry whenever any one
+      // of them changes — e.g. picking 駕駛 must immediately re-check
+      // whether each 車長 candidate still outranks them, which the picker
+      // can only reflect by recomputing reasonsFn with the new driver
+      const preset = presetForEntry(m);
+      const sMin = m.start? toMin(m.start) : null;
+      const eMinRaw = m.end? toMin(m.end) : null;
+      const refreshRoleLists = ()=>{
+        m.roles.forEach((r,i)=>{
+          const idPrefix = 'inlineRoleSel-'+m.id+'-'+i;
+          const listEl = document.getElementById(idPrefix+'-list');
+          const hiddenInput = document.getElementById(idPrefix);
+          if(!listEl || !hiddenInput) return;
+          const currentVal = hiddenInput.value;
+          let driver=null;
+          if(r==='車長'){
+            const driverIdx=m.roles.indexOf('駕駛');
+            if(driverIdx>-1){
+              const driverInput=document.getElementById('inlineRoleSel-'+m.id+'-'+driverIdx);
+              driver = driverInput? state.personnel.find(p=>p.id===driverInput.value) : null;
+            }
+          }
+          const reasonsFn = p=>roleIneligibilityReasons(p, r, preset, driver, currentDate, sMin, eMinRaw);
+          const sorted=[...state.personnel].sort((a,b)=>{
+            const ra=reasonsFn(a), rb=reasonsFn(b);
+            const pa=ra.length?1:0, pb=rb.length?1:0;
+            if(pa!==pb) return pa-pb;
+            return groupIndex(a.group)-groupIndex(b.group) || rankIndex(a.rank)-rankIndex(b.rank);
+          });
+          listEl.innerHTML = rolePickerRows(idPrefix, sorted, currentVal, reasonsFn);
+        });
+        wireRolePickers(refreshRoleLists);
+      };
+      wireRolePickers(refreshRoleLists);
+    } else {
+      wireRolePickers();
     }
+  } else {
+    wireRolePickers();
   }
-  wireRolePickers();
   document.querySelectorAll('[data-inline-save]').forEach(btn=>{
     btn.onclick=()=>{
       const id = btn.dataset.inlineSave;
@@ -5724,7 +5818,7 @@ function renderMisc(){
     {key:'miscToday', html:miscTodayHTML},
   ];
   app.innerHTML = renderCardList('miscCardsContainer', 'misc', cardDefs) + `
-    <div class="hint">此區用於不需6小時規則的項目，如：技工、採買、愛心便當、消防車、救護車、話務、督伙、開關門、健身房簽到等，依你們單位每日需要自行新增，也可以直接點上方常用項目快速帶入。採買/愛心便當/消防車/救護車需分別指定駕駛與車長：消防車駕駛需大型車或大客車駕照，救護車駕駛需小型車/大型車/大客車其中一種且救護車車長與駕駛都需具備EMT-1/EMT-2/EMT-P或醫生證書，其餘車輛駕駛至少需小型車駕照；車長需士官以上且階級高於駕駛，選單會把符合資格的人排到最上面。話務需至少小型車駕照。</div>
+    <div class="hint">此區用於不需6小時規則的項目，如：技工、採買、愛心便當、消防車、救護車、話務、督伙、開關門、健身房簽到等，依你們單位每日需要自行新增，也可以直接點上方常用項目快速帶入。採買/愛心便當/消防車/救護車需分別指定駕駛與車長：消防車駕駛需大型車或大客車駕照，救護車駕駛需小型車/大型車/大客車其中一種且救護車車長與駕駛都需具備EMT-1/EMT-2/EMT-P或醫生證書，其餘車輛駕駛至少需小型車駕照；車長需士官以上且階級不低於駕駛，選單會把符合資格的人排到最上面。話務需至少小型車駕照。</div>
   `;
   function wireMiscCheckboxes(){
     document.querySelectorAll('.misc-person-cb').forEach(cb=>{
