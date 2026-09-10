@@ -97,7 +97,10 @@ textarea{min-height:50px;resize:vertical;}
 .time-select-pair{display:inline-flex;align-items:center;gap:3px;width:100%;}
 .time-select-pair select{width:auto;flex:1;min-width:0;}
 .drawer-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:90;}
-.drawer{position:fixed;top:0;left:0;bottom:0;width:min(84vw,320px);background:var(--panel);border-right:1px solid var(--line);z-index:91;overflow:auto;padding:14px;box-shadow:2px 0 12px rgba(0,0,0,.4);}
+.drawer{position:fixed;top:0;left:0;bottom:0;width:min(84vw,320px);background:var(--panel);border-right:1px solid var(--line);z-index:91;overflow:auto;padding:calc(14px + env(safe-area-inset-top)) 14px calc(14px + env(safe-area-inset-bottom));box-shadow:2px 0 12px rgba(0,0,0,.4);}
+.fullscreen-modal{position:fixed;inset:0;background:var(--bg);overflow:auto;padding:calc(14px + env(safe-area-inset-top)) 14px calc(24px + env(safe-area-inset-bottom));}
+.sheet-modal{position:fixed;inset:0;background:rgba(0,0,0,.6);display:flex;align-items:flex-end;}
+.sheet-inner{background:var(--panel);width:100%;max-height:88vh;overflow:auto;border-radius:12px 12px 0 0;padding:14px 14px calc(14px + env(safe-area-inset-bottom));}
 .drawer h2{margin:0 0 10px;font-size:16px;}
 .drawer-item{display:flex;align-items:center;gap:8px;width:100%;padding:10px 8px;margin-bottom:6px;background:var(--bg);border:1px solid var(--line);border-radius:8px;color:var(--text);font-size:14px;text-align:left;cursor:pointer;}
 .cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:3px;}
@@ -124,7 +127,7 @@ textarea{min-height:50px;resize:vertical;}
       <button class="ghost small" id="undoBtn" title="復原上一步" disabled>↩️</button>
       <button class="ghost small" id="redoBtn" title="取消復原（重做）" disabled>↪️</button>
       <button class="ghost small" id="dayResetBtn" title="還原這一天">♻️</button>
-      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v65</span></h1>
+      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v69</span></h1>
     </div>
     <div class="row" style="gap:6px;align-items:center">
       <select id="timeStepSelect" style="font-size:11px;padding:3px 6px;width:auto">
@@ -464,6 +467,31 @@ function chiefEligible(person, preset, driver){
    need the driver to meet the preset's configured requirements and the
    chief to be an NCO+ outranking the driver; anything tagged 話務 just needs
    a license. */
+/* conflicts that come from the SCHEDULE rather than the entry's own rules:
+   someone on leave/unavailable at that time, or double-booked into another
+   overlapping duty. Preplans are written a month ahead, so by import time
+   leave may have been registered on top of them — these have to surface on
+   the card, not just inside the editor. */
+function miscEntryConflicts(entry, date){
+  const out=[];
+  if(!entry.start || !entry.end) return out;
+  const s=toMin(entry.start), e=wrapEndMin(s, toMin(entry.end));
+  (entry.personIds||[]).filter(Boolean).forEach(pid=>{
+    const p=state.personnel.find(x=>x.id===pid);
+    if(!p) return;
+    const hard=hardUnavailabilityReasons(pid, date, s, e);
+    if(hard.length) out.push(`${p.name}：${hard.join('・')}`);
+    (state.misc[date]||[]).forEach(other=>{
+      if(other.id===entry.id || !other.start || !other.end) return;
+      if(!(other.personIds||[]).includes(pid)) return;
+      const os=toMin(other.start), oe=wrapEndMin(os, toMin(other.end));
+      if(windowsOverlapOnce(s,e,os,oe)){
+        out.push(`${p.name}：同時段還被排在「${other.role} (${other.start}-${other.end})」`);
+      }
+    });
+  });
+  return [...new Set(out)];
+}
 function validateMiscEntry(entry){
   if(!entry.roles){
     if(!(entry.personIds&&entry.personIds.length) && !entry.skipAutoFill){
@@ -687,12 +715,15 @@ if(!state.dutyChanges) state.dutyChanges={};
 if(!state.preplan) state.preplan={};
 const PREPLAN_TYPES = [
   {key:'standby',  name:'留守',       icon:'🏠', mode:'standby',  hint:'例假日留守。先設定留守起訖日與名單，再把留守人員分配到當天的子勤務（日督、夜督、話務、伙房等）。'},
-  {key:'patrol',   name:'查哨',       icon:'🔦', mode:'presetSlots', presetRole:'查哨', hint:'跟其他單位輪流，不是每天都有。時段沿用「常用項目」裡設定的幾個時段，有輪到的時段才指定人。'},
-  {key:'mess',     name:'督伙',       icon:'🍚', mode:'people',   presetRole:'督伙', hint:'跟其他單位輪流，大約每3天一次。時段沿用「常用項目」裡的設定。'},
-  {key:'ambulance',name:'救護車',     icon:'🚑', mode:'roles',    presetRole:'救護車', roles:['駕駛','車長'], hint:'每天都會先排好。時段與資格要求沿用「常用項目」裡的設定。'},
-  {key:'monitor',  name:'中央監控值班',icon:'🖥️', mode:'dayNight', presetRole:'中央監控值班', hint:'分日班/夜班，夜班可設補休至隔天某時間。'},
-  {key:'purchase', name:'採買',       icon:'🛒', mode:'roles',    presetRole:'採買', roles:['駕駛','車長'], hint:'平日每天都有。時段與資格要求沿用「常用項目」裡的設定。'},
-  {key:'inspect',  name:'驗菜',       icon:'🥬', mode:'people',   presetRole:'驗菜', hint:'平日每天都有。'},
+  {key:'leave',    name:'休假大表',   icon:'🏖️', mode:'leaveTable', hint:'選人之後一次勾選他要休哪幾天，整批建立休假（含前後緩衝）。'},
+  {key:'patrol',   name:'查哨',       icon:'🔦', mode:'fixedSlots', presetRole:'查哨',
+   slots:['12:00-14:00','22:00-00:00','00:00-02:00','02:00-04:00','04:00-06:00'],
+   hint:'跟其他單位輪流，不是每天都有。直接勾選哪幾班要填人，可各自設定補休。'},
+  {key:'mess',     name:'督伙',       icon:'🍚', mode:'people',   presetRole:'督伙', editableTime:true, hint:'跟其他單位輪流，大約每3天一次。時段可調整。'},
+  {key:'ambulance',name:'救護車',     icon:'🚑', mode:'roles',    presetRole:'救護車', roles:['駕駛','車長'], qualified:true, editableTime:true, hint:'每天都會先排好。名單只列出符合資格的人。'},
+  {key:'monitor',  name:'中央監控值班',icon:'🖥️', mode:'dayNight', presetRole:'中央監控值班', hint:'分日班/夜班，兩班都可設補休。'},
+  {key:'purchase', name:'採買',       icon:'🛒', mode:'roles',    presetRole:'採買', roles:['駕駛','車長'], qualified:true, editableTime:true, hint:'平日每天都有。名單只列出符合資格的人。'},
+  {key:'inspect',  name:'驗菜',       icon:'🥬', mode:'people',   presetRole:'驗菜', editableTime:true, hint:'平日每天都有。時段可調整。'},
 ];
 /* 留守 defaults — the standard 例假日 pattern, all overridable per block:
    standby people are on from 14:00 the day BEFORE the holiday block until
@@ -702,6 +733,14 @@ const STANDBY_DEFAULTS = {startTime:'14:00', leaveStartTime:'16:00', endTime:'07
 /* which 常用項目 count as "留守日子勤務" and can be filled in from the
    留守 page — user-configurable so adding a new one needs no code change */
 if(!state.standbySubRoles) state.standbySubRoles = ['日督','夜督','話務','伙房'];
+/* user-draggable order of the preplan drawer entries */
+if(!state.preplanOrder) state.preplanOrder = PREPLAN_TYPES.map(t=>t.key);
+function orderedPreplanTypes(){
+  const order = state.preplanOrder||[];
+  const known = PREPLAN_TYPES.filter(t=>order.includes(t.key)).sort((a,b)=>order.indexOf(a.key)-order.indexOf(b.key));
+  const rest = PREPLAN_TYPES.filter(t=>!order.includes(t.key));
+  return [...known, ...rest];
+}
 function preplanFor(key, date){
   return ((state.preplan[key]||{})[date]) || null;
 }
@@ -959,6 +998,18 @@ function effectiveLongTerm(person, date){
 /* excludeCatShift: {catId,shiftId} — skip this exact shift when checking for
    double-booking against the person's OTHER current assignments (so a shift's
    own dropdown doesn't flag the person it's already assigned to). */
+/* Does a timed incident block the window [s,e) on a given day?
+   An incident whose end is at or before its start (e.g. 22:00-02:00) runs
+   past midnight: on its own day it blocks start→24:00, and on the FOLLOWING
+   day it blocks 00:00→end. `spillover` selects which half to test. */
+function incidentBlocksWindow(u, s, e, spillover){
+  if(!u.start || !u.end) return false;
+  const us=toMin(u.start), ue=toMin(u.end);
+  const crossesMidnight = ue<=us;
+  if(!crossesMidnight) return spillover? false : windowsOverlapOnce(s,e,us,ue);
+  if(spillover) return ue>0 && windowsOverlapOnce(s,e,0,ue);
+  return windowsOverlapOnce(s,e,us,1440);
+}
 function isPersonUnavailable(personId, date, s, e, excludeCatShift){
   // s,e in minutes-of-day (0-1440-ish), plain (not absolute-unwrapped)
   const person = state.personnel.find(p=>p.id===personId);
@@ -970,18 +1021,32 @@ function isPersonUnavailable(personId, date, s, e, excludeCatShift){
   const entries=(state.unavail[date]||[]).filter(u=>u.personId===personId);
   for(const u of entries){
     if(u.allDay) return true;
-    if(windowsOverlapOnce(s,e,toMin(u.start),toMin(u.end))) return true;
+    if(incidentBlocksWindow(u, s, e, false)) return true;
+  }
+  /* an incident logged as e.g. 22:00-02:00 runs past midnight, so the
+     00:00-02:00 half belongs to the NEXT calendar day — check yesterday's
+     entries for any that spill over into this one */
+  const prevEntries=(state.unavail[prevDateStr(date)]||[]).filter(u=>u.personId===personId);
+  for(const u of prevEntries){
+    if(u.allDay) continue;
+    if(incidentBlocksWindow(u, s, e, true)) return true;
   }
   for(const w of personCompRestWindows(personId, date)){
     if(windowsOverlapRecurring(s,e,toMin(w.start),toMin(w.end))) return true;
   }
-  // avoid double-booking against the person's other current assignments that day
+  /* avoid double-booking against the person's other current assignments.
+     The busy window runs from the (possibly prep-time-shifted) start to the
+     wrapped end; both ends can fall outside 0-1440 — a sentry shift starting
+     00:00 has its 30-minute prep at 23:30 the previous day, and an all-day
+     shift like 06:30-06:30 wraps a full 24h — so this must use the
+     wrap-aware overlap, otherwise those cases produce a backwards window
+     that never matches and the person gets booked twice. */
   const dayAssign = state.assign[date]||{};
   for(const cat of state.categories){
     const catAssign = dayAssign[cat.id]||{};
     for(const sft of effectiveShifts(cat, date)){
       if(excludeCatShift && excludeCatShift.catId===cat.id && excludeCatShift.shiftId===sft.id) continue;
-      if((catAssign[sft.id]||[]).includes(personId) && windowsOverlapOnce(s,e,shiftBusyStartMin(cat,sft),toMin(sft.end))) return true;
+      if((catAssign[sft.id]||[]).includes(personId) && windowsOverlapRecurring(s,e,shiftBusyStartMin(cat,sft),wrapEndMin(toMin(sft.start),toMin(sft.end)))) return true;
     }
   }
   // avoid double-booking against 其他勤務 (misc) commitments that have a defined time window
@@ -1014,7 +1079,7 @@ function unavailabilityReasonsInRange(personId, date, s, e){
     else if(lt.mode==='range' && lt.start && lt.end && windowsOverlapRecurring(s,e,toMin(lt.start),toMin(lt.end))) out.push(`長期事故：每天 ${lt.start}-${lt.end} 不可排`);
   }
   (state.unavail[date]||[]).filter(u=>u.personId===personId).forEach(u=>{
-    const hit = u.allDay || windowsOverlapOnce(s,e,toMin(u.start),toMin(u.end));
+    const hit = u.allDay || incidentBlocksWindow(u, s, e, false);
     if(hit) out.push(`${u.allDay? '全天':`${u.start}-${u.end}`}${u.reason? '（'+u.reason+'）':'（未註記原因）'}`);
   });
   for(const w of personCompRestWindows(personId, date)){
@@ -1024,7 +1089,7 @@ function unavailabilityReasonsInRange(personId, date, s, e){
   state.categories.forEach(cat=>{
     const catAssign = dayAssign[cat.id]||{};
     effectiveShifts(cat, date).forEach(sft=>{
-      if((catAssign[sft.id]||[]).includes(personId) && windowsOverlapOnce(s,e,shiftBusyStartMin(cat,sft),toMin(sft.end))){
+      if((catAssign[sft.id]||[]).includes(personId) && windowsOverlapRecurring(s,e,shiftBusyStartMin(cat,sft),wrapEndMin(toMin(sft.start),toMin(sft.end)))){
         out.push(`勤務中：${cat.name} ${sft.label||sft.start+'-'+sft.end}${cat.enforceRest?'（含準備時間）':''}`);
       }
     });
@@ -1576,25 +1641,52 @@ function openPreplanDrawer(){
   backdrop.className='drawer-backdrop';
   const drawer=document.createElement('div');
   drawer.className='drawer';
-  drawer.innerHTML=`
-    <div class="section-title"><h2>📅 預排固定勤務</h2><button class="ghost small" id="drawerClose">關閉</button></div>
-    <div class="hint" style="margin-bottom:10px">先用月曆把整個月的固定勤務排好，之後在月曆頁按「匯入整月」，就會寫進各日期的實際班表，不用每天重填。</div>
-    ${PREPLAN_TYPES.map(t=>{
-      const planned = Object.keys(state.preplan[t.key]||{}).length;
-      return `<button class="drawer-item" data-preplan-open="${t.key}">
-        <span style="font-size:18px">${t.icon}</span>
-        <span class="grow">${t.name}<br><span class="hint">${planned? `已預排 ${planned} 天`:'尚未預排'}</span></span>
-        <span style="color:var(--dim)">›</span>
-      </button>`;
-    }).join('')}`;
+  const drawDrawer=()=>{
+    drawer.innerHTML=`
+      <div class="section-title"><h2>📅 預排固定勤務</h2><button class="ghost small" id="drawerClose">關閉</button></div>
+      <div class="hint" style="margin-bottom:10px">先用月曆把整個月的固定勤務排好，之後在月曆頁按「匯入整月」，就會寫進各日期的實際班表，不用每天重填。長按左側 ⠿ 可拖曳調整順序。</div>
+      <div id="drawerList">
+      ${orderedPreplanTypes().map((t,i)=>{
+        const store=state.preplan[t.key]||{};
+        const planned = t.key==='leave'
+          ? Object.values(store).reduce((n,r)=>n+((r.dates||[]).length),0)
+          : Object.keys(store).length;
+        return `<div class="drawer-item" draggable="true" data-pp-idx="${i}" data-preplan-open="${t.key}">
+          <span data-pp-handle style="cursor:grab;color:var(--dim);padding-right:2px">⠿</span>
+          <span style="font-size:18px">${t.icon}</span>
+          <span class="grow">${t.name}<br><span class="hint">${planned? (t.key==='leave'? `已排 ${planned} 人日`:`已預排 ${planned} 天`):'尚未預排'}</span></span>
+          <span style="color:var(--dim)">›</span>
+        </div>`;
+      }).join('')}
+      </div>`;
+    document.getElementById('drawerClose').onclick=close;
+    drawer.querySelectorAll('[data-preplan-open]').forEach(b=>{
+      b.onclick=(e)=>{
+        if(e.target.hasAttribute('data-pp-handle')) return;
+        close(); openPreplanCalendar(b.dataset.preplanOpen);
+      };
+    });
+    // drag to reorder
+    let dragIdx=null;
+    drawer.querySelectorAll('[data-pp-idx]').forEach(el=>{
+      el.addEventListener('dragstart', e=>{ dragIdx=Number(el.dataset.ppIdx); e.dataTransfer.effectAllowed='move'; });
+      el.addEventListener('dragover', e=>{ e.preventDefault(); });
+      el.addEventListener('drop', e=>{
+        e.preventDefault();
+        const to=Number(el.dataset.ppIdx);
+        if(dragIdx===null || dragIdx===to) return;
+        const order=orderedPreplanTypes().map(t=>t.key);
+        const [moved]=order.splice(dragIdx,1);
+        order.splice(to,0,moved);
+        state.preplanOrder=order; saveState(); drawDrawer();
+      });
+    });
+  };
   document.body.appendChild(backdrop);
   document.body.appendChild(drawer);
   const close=()=>{ backdrop.remove(); drawer.remove(); };
   backdrop.onclick=close;
-  document.getElementById('drawerClose').onclick=close;
-  drawer.querySelectorAll('[data-preplan-open]').forEach(b=>{
-    b.onclick=()=>{ close(); openPreplanCalendar(b.dataset.preplanOpen); };
-  });
+  drawDrawer();
 }
 function monthOf(dateStr){ return dateStr.slice(0,7); }
 function daysInMonth(ym){
@@ -1606,15 +1698,26 @@ function shiftMonth(ym, delta){
   const d=new Date(y, m-1+delta, 1);
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
 }
+/* which stored plan (if any) covers this date — normally the plan keyed by
+   the date itself, but a 留守 block is keyed by its anchor and spans a
+   range, so any day inside that range resolves back to the same block */
+function preplanOwnerFor(key, date){
+  const direct = preplanFor(key, date);
+  if(direct) return {anchor:date, plan:direct};
+  const all = state.preplan[key]||{};
+  for(const anchor of Object.keys(all)){
+    const p=all[anchor];
+    if(p && p.startDate && p.endDate && date>=p.startDate && date<=p.endDate) return {anchor, plan:p};
+  }
+  return null;
+}
 /* short text shown inside a calendar cell for a given day's plan */
 function preplanCellMark(type, plan){
   if(!plan) return '';
   const nm = id=>{ const p=state.personnel.find(x=>x.id===id); return p? p.name : ''; };
   if(type.mode==='standby'){
     const n=(plan.personIds||[]).length;
-    if(!n) return '';
-    const days=(plan.startDate&&plan.endDate)? dateRangeList(plan.startDate,plan.endDate).length : 1;
-    return `${n}人${days>1? `/${days}天`:''}`;
+    return n? `${n}人` : '';
   }
   if(type.mode==='people'){
     const ids=(plan.personIds||[]).filter(Boolean);
@@ -1641,8 +1744,10 @@ function openPreplanCalendar(key){
   const type = PREPLAN_TYPES.find(t=>t.key===key);
   if(!type) return;
   if(!preplanMonth) preplanMonth = monthOf(currentDate);
+  // 休假大表 is person-first, not date-first — it has its own screen
+  if(type.mode==='leaveTable') return openLeaveTableEditor(preplanMonth+'-01', ()=>{});
   const modal=document.createElement('div');
-  modal.style.cssText='position:fixed;inset:0;background:var(--bg);z-index:92;overflow:auto;padding:14px;';
+  modal.className='fullscreen-modal'; modal.style.zIndex='92';
   const draw=()=>{
     const ym=preplanMonth;
     const [y,m]=ym.split('-').map(Number);
@@ -1652,10 +1757,14 @@ function openPreplanCalendar(key){
     for(let i=0;i<firstDow;i++) cells.push('<div class="cal-cell empty"></div>');
     for(let d=1;d<=total;d++){
       const ds=`${ym}-${String(d).padStart(2,'0')}`;
-      const plan=preplanFor(key, ds);
-      const mark=preplanCellMark(type, plan);
+      // a 留守 block is stored once under its anchor date but covers a range,
+      // so every day inside the range shows its own mark (and opens the
+      // same block for editing) rather than the count appearing only on
+      // the first day
+      const owner = preplanOwnerFor(key, ds);
+      const mark = owner? preplanCellMark(type, owner.plan) : '';
       const hol=isHolidayDate(ds);
-      cells.push(`<div class="cal-cell ${mark?'has':''} ${hol?'holiday':''}" data-cal-date="${ds}">
+      cells.push(`<div class="cal-cell ${mark?'has':''} ${hol?'holiday':''}" data-cal-date="${ds}" data-cal-anchor="${owner? owner.anchor : ds}">
         <div class="cal-day">${d}</div><div class="cal-mark">${esc(mark)}</div>
       </div>`);
     }
@@ -1676,7 +1785,7 @@ function openPreplanCalendar(key){
       <button class="primary" id="calImport" style="width:100%;margin-bottom:6px">📥 匯入本月預排到實際班表</button>
       <button class="ghost small danger" id="calClearMonth" style="width:100%">清空本月預排</button>`;
     modal.querySelectorAll('[data-cal-date]').forEach(c=>{
-      c.onclick=()=>openPreplanDayEditor(key, c.dataset.calDate, draw);
+      c.onclick=()=>openPreplanDayEditor(key, c.dataset.calAnchor||c.dataset.calDate, draw);
     });
     document.getElementById('calClose').onclick=()=>modal.remove();
     document.getElementById('calPrev').onclick=()=>{ preplanMonth=shiftMonth(preplanMonth,-1); draw(); };
@@ -1688,7 +1797,18 @@ function openPreplanCalendar(key){
         let n=0;
         dates.forEach(d=>{ if(importPreplanForDate(key, d)) n++; });
         saveState();
-        showAlert(`已匯入 ${n} 天。`);
+        /* preplans are made weeks ahead, so by import time leave or another
+           duty may already have landed on the same person — surface that immediately
+           instead of letting it sit unnoticed in the roster */
+        const clashes=[];
+        dates.forEach(d=>{
+          (state.misc[d]||[]).filter(m=>m.role===(type.presetRole||type.name)).forEach(m=>{
+            miscEntryConflicts(m, d).forEach(c=>clashes.push(`${minguoLabel(d)} ${c}`));
+          });
+        });
+        showAlert(`已匯入 ${n} 天。` + (clashes.length
+          ? `\n\n⚠️ 有 ${clashes.length} 筆衝突需要處理：\n` + clashes.slice(0,12).join('\n') + (clashes.length>12? `\n…還有 ${clashes.length-12} 筆`:'')
+          : ''));
         render();
         draw();
       });
@@ -1721,7 +1841,7 @@ function openStandbyEditor(date, onSaved){
     subDuties: JSON.parse(JSON.stringify(existing.subDuties||{})), // role -> {date -> {personIds, start, end}}
   };
   const modal=document.createElement('div');
-  modal.style.cssText='position:fixed;inset:0;background:var(--bg);z-index:93;overflow:auto;padding:14px;';
+  modal.className='fullscreen-modal'; modal.style.zIndex='93';
   const draw=()=>{
     const blockDates = (plan.startDate<=plan.endDate)? dateRangeList(plan.startDate, plan.endDate) : [plan.startDate];
     const staying = plan.personIds;
@@ -1818,10 +1938,10 @@ function openStandbyEditor(date, onSaved){
 }
 function openStandbyPeoplePicker(plan, onDone){
   const modal=document.createElement('div');
-  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:94;display:flex;align-items:flex-end;';
+  modal.className='sheet-modal'; modal.style.zIndex='94';
   const sorted=state.personnel.slice().sort((a,b)=>groupIndex(a.group)-groupIndex(b.group)||rankIndex(a.rank)-rankIndex(b.rank));
   modal.innerHTML=`
-    <div style="background:var(--panel);width:100%;max-height:88vh;overflow:auto;border-radius:12px 12px 0 0;padding:14px;">
+    <div class="sheet-inner">
       <div class="section-title"><h2 style="margin:0">選擇留守人員</h2><button class="ghost small" id="spClose">關閉</button></div>
       <div class="row wrap" style="margin-bottom:6px">
         <div class="grow"><label>搜尋姓名</label><input type="text" id="spSearch" placeholder="輸入姓名關鍵字"></div>
@@ -1847,6 +1967,7 @@ function openStandbyPeoplePicker(plan, onDone){
   };
   document.getElementById('spAll').onclick=()=>modal.querySelectorAll('.sp-person').forEach(cb=>{ if(cb.closest('label').style.display!=='none') cb.checked=true; });
   document.getElementById('spNone').onclick=()=>modal.querySelectorAll('.sp-person').forEach(cb=>cb.checked=false);
+  keepSearchFocusOnPick(document.getElementById('spList'));
   document.getElementById('spSave').onclick=()=>{
     plan.personIds=[...modal.querySelectorAll('.sp-person:checked')].map(cb=>cb.value);
     Object.keys(plan.overrides).forEach(pid=>{ if(!plan.personIds.includes(pid)) delete plan.overrides[pid]; });
@@ -1884,10 +2005,10 @@ function openStandbyOverrideEditor(plan, pid, onDone){
 }
 function openStandbySubRolePicker(onDone){
   const modal=document.createElement('div');
-  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:94;display:flex;align-items:flex-end;';
+  modal.className='sheet-modal'; modal.style.zIndex='94';
   const cur=state.standbySubRoles||[];
   modal.innerHTML=`
-    <div style="background:var(--panel);width:100%;max-height:88vh;overflow:auto;border-radius:12px 12px 0 0;padding:14px;">
+    <div class="sheet-inner">
       <div class="section-title"><h2 style="margin:0">留守日子勤務項目</h2><button class="ghost small" id="srClose">關閉</button></div>
       <div class="hint" style="margin-bottom:8px">勾選哪些「常用項目」要出現在留守頁面裡供指派。沒有在常用項目裡的，請先去「其他勤務」分頁新增。</div>
       <div style="max-height:56vh;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:8px;margin-bottom:8px">
@@ -1910,20 +2031,32 @@ function openStandbySubDutyEditor(plan, role, d, onDone){
   const preset=state.miscPresets.find(p=>p.role===role);
   const t0=preset? (presetTimes(preset)[0]||{start:'',end:''}) : {start:'',end:''};
   const cfg=((plan.subDuties[role]||{})[d])||{};
+  const blockDates=(plan.startDate<=plan.endDate)? dateRangeList(plan.startDate, plan.endDate) : [d];
   const pool=plan.personIds.map(pid=>state.personnel.find(p=>p.id===pid)).filter(Boolean)
     .sort((a,b)=>groupIndex(a.group)-groupIndex(b.group)||rankIndex(a.rank)-rankIndex(b.rank));
   const modal=document.createElement('div');
-  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:94;display:flex;align-items:flex-end;';
+  modal.className='sheet-modal'; modal.style.zIndex='94';
   modal.innerHTML=`
-    <div style="background:var(--panel);width:100%;max-height:88vh;overflow:auto;border-radius:12px 12px 0 0;padding:14px;">
+    <div class="sheet-inner">
       <div class="section-title"><h2 style="margin:0">${esc(role)}：${minguoLabel(d)}</h2><button class="ghost small" id="sdClose">關閉</button></div>
       <div class="row wrap" style="margin-bottom:8px">
         <div class="grow"><label>開始</label>${timeSelectHTML('sdStart', cfg.start||t0.start, {allowEmpty:true})}</div>
         <div class="grow"><label>結束</label>${timeSelectHTML('sdEnd', cfg.end||t0.end, {allowEmpty:true})}</div>
       </div>
-      <div class="hint" style="margin-bottom:8px">預設沿用常用項目的時段，可以改成這一天專屬的時間。</div>
+      <div class="row wrap" style="margin-bottom:8px">
+        <div class="grow"><label>補休至（選填）</label>${timeSelectHTML('sdRest', cfg.restUntil||(preset&&preset.restUntil)||'', {allowEmpty:true})}</div>
+      </div>
+      <div class="row wrap" style="margin-bottom:8px">
+        <div class="grow"><label>支援單位/人員（選填）</label><input type="text" id="sdSupport" value="${esc(cfg.support||'')}" placeholder="例：三連 王小明"></div>
+      </div>
+      ${blockDates.length>1? `<label style="display:flex;align-items:center;gap:6px;font-size:13px;margin-bottom:8px">
+        <input type="checkbox" id="sdAllDays" style="width:auto"> 同樣內容套用到這段留守的每一天（共${blockDates.length}天）
+      </label>`:''}
       <div class="hint" style="margin-bottom:4px">從留守名單中指派（${pool.length}人）</div>
-      <div style="max-height:46vh;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:8px;margin-bottom:8px">
+      <div class="row wrap" style="margin-bottom:6px">
+        <div class="grow"><label>搜尋姓名</label><input type="text" id="sdSearch" placeholder="輸入姓名關鍵字"></div>
+      </div>
+      <div id="sdList" style="max-height:40vh;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:8px;margin-bottom:8px">
         ${pool.length? pool.map(p=>`
           <label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0">
             <input type="checkbox" class="sd-person" value="${p.id}" style="width:auto" ${(cfg.personIds||[]).includes(p.id)?'checked':''}>
@@ -1937,74 +2070,142 @@ function openStandbySubDutyEditor(plan, role, d, onDone){
     </div>`;
   document.body.appendChild(modal);
   document.getElementById('sdClose').onclick=()=>modal.remove();
+  const se=document.getElementById('sdSearch'), le=document.getElementById('sdList');
+  se.oninput=()=>{
+    const term=se.value.trim();
+    le.querySelectorAll('label').forEach(l=>{ l.style.display=(!term||l.textContent.includes(term))?'flex':'none'; });
+  };
+  keepSearchFocusOnPick(le);
   document.getElementById('sdClear').onclick=()=>{
     if(plan.subDuties[role]) delete plan.subDuties[role][d];
     modal.remove(); onDone();
   };
   document.getElementById('sdSave').onclick=()=>{
     const ids=[...modal.querySelectorAll('.sd-person:checked')].map(cb=>cb.value);
+    const support=document.getElementById('sdSupport').value.trim();
+    const allDays=document.getElementById('sdAllDays');
+    const targets = (allDays && allDays.checked)? blockDates : [d];
     if(!plan.subDuties[role]) plan.subDuties[role]={};
-    if(!ids.length) delete plan.subDuties[role][d];
-    else plan.subDuties[role][d]={personIds:ids, start:getTimeSelectValue('sdStart'), end:getTimeSelectValue('sdEnd')};
+    targets.forEach(td=>{
+      if(!ids.length && !support) delete plan.subDuties[role][td];
+      else plan.subDuties[role][td]={personIds:ids, start:getTimeSelectValue('sdStart'),
+        end:getTimeSelectValue('sdEnd'), restUntil:getTimeSelectValue('sdRest'), support};
+    });
     modal.remove(); onDone();
   };
 }
+function preplanEligiblePeople(type){
+  const preset = type.presetRole? state.miscPresets.find(p=>p.role===type.presetRole) : null;
+  let list = state.personnel.slice();
+  /* qualified:true types (救護車/採買) only make sense with people who
+     actually meet the preset's licence/EMT/skill requirements — showing the
+     whole roster there just means scrolling past people who can't do it */
+  if(type.qualified && preset){
+    list = list.filter(p=>driverQualificationIssues(p, preset).length===0 || chiefEligible(p, preset, null));
+  }
+  return list.sort((a,b)=>groupIndex(a.group)-groupIndex(b.group)||rankIndex(a.rank)-rankIndex(b.rank));
+}
 function openPreplanDayEditor(key, date, onSaved){
   if(key==='standby') return openStandbyEditor(date, onSaved);
+  if(key==='leave') return openLeaveTableEditor(date, onSaved);
   const type = PREPLAN_TYPES.find(t=>t.key===key);
   const preset = type.presetRole? state.miscPresets.find(p=>p.role===type.presetRole) : null;
   const plan = preplanFor(key, date) || {};
+  const pool = preplanEligiblePeople(type);
+  const t0 = preset? (presetTimes(preset)[0]||{start:'',end:''}) : {start:'',end:''};
   const modal=document.createElement('div');
-  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:93;display:flex;align-items:flex-end;';
-  const personRows = (selectedIds, cls)=>state.personnel
-    .slice().sort((a,b)=>groupIndex(a.group)-groupIndex(b.group)||rankIndex(a.rank)-rankIndex(b.rank))
-    .map(p=>`<label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0">
-      <input type="checkbox" class="${cls}" value="${p.id}" style="width:auto" ${selectedIds.includes(p.id)?'checked':''}>
-      ${esc(p.name)}（${p.group||'未分組'}·${p.rank}${personBadges(p)}）
-    </label>`).join('');
-  const personOpts = (sel)=>`<option value="">（未指派）</option>`+state.personnel
-    .slice().sort((a,b)=>groupIndex(a.group)-groupIndex(b.group)||rankIndex(a.rank)-rankIndex(b.rank))
-    .map(p=>`<option value="${p.id}" ${p.id===sel?'selected':''}>${esc(p.name)}（${p.group||'未分組'}·${p.rank}）</option>`).join('');
+  modal.className='sheet-modal'; modal.style.zIndex='93';
+  const searchBlock = (id)=>`<div class="row wrap" style="margin-bottom:6px">
+      <div class="grow"><label>搜尋姓名</label><input type="text" id="${id}" placeholder="輸入姓名關鍵字"></div>
+    </div>`;
+  const listBox = (inner, id)=>`<div id="${id}" class="pp-picklist" style="max-height:40vh;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:8px;margin-bottom:8px">${inner}</div>`;
+  const checkRows = (selectedIds, cls)=>pool.length? pool.map(p=>`
+      <label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0">
+        <input type="checkbox" class="${cls}" value="${p.id}" style="width:auto" ${selectedIds.includes(p.id)?'checked':''}>
+        ${esc(p.name)}（${p.group||'未分組'}·${p.rank}${personBadges(p)}）
+      </label>`).join('') : `<div class="empty">沒有符合資格的人員</div>`;
+  const radioRows = (selectedId, cls, name)=>pool.length? `
+      <label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0">
+        <input type="radio" name="${name}" class="${cls}" value="" style="width:auto" ${!selectedId?'checked':''}> （未指派）
+      </label>`+pool.map(p=>`
+      <label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0">
+        <input type="radio" name="${name}" class="${cls}" value="${p.id}" style="width:auto" ${p.id===selectedId?'checked':''}>
+        ${esc(p.name)}（${p.group||'未分組'}·${p.rank}${personBadges(p)}）
+      </label>`).join('') : `<div class="empty">沒有符合資格的人員</div>`;
+  const timeRow = (idBase, st, en, label)=>`
+    <div class="row wrap" style="margin-bottom:6px">
+      <div class="grow"><label>${label||'開始'}</label>${timeSelectHTML(idBase+'Start', st, {allowEmpty:true})}</div>
+      <div class="grow"><label>結束</label>${timeSelectHTML(idBase+'End', en, {allowEmpty:true})}</div>
+    </div>`;
+  const restRow = (id, val, label)=>`
+    <div class="row wrap" style="margin-bottom:6px">
+      <div class="grow"><label>${label||'補休至（選填）'}</label>${timeSelectHTML(id, val||'', {allowEmpty:true})}</div>
+    </div>`;
+  const supportRow = (id, val)=>`
+    <div class="row wrap" style="margin-bottom:6px">
+      <div class="grow"><label>支援單位/人員（選填，直接打字）</label><input type="text" id="${id}" value="${esc(val||'')}" placeholder="例：三連 王小明"></div>
+    </div>`;
   let body='';
   if(type.mode==='people'){
-    body=`<div class="row wrap" style="margin-bottom:6px">
-        <div class="grow"><label>搜尋姓名</label><input type="text" id="ppSearch" placeholder="輸入姓名關鍵字"></div>
-      </div>
-      <div class="row wrap" style="margin-bottom:6px">
-        <button class="ghost small" id="ppSelectAll">全選</button>
-        <button class="ghost small" id="ppClearAll">全部取消</button>
-      </div>
-      <div id="ppList" style="max-height:46vh;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:8px">
-        ${personRows(plan.personIds||[], 'pp-person')}
-      </div>`;
+    body = (type.editableTime? timeRow('ppT', plan.start||t0.start, plan.end||t0.end) : '')
+      + restRow('ppRest', plan.restUntil||(preset&&preset.restUntil)||'')
+      + supportRow('ppSupport', plan.support)
+      + searchBlock('ppSearch')
+      + `<div class="row wrap" style="margin-bottom:6px">
+           <button class="ghost small" id="ppSelectAll">全選(顯示中)</button>
+           <button class="ghost small" id="ppClearAll">全部取消</button>
+         </div>`
+      + listBox(checkRows(plan.personIds||[], 'pp-person'), 'ppList');
   } else if(type.mode==='roles'){
-    body=type.roles.map((r,i)=>`<div class="row wrap" style="margin-bottom:8px">
-        <div class="grow"><label>${esc(r)}</label><select id="ppRole${i}">${personOpts((plan.personIds||[])[i]||'')}</select></div>
-      </div>`).join('');
+    body = (type.editableTime? timeRow('ppT', plan.start||t0.start, plan.end||t0.end) : '')
+      + restRow('ppRest', plan.restUntil||(preset&&preset.restUntil)||'')
+      + supportRow('ppSupport', plan.support)
+      + type.roles.map((r,i)=>
+          `<div class="hint" style="margin:6px 0 2px"><b>${esc(r)}</b></div>`
+          + searchBlock('ppSearch'+i)
+          + listBox(radioRows((plan.personIds||[])[i]||'', 'pp-role'+i, 'pprole'+i), 'ppList'+i)
+        ).join('');
   } else if(type.mode==='dayNight'){
-    body=`<div class="row wrap" style="margin-bottom:8px">
-        <div class="grow"><label>日班</label><select id="ppDay">${personOpts(plan.dayPersonId||'')}</select></div>
-      </div>
-      <div class="row wrap" style="margin-bottom:8px">
-        <div class="grow"><label>夜班</label><select id="ppNight">${personOpts(plan.nightPersonId||'')}</select></div>
-      </div>
-      <div class="row wrap" style="margin-bottom:8px">
-        <div class="grow"><label>夜班補休至（選填）</label>${timeSelectHTML('ppRest', plan.nightRestUntil||'', {allowEmpty:true})}</div>
-      </div>`;
-  } else if(type.mode==='presetSlots'){
     const times = preset? presetTimes(preset) : [];
-    body = times.length
-      ? times.map((t,i)=>`<div class="row wrap" style="margin-bottom:8px">
-          <div class="grow"><label>${t.start}-${t.end}</label><select id="ppSlot${i}">${personOpts((plan.slots||{})[i]||'')}</select></div>
-        </div>`).join('')
-      : `<div class="empty">「${esc(type.presetRole||'')}」還沒有在「常用項目」設定時段，請先去其他勤務分頁設定。</div>`;
+    const dt = times[0]||{start:'',end:''}, nt = times[1]||times[0]||{start:'',end:''};
+    body = `<div class="hint" style="margin:6px 0 2px"><b>日班</b></div>`
+      + timeRow('ppDayT', plan.dayStart||dt.start, plan.dayEnd||dt.end)
+      + restRow('ppDayRest', plan.dayRestUntil||'', '日班補休至（選填）')
+      + searchBlock('ppSearchD')
+      + listBox(radioRows(plan.dayPersonId||'', 'pp-day', 'ppday'), 'ppListD')
+      + `<div class="divider"></div><div class="hint" style="margin:6px 0 2px"><b>夜班</b></div>`
+      + timeRow('ppNightT', plan.nightStart||nt.start, plan.nightEnd||nt.end)
+      + restRow('ppNightRest', plan.nightRestUntil||'', '夜班補休至（選填）')
+      + searchBlock('ppSearchN')
+      + listBox(radioRows(plan.nightPersonId||'', 'pp-night', 'ppnight'), 'ppListN')
+      + supportRow('ppSupport', plan.support);
+  } else if(type.mode==='fixedSlots'){
+    body = supportRow('ppSupport', plan.support)
+      + type.slots.map((sl,i)=>{
+        const cfg=(plan.slots||{})[i]||{};
+        const on=!!cfg.personId;
+        return `<div class="card" style="padding:8px 10px">
+          <div class="row" style="align-items:center;margin-bottom:4px">
+            <label style="display:flex;align-items:center;gap:6px;font-size:13px" class="grow">
+              <input type="checkbox" class="pp-slot-on" data-slot="${i}" style="width:auto" ${on?'checked':''}>
+              <b>${sl}</b>
+            </label>
+          </div>
+          <div class="pp-slot-body" data-slot-body="${i}" style="display:${on?'block':'none'}">
+            ${restRow('ppSlotRest'+i, cfg.restUntil||'')}
+            ${searchBlock('ppSearchS'+i)}
+            ${listBox(radioRows(cfg.personId||'', 'pp-slot'+i, 'ppslot'+i), 'ppListS'+i)}
+          </div>
+        </div>`;
+      }).join('');
   }
   modal.innerHTML=`
-    <div style="background:var(--panel);width:100%;max-height:88vh;overflow:auto;border-radius:12px 12px 0 0;padding:14px;">
+    <div class="sheet-inner">
       <div class="section-title"><h2 style="margin:0">${type.icon} ${type.name}：${minguoLabel(date)}</h2><button class="ghost small" id="ppClose">關閉</button></div>
-      ${preset? `<div class="hint" style="margin-bottom:8px">時段與資格要求沿用「常用項目 ${esc(type.presetRole)}」的設定。</div>`:''}
+      <div class="hint" style="margin-bottom:8px">${type.hint}</div>
       ${body}
       <div class="row wrap" style="margin-top:10px">
+        <button class="ghost grow" id="ppCopy">複製到其他日期</button>
         <button class="ghost grow danger" id="ppDelete">清除這天</button>
         <button class="primary grow" id="ppSave">儲存</button>
       </div>
@@ -2012,46 +2213,226 @@ function openPreplanDayEditor(key, date, onSaved){
   document.body.appendChild(modal);
   const close=()=>modal.remove();
   document.getElementById('ppClose').onclick=close;
-  if(type.mode==='people'){
-    const searchEl=document.getElementById('ppSearch');
-    searchEl.oninput=()=>{
-      const term=searchEl.value.trim();
-      modal.querySelectorAll('#ppList label').forEach(l=>{
-        l.style.display = (!term || l.textContent.includes(term))? 'flex':'none';
-      });
+  // wire every search box to its own list, keeping the keyboard up
+  const wireSearch=(searchId, listId)=>{
+    const se=document.getElementById(searchId), le=document.getElementById(listId);
+    if(!se||!le) return;
+    se.oninput=()=>{
+      const term=se.value.trim();
+      le.querySelectorAll('label').forEach(l=>{ l.style.display=(!term||l.textContent.includes(term))?'flex':'none'; });
     };
+    keepSearchFocusOnPick(le);
+  };
+  if(type.mode==='people'){
+    wireSearch('ppSearch','ppList');
     document.getElementById('ppSelectAll').onclick=()=>modal.querySelectorAll('.pp-person').forEach(cb=>{ if(cb.closest('label').style.display!=='none') cb.checked=true; });
     document.getElementById('ppClearAll').onclick=()=>modal.querySelectorAll('.pp-person').forEach(cb=>cb.checked=false);
+  } else if(type.mode==='roles'){
+    type.roles.forEach((_,i)=>wireSearch('ppSearch'+i,'ppList'+i));
+  } else if(type.mode==='dayNight'){
+    wireSearch('ppSearchD','ppListD'); wireSearch('ppSearchN','ppListN');
+  } else if(type.mode==='fixedSlots'){
+    type.slots.forEach((_,i)=>wireSearch('ppSearchS'+i,'ppListS'+i));
+    modal.querySelectorAll('.pp-slot-on').forEach(cb=>{
+      cb.onchange=()=>{
+        const b=modal.querySelector(`[data-slot-body="${cb.dataset.slot}"]`);
+        if(b) b.style.display=cb.checked?'block':'none';
+      };
+    });
   }
+  const collect=()=>{
+    const support=(document.getElementById('ppSupport')||{}).value||'';
+    if(type.mode==='people'){
+      const ids=[...modal.querySelectorAll('.pp-person:checked')].map(cb=>cb.value);
+      if(!ids.length && !support) return null;
+      return {personIds:ids, support,
+        start:type.editableTime? getTimeSelectValue('ppTStart') : undefined,
+        end:type.editableTime? getTimeSelectValue('ppTEnd') : undefined,
+        restUntil:getTimeSelectValue('ppRest')};
+    }
+    if(type.mode==='roles'){
+      const ids=type.roles.map((_,i)=>{
+        const sel=modal.querySelector(`.pp-role${i}:checked`);
+        return sel && sel.value? sel.value : undefined;
+      });
+      if(!ids.some(Boolean) && !support) return null;
+      return {personIds:ids, support,
+        start:type.editableTime? getTimeSelectValue('ppTStart') : undefined,
+        end:type.editableTime? getTimeSelectValue('ppTEnd') : undefined,
+        restUntil:getTimeSelectValue('ppRest')};
+    }
+    if(type.mode==='dayNight'){
+      const d=modal.querySelector('.pp-day:checked'), n=modal.querySelector('.pp-night:checked');
+      const dayP=d&&d.value? d.value:undefined, nightP=n&&n.value? n.value:undefined;
+      if(!dayP && !nightP && !support) return null;
+      return {dayPersonId:dayP, nightPersonId:nightP, support,
+        dayStart:getTimeSelectValue('ppDayTStart'), dayEnd:getTimeSelectValue('ppDayTEnd'),
+        nightStart:getTimeSelectValue('ppNightTStart'), nightEnd:getTimeSelectValue('ppNightTEnd'),
+        dayRestUntil:getTimeSelectValue('ppDayRest'), nightRestUntil:getTimeSelectValue('ppNightRest')};
+    }
+    if(type.mode==='fixedSlots'){
+      const slots={};
+      type.slots.forEach((_,i)=>{
+        const on=modal.querySelector(`.pp-slot-on[data-slot="${i}"]`);
+        if(!on||!on.checked) return;
+        const sel=modal.querySelector(`.pp-slot${i}:checked`);
+        slots[i]={personId:(sel&&sel.value)||undefined, restUntil:getTimeSelectValue('ppSlotRest'+i)};
+      });
+      if(!Object.keys(slots).length && !support) return null;
+      return {slots, support};
+    }
+    return null;
+  };
   document.getElementById('ppDelete').onclick=()=>{
     setPreplan(key, date, null);
     saveState(); close(); if(onSaved) onSaved();
   };
+  document.getElementById('ppCopy').onclick=()=>{
+    const value=collect();
+    if(!value){ showAlert('這天還沒有填任何內容，沒有東西可以複製。'); return; }
+    setPreplan(key, date, value); saveState();
+    openPreplanCopyModal(key, date, ()=>{ close(); if(onSaved) onSaved(); });
+  };
   document.getElementById('ppSave').onclick=()=>{
-    let value=null;
-    if(type.mode==='people'){
-      const ids=[...modal.querySelectorAll('.pp-person:checked')].map(cb=>cb.value);
-      value = ids.length? {personIds:ids} : null;
-    } else if(type.mode==='roles'){
-      const ids=type.roles.map((_,i)=>document.getElementById('ppRole'+i).value||undefined);
-      value = ids.some(Boolean)? {personIds:ids} : null;
-    } else if(type.mode==='dayNight'){
-      const dayP=document.getElementById('ppDay').value||undefined;
-      const nightP=document.getElementById('ppNight').value||undefined;
-      const rest=getTimeSelectValue('ppRest');
-      value = (dayP||nightP)? {dayPersonId:dayP, nightPersonId:nightP, nightRestUntil:rest} : null;
-    } else if(type.mode==='presetSlots'){
-      const times = preset? presetTimes(preset) : [];
-      const slots={};
-      times.forEach((t,i)=>{
-        const el=document.getElementById('ppSlot'+i);
-        if(el && el.value) slots[i]=el.value;
-      });
-      value = Object.keys(slots).length? {slots} : null;
-    }
-    setPreplan(key, date, value);
+    setPreplan(key, date, collect());
     saveState(); close(); if(onSaved) onSaved();
   };
+}
+/* copy one day's plan onto other dates — the common "20th is the same as
+   the 19th" case, without retyping */
+function openPreplanCopyModal(key, fromDate, onDone){
+  const type=PREPLAN_TYPES.find(t=>t.key===key);
+  const ym=monthOf(fromDate);
+  const total=daysInMonth(ym);
+  const modal=document.createElement('div');
+  modal.className='sheet-modal'; modal.style.zIndex='95';
+  modal.innerHTML=`
+    <div class="sheet-inner">
+      <div class="section-title"><h2 style="margin:0">複製「${type.name} ${minguoLabel(fromDate)}」</h2><button class="ghost small" id="pcClose">關閉</button></div>
+      <div class="hint" style="margin-bottom:8px">勾選要套用同樣內容的日期（會覆蓋那些日期原本的這個項目）。</div>
+      <div style="max-height:50vh;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:8px;margin-bottom:8px">
+        ${Array.from({length:total},(_,i)=>{
+          const d=`${ym}-${String(i+1).padStart(2,'0')}`;
+          if(d===fromDate) return '';
+          const has=!!preplanFor(key,d);
+          return `<label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0">
+            <input type="checkbox" class="pc-date" value="${d}" style="width:auto">
+            ${minguoLabel(d)}${isHolidayDate(d)?' <span class="warn">假</span>':''}${has?' <span class="hint">（已有內容，會被覆蓋）</span>':''}
+          </label>`;
+        }).join('')}
+      </div>
+      <button class="primary" id="pcSave" style="width:100%">複製過去</button>
+    </div>`;
+  document.body.appendChild(modal);
+  document.getElementById('pcClose').onclick=()=>{ modal.remove(); if(onDone) onDone(); };
+  document.getElementById('pcSave').onclick=()=>{
+    const dates=[...modal.querySelectorAll('.pc-date:checked')].map(cb=>cb.value);
+    if(!dates.length){ showAlert('請至少勾選一個日期'); return; }
+    const src=preplanFor(key, fromDate);
+    dates.forEach(d=>setPreplan(key, d, JSON.parse(JSON.stringify(src))));
+    saveState();
+    showAlert(`已複製到 ${dates.length} 個日期。`);
+    modal.remove(); if(onDone) onDone();
+  };
+}
+/* 休假大表: pick a person, then tick every day they're off — the reverse of
+   the per-day editors, matching how leave is actually decided (per person,
+   for a stretch of days). Stored per person; import turns each ticked day
+   into a proper leave block with buffers. */
+function openLeaveTableEditor(date, onSaved){
+  const ym=monthOf(date);
+  const total=daysInMonth(ym);
+  let selectedPid=null;
+  const modal=document.createElement('div');
+  modal.className='fullscreen-modal'; modal.style.zIndex='93';
+  const draw=()=>{
+    const store=state.preplan.leave||{};
+    const person=selectedPid? state.personnel.find(p=>p.id===selectedPid) : null;
+    const mine=(store[selectedPid]||{}).dates||[];
+    modal.innerHTML=`
+      <div class="section-title"><h2 style="margin:0">🏖️ 休假大表</h2><button class="ghost small" id="ltClose">關閉</button></div>
+      <div class="hint" style="margin-bottom:8px">先選人，再勾選他這個月要休哪幾天。匯入時每個人的連續假期會自動合併成一段（含前後緩衝）。</div>
+      <div class="row wrap" style="margin-bottom:6px">
+        <div class="grow"><label>搜尋姓名</label><input type="text" id="ltSearch" placeholder="輸入姓名關鍵字"></div>
+      </div>
+      <div id="ltPeople" style="max-height:26vh;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:8px;margin-bottom:8px">
+        ${state.personnel.slice().sort((a,b)=>groupIndex(a.group)-groupIndex(b.group)||rankIndex(a.rank)-rankIndex(b.rank))
+          .map(p=>{
+            const n=((store[p.id]||{}).dates||[]).filter(d=>d.startsWith(ym)).length;
+            return `<label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0">
+              <input type="radio" name="ltp" class="lt-person" value="${p.id}" style="width:auto" ${p.id===selectedPid?'checked':''}>
+              ${esc(p.name)}（${p.group||'未分組'}·${p.rank}）${n? ` <span class="ok">本月${n}天</span>`:''}
+            </label>`;
+          }).join('')}
+      </div>
+      ${person? `
+        <div class="section-title"><h3 style="margin:0">${esc(person.name)}：民國${Number(ym.slice(0,4))-1911}年${Number(ym.slice(5))}月</h3></div>
+        <div class="row wrap" style="margin-bottom:6px">
+          <button class="ghost small" id="ltPrev">◀ 上月</button>
+          <button class="ghost small" id="ltNext">下月 ▶</button>
+          <button class="ghost small" id="ltClear">清空本月</button>
+        </div>
+        <div style="max-height:40vh;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:8px;margin-bottom:8px">
+          ${Array.from({length:total},(_,i)=>{
+            const d=`${ym}-${String(i+1).padStart(2,'0')}`;
+            return `<label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0">
+              <input type="checkbox" class="lt-date" value="${d}" style="width:auto" ${mine.includes(d)?'checked':''}>
+              ${minguoLabel(d)}${isHolidayDate(d)?' <span class="warn">假</span>':''}
+            </label>`;
+          }).join('')}
+        </div>
+        <button class="primary" id="ltSave" style="width:100%;margin-bottom:6px">儲存這個人的休假</button>
+      ` : `<div class="empty">請先選擇一位人員</div>`}
+      <div class="divider"></div>
+      <button class="primary" id="ltImport" style="width:100%">📥 匯入本月休假到實際班表</button>
+      <div class="hint">會把每個人本月勾選的日期建立成正式休假（連續的日子自動合併成一段，含前後緩衝）。</div>`;
+    document.getElementById('ltClose').onclick=()=>modal.remove();
+    const se=document.getElementById('ltSearch'), le=document.getElementById('ltPeople');
+    se.oninput=()=>{
+      const term=se.value.trim();
+      le.querySelectorAll('label').forEach(l=>{ l.style.display=(!term||l.textContent.includes(term))?'flex':'none'; });
+    };
+    keepSearchFocusOnPick(le);
+    document.getElementById('ltImport').onclick=()=>{
+      const st=state.preplan.leave||{};
+      const totalDays=Object.values(st).reduce((n,r)=>n+((r.dates||[]).filter(d=>d.startsWith(ym)).length),0);
+      if(!totalDays){ showAlert('本月還沒有排任何休假。'); return; }
+      showConfirm(`確定要把本月已排的 ${totalDays} 人日休假匯入實際班表嗎？（同一人重複匯入會先移除舊的再重建，不會疊加）`, ()=>{
+        const n=importLeaveTable(ym);
+        saveState();
+        showAlert(`已建立 ${n} 段休假。`);
+        render(); draw();
+      });
+    };
+    modal.querySelectorAll('.lt-person').forEach(r=>{
+      r.onchange=()=>{ selectedPid=r.value; draw(); };
+    });
+    if(person){
+      document.getElementById('ltPrev').onclick=()=>{ preplanMonth=shiftMonth(ym,-1); modal.remove(); openLeaveTableEditor(preplanMonth+'-01', onSaved); };
+      document.getElementById('ltNext').onclick=()=>{ preplanMonth=shiftMonth(ym,1); modal.remove(); openLeaveTableEditor(preplanMonth+'-01', onSaved); };
+      document.getElementById('ltClear').onclick=()=>{
+        const cur=(store[selectedPid]||{}).dates||[];
+        const kept=cur.filter(d=>!d.startsWith(ym));
+        if(!state.preplan.leave) state.preplan.leave={};
+        if(kept.length) state.preplan.leave[selectedPid]={dates:kept};
+        else delete state.preplan.leave[selectedPid];
+        saveState(); draw(); if(onSaved) onSaved();
+      };
+      document.getElementById('ltSave').onclick=()=>{
+        const picked=[...modal.querySelectorAll('.lt-date:checked')].map(cb=>cb.value);
+        const cur=(store[selectedPid]||{}).dates||[];
+        const merged=[...cur.filter(d=>!d.startsWith(ym)), ...picked].sort();
+        if(!state.preplan.leave) state.preplan.leave={};
+        if(merged.length) state.preplan.leave[selectedPid]={dates:merged};
+        else delete state.preplan.leave[selectedPid];
+        saveState();
+        showAlert(`已儲存 ${state.personnel.find(p=>p.id===selectedPid).name} 的休假（本月 ${picked.length} 天）。`);
+        draw(); if(onSaved) onSaved();
+      };
+    }
+  };
+  document.body.appendChild(modal);
+  draw();
 }
 /* writes one day's plan for one duty type into the real schedule, replacing
    whatever that same duty currently holds on that date (other duties on
@@ -2111,12 +2492,13 @@ function importPreplanForDate(key, date){
     // sub-duties become ordinary 其他勤務 entries on their own dates
     Object.entries(plan.subDuties||{}).forEach(([role, byDate])=>{
       Object.entries(byDate).forEach(([d, cfg])=>{
-        if(!cfg || !(cfg.personIds||[]).length) return;
+        if(!cfg || (!(cfg.personIds||[]).length && !cfg.support)) return;
         if(!state.misc[d]) state.misc[d]=[];
         state.misc[d]=state.misc[d].filter(m=>m.role!==role);
         const rp=state.miscPresets.find(x=>x.role===role);
         state.misc[d].push({id:uid(), role, start:cfg.start||'', end:cfg.end||'',
-          restUntil:(rp&&rp.restUntil)||'', personIds:[...cfg.personIds]});
+          restUntil:cfg.restUntil||(rp&&rp.restUntil)||'', personIds:[...(cfg.personIds||[])],
+          ...(cfg.support? {support:cfg.support}:{})});
       });
     });
     return true;
@@ -2125,44 +2507,76 @@ function importPreplanForDate(key, date){
   state.misc[date]=state.misc[date].filter(m=>m.role!==roleName);
   const times = preset? presetTimes(preset) : [];
   const t0 = times[0] || {start:'',end:''};
+  const sup = plan.support? {support:plan.support} : {};
   if(type.mode==='people'){
     const ids=(plan.personIds||[]).filter(Boolean);
-    if(!ids.length) return false;
-    state.misc[date].push({id:uid(), role:roleName, start:t0.start, end:t0.end,
-      restUntil:(preset&&preset.restUntil)||'', personIds:ids});
+    if(!ids.length && !plan.support) return false;
+    state.misc[date].push({id:uid(), role:roleName,
+      start:plan.start||t0.start, end:plan.end||t0.end,
+      restUntil:plan.restUntil||(preset&&preset.restUntil)||'', personIds:ids, ...sup});
   } else if(type.mode==='roles'){
     const ids=(plan.personIds||[]).slice(0,type.roles.length);
-    if(!ids.some(Boolean)) return false;
-    state.misc[date].push({id:uid(), role:roleName, start:t0.start, end:t0.end,
-      restUntil:(preset&&preset.restUntil)||'', roles:[...type.roles], personIds:ids,
-      lockedSlots:type.roles.map(()=>false)});
+    if(!ids.some(Boolean) && !plan.support) return false;
+    state.misc[date].push({id:uid(), role:roleName,
+      start:plan.start||t0.start, end:plan.end||t0.end,
+      restUntil:plan.restUntil||(preset&&preset.restUntil)||'', roles:[...type.roles], personIds:ids,
+      lockedSlots:type.roles.map(()=>false), ...sup});
   } else if(type.mode==='dayNight'){
     const dayT = times[0]||{start:'',end:''};
     const nightT = times[1]||times[0]||{start:'',end:''};
     let wrote=false;
     if(plan.dayPersonId){
-      state.misc[date].push({id:uid(), role:roleName, start:dayT.start, end:dayT.end,
-        restUntil:'', personIds:[plan.dayPersonId], shiftLabel:'日班'});
+      state.misc[date].push({id:uid(), role:roleName,
+        start:plan.dayStart||dayT.start, end:plan.dayEnd||dayT.end,
+        restUntil:plan.dayRestUntil||'', personIds:[plan.dayPersonId], shiftLabel:'日班', ...sup});
       wrote=true;
     }
     if(plan.nightPersonId){
-      state.misc[date].push({id:uid(), role:roleName, start:nightT.start, end:nightT.end,
-        restUntil:plan.nightRestUntil||(preset&&preset.restUntil)||'', personIds:[plan.nightPersonId], shiftLabel:'夜班'});
+      state.misc[date].push({id:uid(), role:roleName,
+        start:plan.nightStart||nightT.start, end:plan.nightEnd||nightT.end,
+        restUntil:plan.nightRestUntil||(preset&&preset.restUntil)||'', personIds:[plan.nightPersonId], shiftLabel:'夜班', ...sup});
       wrote=true;
     }
     return wrote;
-  } else if(type.mode==='presetSlots'){
+  } else if(type.mode==='fixedSlots'){
     let wrote=false;
-    Object.entries(plan.slots||{}).forEach(([idx,pid])=>{
-      const t=times[Number(idx)];
-      if(!t || !pid) return;
-      state.misc[date].push({id:uid(), role:roleName, start:t.start, end:t.end,
-        restUntil:(preset&&preset.restUntil)||'', personIds:[pid]});
+    Object.entries(plan.slots||{}).forEach(([idx,cfg])=>{
+      const label=type.slots[Number(idx)];
+      if(!label || !cfg) return;
+      const [st,en]=label.split('-');
+      if(!cfg.personId && !plan.support) return;
+      state.misc[date].push({id:uid(), role:roleName, start:st, end:en,
+        restUntil:cfg.restUntil||'', personIds:cfg.personId? [cfg.personId]:[], ...sup});
       wrote=true;
     });
     return wrote;
   }
   return true;
+}
+/* 休假大表 import: turn each person's ticked dates into proper leave blocks,
+   merging consecutive days into one block so buffers land in the right
+   places (rather than one buffered block per day). */
+function importLeaveTable(monthPrefix){
+  const store=state.preplan.leave||{};
+  let count=0;
+  Object.entries(store).forEach(([pid, rec])=>{
+    const dates=(rec.dates||[]).filter(d=>!monthPrefix || d.startsWith(monthPrefix)).sort();
+    if(!dates.length) return;
+    // drop this person's existing generated blocks that fall in range first
+    dates.forEach(d=>{
+      const lid=findLeaveIdForPerson(pid, d);
+      if(lid) deleteLeaveById(lid);
+    });
+    // group consecutive days
+    let runStart=dates[0], prev=dates[0];
+    const flush=(end)=>{ createLeaveSegment(pid, runStart, end, false); count++; };
+    for(let i=1;i<dates.length;i++){
+      if(dates[i]===nextDateStr(prev)){ prev=dates[i]; continue; }
+      flush(prev); runStart=dates[i]; prev=dates[i];
+    }
+    flush(prev);
+  });
+  return count;
 }
 function openDayResetModal(){
   const date = currentDate;
@@ -2218,7 +2632,7 @@ function openExportModal(){
   const modal=document.createElement('div');
   modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:60;display:flex;align-items:flex-end;';
   modal.innerHTML=`
-    <div style="background:var(--panel);width:100%;max-height:88vh;overflow:auto;border-radius:12px 12px 0 0;padding:14px;">
+    <div class="sheet-inner">
       <div class="section-title"><h2 style="margin:0">匯出備份</h2><button class="ghost small" id="closeExport">關閉</button></div>
       <div class="row wrap" style="margin-bottom:8px">
         <button class="primary grow" id="shareExportBtn">📤 分享／儲存檔案</button>
@@ -2713,7 +3127,7 @@ function openPersonEditor(personId){
   const modal = document.createElement('div');
   modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:50;display:flex;align-items:flex-end;';
   modal.innerHTML = `
-    <div style="background:var(--panel);width:100%;max-height:88vh;overflow:auto;border-radius:12px 12px 0 0;padding:14px;">
+    <div class="sheet-inner">
       <div class="section-title"><h2 style="margin:0">編輯人員</h2><button class="ghost small" id="closeModal">關閉</button></div>
       <label>姓名</label><input type="text" id="epName" value="${esc(p.name)}" style="margin-bottom:8px">
       <label>排/組別</label><select id="epGroup" style="margin-bottom:8px">${groupOptionsHTML(p.group)}</select>
@@ -3094,7 +3508,7 @@ function openQuickIncidentModal(personId, date){
   const modal=document.createElement('div');
   modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:70;display:flex;align-items:flex-end;';
   modal.innerHTML=`
-    <div style="background:var(--panel);width:100%;max-height:88vh;overflow:auto;border-radius:12px 12px 0 0;padding:14px;">
+    <div class="sheet-inner">
       <div class="section-title"><h2 style="margin:0">登記/編輯事故：${esc(person.name)}</h2><button class="ghost small" id="closeModal">關閉</button></div>
       <div class="hint" style="margin-bottom:8px">${minguoLabel(date)}</div>
       <div id="qiExistingList" style="margin-bottom:8px">${existing.length? existing.map(u=>`
@@ -3188,7 +3602,7 @@ function openLeaveEditModal(leaveId){
   const modal=document.createElement('div');
   modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:60;display:flex;align-items:flex-end;';
   modal.innerHTML=`
-    <div style="background:var(--panel);width:100%;max-height:88vh;overflow:auto;border-radius:12px 12px 0 0;padding:14px;">
+    <div class="sheet-inner">
       <div class="section-title"><h2 style="margin:0">編輯休假：${esc(person?person.name:'?')}</h2><button class="ghost small" id="closeModal">關閉</button></div>
       <div class="hint" style="margin-bottom:8px">可直接修改起訖日期，或分成好幾段（例如原本9/8-9/10，發現9/9其實沒休，改成9/8跟9/10各自獨立一段，各自重新計算前後緩衝）。</div>
       <div id="leaveSegList"></div>
@@ -4390,6 +4804,31 @@ function dutyDateRangeLabel(date){
   return `${fmtDateShort(prev)}（${weekdayLabel(prev)}）-${fmtDateShort(date)}（${weekdayLabel(date)}）`;
 }
 function esc(s){ return (s||'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+/* On mobile, tapping a checkbox in a filtered list blurs the search box and
+   the keyboard slides away — so picking several people while filtering means
+   re-tapping the search field every time. Suppressing the default mousedown
+   on the list keeps focus (and the keyboard) on the search input; the click
+   still reaches the label and toggles the checkbox as usual. */
+function keepSearchFocusOnPick(listEl){
+  if(!listEl) return;
+  listEl.addEventListener('mousedown', e=>{
+    if(e.target.closest('label')) e.preventDefault();
+  });
+  listEl.addEventListener('touchstart', e=>{
+    if(e.target.closest('label')) e.preventDefault();
+  }, {passive:false});
+  // touchstart's preventDefault also suppresses the synthesised click, so
+  // drive the toggle ourselves for touch
+  listEl.addEventListener('touchend', e=>{
+    const label = e.target.closest('label');
+    if(!label) return;
+    const cb = label.querySelector('input[type="checkbox"]');
+    if(!cb) return;
+    e.preventDefault();
+    cb.checked = !cb.checked;
+    cb.dispatchEvent(new Event('change', {bubbles:true}));
+  }, {passive:false});
+}
 /* shared "篩選出 X / 共 Y 人・N官M士K兵" summary line — every person-list
    table in the app (roster, checkbox pickers, on-duty/away lists, etc.)
    uses this so the same at-a-glance headcount is available everywhere,
@@ -5013,7 +5452,7 @@ function hardUnavailabilityReasons(personId, date, s, e){
     else if(lt.mode==='range' && lt.start && lt.end && windowsOverlapRecurring(s,e,toMin(lt.start),toMin(lt.end))) out.push(`長期事故：每天 ${lt.start}-${lt.end} 不可排`);
   }
   (state.unavail[date]||[]).filter(u=>u.personId===personId).forEach(u=>{
-    const hit = u.allDay || windowsOverlapOnce(s,e,toMin(u.start),toMin(u.end));
+    const hit = u.allDay || incidentBlocksWindow(u, s, e, false);
     if(hit) out.push(`${u.allDay? '全天':`${u.start}-${u.end}`}${u.reason? '（'+u.reason+'）':'（未註記原因）'}`);
   });
   for(const w of personCompRestWindows(personId, date)){
@@ -5135,7 +5574,7 @@ function openSubstituteModal(source){
   const modal=document.createElement('div');
   modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:70;display:flex;align-items:flex-end;';
   modal.innerHTML=`
-    <div style="background:var(--panel);width:100%;max-height:88vh;overflow:auto;border-radius:12px 12px 0 0;padding:14px;">
+    <div class="sheet-inner">
       <div class="section-title"><h2 style="margin:0">找補位：${esc(label)}</h2><button class="ghost small" id="closeModal">關閉</button></div>
       <div class="hint" style="margin-bottom:8px">${currentPersonId? `目前是 <b>${esc(personName(currentPersonId))}</b>，選一位補上會把他換掉並留下異動紀錄。`:'這一格目前是空的，選一位補上。'}依「補進來要付出多少代價」由低到高排序，同一層裡今天班較少的人排前面。</div>
       <div class="row wrap" style="margin-bottom:8px">
@@ -5568,7 +6007,7 @@ function openTextShareModal(title, text){
   const modal=document.createElement('div');
   modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:60;display:flex;align-items:flex-end;';
   modal.innerHTML=`
-    <div style="background:var(--panel);width:100%;max-height:88vh;overflow:auto;border-radius:12px 12px 0 0;padding:14px;">
+    <div class="sheet-inner">
       <div class="section-title"><h2 style="margin:0">${esc(title)}</h2><button class="ghost small" id="closeTextShare">關閉</button></div>
       <div class="row wrap" style="margin-bottom:8px">
         <button class="primary grow" id="shareTextBtn">📤 分享</button>
@@ -5686,11 +6125,14 @@ function renderMiscDutyCard(role, entries, preset, dragIdx){
     return `
       <div class="list-item" style="flex-direction:column;align-items:stretch">
         <div class="row">
-          <span class="grow">${m.start&&m.end? `<b>${m.start}-${m.end}</b>　`:''}${peopleLabel}</span>
+          <span class="grow">${m.start&&m.end? `<b>${m.start}-${m.end}</b>　`:''}${m.shiftLabel? `<span class="tag" style="margin-right:4px">${esc(m.shiftLabel)}</span>`:''}${peopleLabel}</span>
           <button class="ghost small" data-edit-misc="${m.id}">編輯</button>
           <button class="ghost small danger" data-del-misc="${m.id}">刪除</button>
         </div>
+        ${m.support? `<div class="hint">🤝 支援：${esc(m.support)}</div>`:''}
+        ${m.restUntil? `<div class="hint">😴 補休至 ${esc(m.restUntil)}</div>`:''}
         ${issues.map(i=>`<div class="badge-issue">⚠️ ${esc(i)}</div>`).join('')}
+        ${miscEntryConflicts(m, currentDate).map(i=>`<div class="badge-issue">⚠️ ${esc(i)}</div>`).join('')}
         ${(m.personIds||[]).map((pid,i)=>pid? overrideBadgeHTML(currentDate, pid, {kind:'misc', miscId:m.id, slotIdx:i}):'').join('')}
       </div>`;
   }).join('');
@@ -5849,7 +6291,7 @@ function openCategoryEditor(catId){
   const modal = document.createElement('div');
   modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:50;display:flex;align-items:flex-end;';
   modal.innerHTML = `
-    <div style="background:var(--panel);width:100%;max-height:88vh;overflow:auto;border-radius:12px 12px 0 0;padding:14px;">
+    <div class="sheet-inner">
       <div class="section-title"><h2 style="margin:0">編輯：${esc(cat.name)}</h2><div class="row" style="gap:4px"><button class="ghost small" id="duplicateCatBtn">📋 複製此類別</button><button class="ghost small" id="closeModal">關閉</button></div></div>
       <button class="ghost small danger" id="deleteCatBtn" style="width:100%;margin-bottom:8px">🗑️ 刪除此類別</button>
       <label>類別名稱</label><input type="text" id="catName" value="${esc(cat.name)}" style="margin-bottom:8px">
@@ -6359,7 +6801,7 @@ function openMiscPresetModal(editIndex){
   const modal=document.createElement('div');
   modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:60;display:flex;align-items:flex-end;';
   modal.innerHTML=`
-    <div style="background:var(--panel);width:100%;max-height:88vh;overflow:auto;border-radius:12px 12px 0 0;padding:14px;">
+    <div class="sheet-inner">
       <div class="section-title"><h2 style="margin:0">${editing? '編輯常用項目' : '新增常用項目'}</h2><button class="ghost small" id="closeMiscPresetModal">關閉</button></div>
       <label>名稱</label><input type="text" id="mpName" value="${esc(existing? existing.role:'')}" placeholder="例：查哨" style="margin-bottom:8px">
       <label>時段（同一個項目可以有多個時段，例如查哨一天分好幾節）</label>
@@ -6562,7 +7004,7 @@ function isPersonBusyForMiscEdit(personId, date, s, eRaw, excludeEntryId){
   }
   for(const u of (state.unavail[date]||[]).filter(u=>u.personId===personId)){
     if(u.allDay) return true;
-    if(windowsOverlapOnce(s,e,toMin(u.start),toMin(u.end))) return true;
+    if(incidentBlocksWindow(u, s, e, false)) return true;
   }
   for(const w of personCompRestWindows(personId, date)){
     if(windowsOverlapRecurring(s,e,toMin(w.start),toMin(w.end))) return true;
@@ -6571,7 +7013,7 @@ function isPersonBusyForMiscEdit(personId, date, s, eRaw, excludeEntryId){
   for(const cat of state.categories){
     const catAssign = dayAssign[cat.id]||{};
     for(const sft of effectiveShifts(cat, date)){
-      if((catAssign[sft.id]||[]).includes(personId) && windowsOverlapOnce(s,e,shiftBusyStartMin(cat,sft),toMin(sft.end))) return true;
+      if((catAssign[sft.id]||[]).includes(personId) && windowsOverlapRecurring(s,e,shiftBusyStartMin(cat,sft),wrapEndMin(toMin(sft.start),toMin(sft.end)))) return true;
     }
   }
   for(const mm of (state.misc[date]||[])){
@@ -6592,7 +7034,7 @@ function miscEditBusyReasons(personId, date, s, eRaw, excludeEntryId){
     else if(lt.mode==='range' && lt.start && lt.end && windowsOverlapRecurring(s,e,toMin(lt.start),toMin(lt.end))) out.push(`長期事故：每天 ${lt.start}-${lt.end} 不可排`);
   }
   (state.unavail[date]||[]).filter(u=>u.personId===personId).forEach(u=>{
-    const hit = u.allDay || windowsOverlapOnce(s,e,toMin(u.start),toMin(u.end));
+    const hit = u.allDay || incidentBlocksWindow(u, s, e, false);
     if(hit) out.push(`${u.allDay? '全天':`${u.start}-${u.end}`}${u.reason? '（'+u.reason+'）':'（未註記原因）'}`);
   });
   for(const w of personCompRestWindows(personId, date)){
@@ -6602,7 +7044,7 @@ function miscEditBusyReasons(personId, date, s, eRaw, excludeEntryId){
   state.categories.forEach(cat=>{
     const catAssign = dayAssign[cat.id]||{};
     effectiveShifts(cat, date).forEach(sft=>{
-      if((catAssign[sft.id]||[]).includes(personId) && windowsOverlapOnce(s,e,shiftBusyStartMin(cat,sft),toMin(sft.end))){
+      if((catAssign[sft.id]||[]).includes(personId) && windowsOverlapRecurring(s,e,shiftBusyStartMin(cat,sft),wrapEndMin(toMin(sft.start),toMin(sft.end)))){
         out.push(`勤務中：${cat.name} ${sft.label||sft.start+'-'+sft.end}${cat.enforceRest?'（含準備時間）':''}`);
       }
     });
