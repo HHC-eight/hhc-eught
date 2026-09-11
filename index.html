@@ -132,7 +132,7 @@ textarea{min-height:50px;resize:vertical;}
       <button class="ghost small" id="undoBtn" title="復原上一步" disabled>↩️</button>
       <button class="ghost small" id="redoBtn" title="取消復原（重做）" disabled>↪️</button>
       <button class="ghost small" id="dayResetBtn" title="還原這一天">♻️</button>
-      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v75</span></h1>
+      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v76</span></h1>
     </div>
     <div class="row" style="gap:6px;align-items:center">
       <select id="timeStepSelect" style="font-size:11px;padding:3px 6px;width:auto">
@@ -486,25 +486,35 @@ function chiefEligible(person, preset, driver){
    overlapping duty. Preplans are written a month ahead, so by import time
    leave may have been registered on top of them — these have to surface on
    the card, not just inside the editor. */
-function miscEntryConflicts(entry, date){
+/* same as miscEntryConflicts but keeps the offending person's id alongside
+   the message, so the UI can offer a one-tap "標為掛名" fix instead of
+   just describing the problem */
+function miscEntryConflictsDetailed(entry, date){
   const out=[];
   if(!entry.start || !entry.end) return out;
   const s=toMin(entry.start), e=wrapEndMin(s, toMin(entry.end));
   (entry.personIds||[]).filter(Boolean).forEach(pid=>{
+    if((entry.nominalIds||[]).includes(pid)) return;
     const p=state.personnel.find(x=>x.id===pid);
     if(!p) return;
     const hard=hardUnavailabilityReasons(pid, date, s, e);
-    if(hard.length) out.push(`${p.name}：${hard.join('・')}`);
+    if(hard.length) out.push({pid, message:`${p.name}：${hard.join('・')}`});
     (state.misc[date]||[]).forEach(other=>{
       if(other.id===entry.id || !other.start || !other.end) return;
       if(!(other.personIds||[]).includes(pid)) return;
+      if((other.nominalIds||[]).includes(pid)) return;
       const os=toMin(other.start), oe=wrapEndMin(os, toMin(other.end));
       if(windowsOverlapOnce(s,e,os,oe)){
-        out.push(`${p.name}：同時段還被排在「${other.role} (${other.start}-${other.end})」`);
+        out.push({pid, message:`${p.name}：同時段還被排在「${other.role} (${other.start}-${other.end})」`});
       }
     });
   });
-  return [...new Set(out)];
+  // de-dupe by message while keeping the first pid seen for each
+  const seen=new Set();
+  return out.filter(o=>{ if(seen.has(o.message)) return false; seen.add(o.message); return true; });
+}
+function miscEntryConflicts(entry, date){
+  return miscEntryConflictsDetailed(entry, date).map(o=>o.message);
 }
 function validateMiscEntry(entry){
   if(!entry.roles){
@@ -1080,6 +1090,7 @@ function isPersonUnavailable(personId, date, s, e, excludeCatShift){
   }
   // avoid double-booking against 其他勤務 (misc) commitments that have a defined time window
   for(const m of (state.misc[date]||[])){
+    if((m.nominalIds||[]).includes(personId)) continue; // 掛名：rostered but not actually blocking
     if(m.start && m.end && (m.personIds||[]).includes(personId) && windowsOverlapOnce(s,e,toMin(m.start),toMin(m.end))) return true;
     // a misc duty may also grant 補休 afterwards (e.g. 值班 07:00-07:00 補休至12:00)
     if(m.restUntil && m.end && (m.personIds||[]).includes(personId) && windowsOverlapRecurring(s,e,toMin(m.end),toMin(m.restUntil))) return true;
@@ -1883,23 +1894,43 @@ function preplanSupportsTextFormat(type){
    "驗菜：___", "駕駛：___" / "車長：___", "日班：___" / "夜班：___",
    or one line per fixed time-slot for 查哨. Existing values are filled in;
    empty slots show the blank placeholder for someone else to type into. */
+/* the label each mode's day-block uses in the fill-in text — matched
+   literally when parsing a filled-in file back, so has to line up exactly
+   with what preplanFillLines below prints */
+function preplanFillLabels(type){
+  if(type.mode==='people') return [type.name];
+  if(type.mode==='roles') return [...type.roles];
+  if(type.mode==='dayNight') return ['日班','夜班'];
+  if(type.mode==='fixedSlots') return type.slots.map(sl=>sl.replace(/:\d\d/g,''));
+  return [];
+}
 function preplanFillLines(type, plan){
-  const BLANK='？？？';
   const nm=id=>{ const p=state.personnel.find(x=>x.id===id); return p? p.name : ''; };
-  const joinNames=ids=>{ const n=(ids||[]).filter(Boolean).map(nm).filter(Boolean); return n.length? n.join('、') : BLANK; };
-  if(type.mode==='people') return [`${type.name}：${plan? joinNames(plan.personIds) : BLANK}`];
-  if(type.mode==='roles') return type.roles.map((r,i)=>`${r}：${plan? joinNames([( plan.personIds||[])[i]]) : BLANK}`);
+  /* a filled cell shows: real names, a trailing (掛) per name that was
+     marked nominal (掛名/on-call — rostered but not actually blocking their
+     day, see nominalIds), and any raw unresolved text someone typed that
+     didn't match a known name (kept as-is rather than dropped, since it's
+     often "轮到别单位" or a name just not in this roster yet) */
+  const cellText=(ids, nominalSet, note)=>{
+    const parts=(ids||[]).filter(Boolean).map(id=>nm(id)+(nominalSet&&nominalSet.has(id)?'(掛)':'')).filter(Boolean);
+    if(note) parts.push(note);
+    return parts.join('、');
+  };
+  const labels=preplanFillLabels(type);
+  if(type.mode==='people') return [`${labels[0]} ${plan? cellText(plan.personIds, new Set(plan.nominalIds), plan.note) : ''}`.trimEnd()];
+  if(type.mode==='roles') return labels.map((r,i)=>`${r} ${plan? cellText([(plan.personIds||[])[i]], new Set(plan.nominalIds), (plan.notes||[])[i]) : ''}`.trimEnd());
   if(type.mode==='dayNight'){
     const dayIds=plan? (plan.dayPersonIds||(plan.dayPersonId?[plan.dayPersonId]:[])) : [];
     const nightIds=plan? (plan.nightPersonIds||(plan.nightPersonId?[plan.nightPersonId]:[])) : [];
-    return [`日班：${plan? joinNames(dayIds) : BLANK}`, `夜班：${plan? joinNames(nightIds) : BLANK}`];
+    return [`日班 ${plan? cellText(dayIds, new Set(plan.dayNominalIds), plan.dayNote):''}`.trimEnd(),
+            `夜班 ${plan? cellText(nightIds, new Set(plan.nightNominalIds), plan.nightNote):''}`.trimEnd()];
   }
   if(type.mode==='fixedSlots'){
     return type.slots.map((sl,i)=>{
       const short=sl.replace(/:\d\d/g,'');
       const cfg=plan? (plan.slots||{})[i] : null;
       const ids=cfg? (cfg.personIds||(cfg.personId?[cfg.personId]:[])) : [];
-      return `${short}：${cfg? joinNames(ids) : BLANK}`;
+      return `${short} ${cfg? cellText(ids, new Set(cfg.nominalIds), cfg.note):''}`.trimEnd();
     });
   }
   return [];
@@ -1908,13 +1939,13 @@ function generatePreplanFillText(key, ym){
   const type=PREPLAN_TYPES.find(t=>t.key===key);
   const total=daysInMonth(ym);
   const [y,m]=ym.split('-').map(Number);
-  const lines=[`${type.name}　民國${y-1911}年${m}月`, `（請把「？？？」改成人名，其他不用動，填完整段傳回即可）`, ''];
+  const lines=[`${type.name}　民國${y-1911}年${m}月`,
+    `（在每個項目後面直接打姓名即可，例：${preplanFillLabels(type)[0]} 陳小明；不需要就留空；如果只是掛名備援、不用真的出勤，姓名後面加"(掛)"；找不到的名字也可以直接打上去，不會自動加進名冊）`, ''];
   for(let d=1;d<=total;d++){
     const ds=`${ym}-${String(d).padStart(2,'0')}`;
     const plan=preplanFor(key, ds);
     lines.push(`${m}/${d}`);
     preplanFillLines(type, plan).forEach(l=>lines.push(l));
-    lines.push('');
   }
   return lines.join('\n');
 }
@@ -1925,68 +1956,75 @@ function generatePreplanFillText(key, ym){
 function parsePreplanFillText(key, ym, text){
   const type=PREPLAN_TYPES.find(t=>t.key===key);
   const [y,m]=ym.split('-').map(Number);
-  const BLANK_RE=/^(？+|\?+|_+)$/;
+  const labels=preplanFillLabels(type);
   const nameToId=name=>{
     const matches=state.personnel.filter(p=>p.name===name.trim());
     return matches.length===1? matches[0] : null;
   };
+  /* one filled cell ("陳小明、王小華(掛)、友軍支援") into resolved ids +
+     which of those are 掛名 (nominal — rostered but not actually blocking
+     their day) + leftover text for names that don't match exactly one
+     person, kept verbatim as a note rather than dropped or guessed at */
+  const parseCell=(raw, curDate, label)=>{
+    const ids=[], nominalIds=[], notes=[];
+    (raw||'').split(/[、,，\s]+/).filter(Boolean).forEach(tok=>{
+      const nominal=/[（(]掛[)）]$/.test(tok);
+      const name=tok.replace(/[（(]掛[)）]$/,'');
+      const p=nameToId(name);
+      if(p){ ids.push(p.id); if(nominal) nominalIds.push(p.id); }
+      else { notes.push(tok); unresolved.push({date:curDate, label, name:tok}); }
+    });
+    return {ids, nominalIds, note:notes.join('、')};
+  };
   const lines=text.split(/\r?\n/);
   let curDate=null, buf={};
   const result={}; // date -> plan
-  const unresolved=[]; // names typed that don't match exactly one person
+  const unresolved=[]; // {date,label,name} — couldn't match exactly one person; kept as a note, not dropped
   const flush=()=>{
     if(!curDate) return;
     if(type.mode==='people'){
-      const raw=buf[type.name];
-      if(raw!==undefined && !BLANK_RE.test(raw.trim()) && raw.trim()){
-        const ids=raw.split(/[、,，\s]+/).filter(Boolean).map(n=>{
-          const p=nameToId(n); if(!p) unresolved.push({date:curDate,name:n}); return p? p.id:null;
-        }).filter(Boolean);
-        if(ids.length) result[curDate]={personIds:ids};
-      }
+      const c=parseCell(buf[labels[0]], curDate, labels[0]);
+      if(c.ids.length || c.note) result[curDate]={personIds:c.ids, nominalIds:c.nominalIds, note:c.note||undefined};
     } else if(type.mode==='roles'){
-      const ids=type.roles.map(r=>{
-        const raw=buf[r];
-        if(raw===undefined || BLANK_RE.test(raw.trim()) || !raw.trim()) return undefined;
-        const p=nameToId(raw.split(/[、,，\s]+/)[0]);
-        if(!p) unresolved.push({date:curDate,name:raw});
-        return p? p.id : undefined;
-      });
-      if(ids.some(Boolean)) result[curDate]={personIds:ids};
+      const cells=labels.map(r=>parseCell(buf[r], curDate, r));
+      if(cells.some(c=>c.ids.length||c.note)){
+        result[curDate]={personIds:cells.map(c=>c.ids[0]), nominalIds:cells.flatMap(c=>c.nominalIds), notes:cells.map(c=>c.note||undefined)};
+      }
     } else if(type.mode==='dayNight'){
-      const parseOne=(label)=>{
-        const raw=buf[label];
-        if(raw===undefined || BLANK_RE.test(raw.trim()) || !raw.trim()) return [];
-        return raw.split(/[、,，\s]+/).filter(Boolean).map(n=>{
-          const p=nameToId(n); if(!p) unresolved.push({date:curDate,name:n}); return p? p.id:null;
-        }).filter(Boolean);
-      };
-      const dayIds=parseOne('日班'), nightIds=parseOne('夜班');
-      if(dayIds.length||nightIds.length) result[curDate]={dayPersonIds:dayIds, nightPersonIds:nightIds};
+      const dc=parseCell(buf['日班'], curDate, '日班'), nc=parseCell(buf['夜班'], curDate, '夜班');
+      if(dc.ids.length||dc.note||nc.ids.length||nc.note){
+        result[curDate]={dayPersonIds:dc.ids, dayNominalIds:dc.nominalIds, dayNote:dc.note||undefined,
+                          nightPersonIds:nc.ids, nightNominalIds:nc.nominalIds, nightNote:nc.note||undefined};
+      }
     } else if(type.mode==='fixedSlots'){
       const slots={};
-      type.slots.forEach((sl,i)=>{
-        const short=sl.replace(/:\d\d/g,'');
+      labels.forEach((short,i)=>{
         const raw=buf[short];
-        if(raw===undefined || BLANK_RE.test(raw.trim()) || !raw.trim()) return;
-        const ids=raw.split(/[、,，\s]+/).filter(Boolean).map(n=>{
-          const p=nameToId(n); if(!p) unresolved.push({date:curDate,name:n}); return p? p.id:null;
-        }).filter(Boolean);
-        if(ids.length) slots[i]={personIds:ids};
+        if(raw===undefined) return;
+        const c=parseCell(raw, curDate, short);
+        if(c.ids.length || c.note) slots[i]={personIds:c.ids, nominalIds:c.nominalIds, note:c.note||undefined};
       });
       if(Object.keys(slots).length) result[curDate]={slots};
     }
     buf={};
   };
+  const labelStarts = labels.slice().sort((a,b)=>b.length-a.length); // longest-first so "日班" doesn't get shadowed by a shorter prefix
   lines.forEach(line=>{
-    const dm=line.trim().match(/^(\d{1,2})\/(\d{1,2})$/);
+    const trimmed=line.trim();
+    const dm=trimmed.match(/^(\d{1,2})\/(\d{1,2})$/);
     if(dm){
       flush();
       curDate=`${y}-${String(m).padStart(2,'0')}-${String(Number(dm[2])).padStart(2,'0')}`;
       return;
     }
-    const km=line.match(/^([^：:]+)[：:](.*)$/);
-    if(km && curDate) buf[km[1].trim()]=km[2].trim();
+    if(!curDate) return;
+    for(const lbl of labelStarts){
+      if(trimmed===lbl){ buf[lbl]=''; return; }
+      if(trimmed.startsWith(lbl+' ') || trimmed.startsWith(lbl+'：') || trimmed.startsWith(lbl+':')){
+        buf[lbl]=trimmed.slice(lbl.length).replace(/^[：:]\s*/,'').trim();
+        return;
+      }
+    }
   });
   flush();
   return {result, unresolved};
@@ -3160,36 +3198,44 @@ function importPreplanForDate(key, date){
   state.misc[date]=state.misc[date].filter(m=>m.role!==roleName);
   const times = preset? presetTimes(preset) : [];
   const t0 = times[0] || {start:'',end:''};
-  const sup = plan.support? {support:plan.support} : {};
+  /* merges the plan-level free-text support with any per-slot note (raw
+     text from names the text-import couldn't match to exactly one person)
+     into a single display string, so unresolved names still show up on the
+     schedule card without ever touching the personnel roster */
+  const mergeSupport=(...parts)=>{ const s=parts.filter(Boolean).join('、'); return s? {support:s} : {}; };
   if(type.mode==='people'){
     const ids=(plan.personIds||[]).filter(Boolean);
-    if(!ids.length && !plan.support) return false;
+    if(!ids.length && !plan.support && !plan.note) return false;
     state.misc[date].push({id:uid(), role:roleName,
       start:plan.start||t0.start, end:plan.end||t0.end,
-      restUntil:plan.restUntil||(preset&&preset.restUntil)||'', personIds:ids, ...sup});
+      restUntil:plan.restUntil||(preset&&preset.restUntil)||'', personIds:ids,
+      nominalIds:plan.nominalIds||[], ...mergeSupport(plan.support, plan.note)});
   } else if(type.mode==='roles'){
     const ids=(plan.personIds||[]).slice(0,type.roles.length);
-    if(!ids.some(Boolean) && !plan.support) return false;
+    const notes=(plan.notes||[]).filter(Boolean).join('、');
+    if(!ids.some(Boolean) && !plan.support && !notes) return false;
     state.misc[date].push({id:uid(), role:roleName,
       start:plan.start||t0.start, end:plan.end||t0.end,
       restUntil:plan.restUntil||(preset&&preset.restUntil)||'', roles:[...type.roles], personIds:ids,
-      lockedSlots:type.roles.map(()=>false), ...sup});
+      nominalIds:plan.nominalIds||[], lockedSlots:type.roles.map(()=>false), ...mergeSupport(plan.support, notes)});
   } else if(type.mode==='dayNight'){
     const dayT = times[0]||{start:'',end:''};
     const nightT = times[1]||times[0]||{start:'',end:''};
     const dayIds=(plan.dayPersonIds||(plan.dayPersonId?[plan.dayPersonId]:[])).filter(Boolean);
     const nightIds=(plan.nightPersonIds||(plan.nightPersonId?[plan.nightPersonId]:[])).filter(Boolean);
     let wrote=false;
-    if(dayIds.length){
+    if(dayIds.length || plan.dayNote){
       state.misc[date].push({id:uid(), role:roleName,
         start:plan.dayStart||dayT.start, end:plan.dayEnd||dayT.end,
-        restUntil:plan.dayRestUntil||'', personIds:dayIds, shiftLabel:'日班', ...sup});
+        restUntil:plan.dayRestUntil||'', personIds:dayIds, nominalIds:plan.dayNominalIds||[],
+        shiftLabel:'日班', ...mergeSupport(plan.support, plan.dayNote)});
       wrote=true;
     }
-    if(nightIds.length){
+    if(nightIds.length || plan.nightNote){
       state.misc[date].push({id:uid(), role:roleName,
         start:plan.nightStart||nightT.start, end:plan.nightEnd||nightT.end,
-        restUntil:plan.nightRestUntil||(preset&&preset.restUntil)||'', personIds:nightIds, shiftLabel:'夜班', ...sup});
+        restUntil:plan.nightRestUntil||(preset&&preset.restUntil)||'', personIds:nightIds, nominalIds:plan.nightNominalIds||[],
+        shiftLabel:'夜班', ...mergeSupport(plan.support, plan.nightNote)});
       wrote=true;
     }
     return wrote;
@@ -3200,9 +3246,10 @@ function importPreplanForDate(key, date){
       if(!label || !cfg) return;
       const [st,en]=label.split('-');
       const ids=(cfg.personIds||(cfg.personId?[cfg.personId]:[])).filter(Boolean);
-      if(!ids.length && !plan.support) return;
+      if(!ids.length && !plan.support && !cfg.note) return;
       state.misc[date].push({id:uid(), role:roleName, start:st, end:en,
-        restUntil:cfg.restUntil||'', personIds:ids, ...sup});
+        restUntil:cfg.restUntil||'', personIds:ids, nominalIds:cfg.nominalIds||[],
+        ...mergeSupport(plan.support, cfg.note)});
       wrote=true;
     });
     return wrote;
@@ -6374,6 +6421,7 @@ function personDutiesInWindow(personId, date, sMin, eMin, exclude){
     if(!m.start || !m.end) return;
     (m.personIds||[]).forEach((pid,idx)=>{
       if(pid!==personId) return;
+      if((m.nominalIds||[]).includes(pid)) return; // 掛名：not actually occupying this slot
       if(windowsOverlapOnce(sMin,eMin,toMin(m.start),wrapEndMin(toMin(m.start),toMin(m.end)))){
         out.push({kind:'misc', miscId:m.id, slotIdx:idx, label:`${m.role}${m.start&&m.end?` (${m.start}-${m.end})`:''}`});
       }
@@ -6994,14 +7042,15 @@ function renderMiscDutyCard(role, entries, preset, dragIdx){
   const inner = entries.map(m=>{
     if(m.id===miscInlineEditId) return miscEntryEditorHTML(m);
     const issues = validateMiscEntry(m);
+    const nominalTag = pid=> (m.nominalIds||[]).includes(pid)? ' <span class="hint">(掛)</span>' : '';
     const peopleLabel = m.roles
       ? m.roles.map((r,i)=>{
           const pid=m.personIds[i];
           const sub = `<button class="ghost small" data-find-sub-misc="${m.id}" data-find-sub-idx="${i}" title="找補位">🔍</button>`;
-          return `${r}：${pid? esc(personName(pid))+` <button class="ghost small" data-duty-change="${pid}" title="臨時異動">⚡</button>`+sub : ((m.lockedSlots&&m.lockedSlots[i])? '🔒保留空白':'（未指派）'+sub)}`;
+          return `${r}：${pid? esc(personName(pid))+nominalTag(pid)+` <button class="ghost small" data-duty-change="${pid}" title="臨時異動">⚡</button>`+sub : ((m.lockedSlots&&m.lockedSlots[i])? '🔒保留空白':'（未指派）'+sub)}`;
         }).join('　')
       : ((m.personIds||[]).filter(Boolean).length
-          ? m.personIds.map((pid,i)=>pid? `${esc(personName(pid))} <button class="ghost small" data-duty-change="${pid}" title="臨時異動">⚡</button><button class="ghost small" data-find-sub-misc="${m.id}" data-find-sub-idx="${i}" title="找補位">🔍</button>`:'').filter(Boolean).join('、')
+          ? m.personIds.map((pid,i)=>pid? `${esc(personName(pid))}${nominalTag(pid)} <button class="ghost small" data-duty-change="${pid}" title="臨時異動">⚡</button><button class="ghost small" data-find-sub-misc="${m.id}" data-find-sub-idx="${i}" title="找補位">🔍</button>`:'').filter(Boolean).join('、')
           : `（未指派）<button class="ghost small" data-find-sub-misc="${m.id}" data-find-sub-idx="0" title="找補位">🔍</button>`);
     return `
       <div class="list-item" style="flex-direction:column;align-items:stretch">
@@ -7013,7 +7062,7 @@ function renderMiscDutyCard(role, entries, preset, dragIdx){
         ${m.support? `<div class="hint">🤝 支援：${esc(m.support)}</div>`:''}
         ${m.restUntil? `<div class="hint">😴 補休至 ${esc(m.restUntil)}</div>`:''}
         ${issues.map(i=>`<div class="badge-issue">⚠️ ${esc(i)}</div>`).join('')}
-        ${miscEntryConflicts(m, currentDate).map(i=>`<div class="badge-issue">⚠️ ${esc(i)}</div>`).join('')}
+        ${miscEntryConflictsDetailed(m, currentDate).map(c=>`<div class="badge-issue row" style="align-items:center">⚠️ ${esc(c.message)}<button class="ghost small" style="margin-left:auto" data-mark-nominal="${m.id}" data-mark-nominal-pid="${c.pid}">標為掛名</button></div>`).join('')}
         ${(m.personIds||[]).map((pid,i)=>pid? overrideBadgeHTML(currentDate, pid, {kind:'misc', miscId:m.id, slotIdx:i}):'').join('')}
       </div>`;
   }).join('');
@@ -7899,6 +7948,7 @@ function isPersonBusyForMiscEdit(personId, date, s, eRaw, excludeEntryId){
   }
   for(const mm of (state.misc[date]||[])){
     if(mm.id===excludeEntryId) continue;
+    if((mm.nominalIds||[]).includes(personId)) continue; // 掛名：doesn't block
     if(mm.start && mm.end && (mm.personIds||[]).includes(personId) && windowsOverlapOnce(s,e,toMin(mm.start),toMin(mm.end))) return true;
     if(mm.restUntil && mm.end && (mm.personIds||[]).includes(personId) && windowsOverlapRecurring(s,e,toMin(mm.end),toMin(mm.restUntil))) return true;
   }
@@ -8138,6 +8188,16 @@ function wireMiscCardEvents(){
   app.querySelectorAll('[data-find-sub-misc]').forEach(b=>{
     b.onclick=()=>openSubstituteModal({kind:'misc', miscId:b.dataset.findSubMisc, slotIdx:Number(b.dataset.findSubIdx)});
   });
+  app.querySelectorAll('[data-mark-nominal]').forEach(b=>{
+    b.onclick=()=>{
+      const m=(state.misc[currentDate]||[]).find(x=>x.id===b.dataset.markNominal);
+      if(!m) return;
+      const pid=b.dataset.markNominalPid;
+      if(!m.nominalIds) m.nominalIds=[];
+      if(!m.nominalIds.includes(pid)) m.nominalIds.push(pid);
+      saveState(); render();
+    };
+  });
   app.querySelectorAll('[data-duty-change]').forEach(b=>{
     b.onclick=()=>openDutyChangeModal(b.dataset.dutyChange);
   });
@@ -8284,9 +8344,10 @@ function renderMisc(){
       }).map(m=>{
         if(m.id===miscInlineEditId) return miscEntryEditorHTML(m);
         const issues = validateMiscEntry(m);
+        const nomTag2 = pid=> (m.nominalIds||[]).includes(pid)? ' <span class="hint">(掛)</span>' : '';
         const peopleLabel = m.roles
-          ? m.roles.map((r,i)=>`${r}：${m.personIds[i]? esc(personName(m.personIds[i])) : ((m.lockedSlots&&m.lockedSlots[i])? '🔒保留空白':'（未指派）')}`).join('　')
-          : (m.personIds.map(pid=>esc(personName(pid))).join('、')||'（未指派）');
+          ? m.roles.map((r,i)=>`${r}：${m.personIds[i]? esc(personName(m.personIds[i]))+nomTag2(m.personIds[i]) : ((m.lockedSlots&&m.lockedSlots[i])? '🔒保留空白':'（未指派）')}`).join('　')
+          : (m.personIds.map(pid=>esc(personName(pid))+nomTag2(pid)).join('、')||'（未指派）');
         return `
         <div class="list-item" style="flex-direction:column;align-items:stretch">
           <div class="row">
@@ -8295,6 +8356,7 @@ function renderMisc(){
             <button class="ghost small danger" data-del-misc="${m.id}">刪除</button>
           </div>
           ${issues.map(i=>`<div class="badge-issue">⚠️ ${esc(i)}</div>`).join('')}
+          ${miscEntryConflictsDetailed(m, currentDate).map(c=>`<div class="badge-issue row" style="align-items:center">⚠️ ${esc(c.message)}<button class="ghost small" style="margin-left:auto" data-mark-nominal="${m.id}" data-mark-nominal-pid="${c.pid}">標為掛名</button></div>`).join('')}
         </div>`;
       }).join('')}
     `);
