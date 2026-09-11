@@ -133,7 +133,7 @@ textarea{min-height:50px;resize:vertical;}
       <button class="ghost small" id="undoBtn" title="復原上一步" disabled>↩️</button>
       <button class="ghost small" id="redoBtn" title="取消復原（重做）" disabled>↪️</button>
       <button class="ghost small" id="dayResetBtn" title="還原這一天">♻️</button>
-      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v78</span></h1>
+      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v80</span></h1>
     </div>
     <div class="row" style="gap:6px;align-items:center">
       <select id="timeStepSelect" style="font-size:11px;padding:3px 6px;width:auto">
@@ -596,6 +596,14 @@ state.miscPresets.forEach(p=>{
   if(p.chiefRequiredLicenses===undefined) p.chiefRequiredLicenses = [];
   if(p.chiefRequiredMedCert===undefined) p.chiefRequiredMedCert = false;
   if(p.rankPriority===undefined) p.rankPriority = null; // null = default rank order (RANK_DEFS)
+  /* presets saved before multi-timeslot support (`times: [{start,end}]`)
+     stored a single top-level start/end instead — convert those in place so
+     every consumer of presetTimes()/times[0] sees a normal array rather than
+     undefined. Genuinely time-less presets (neither times nor start/end)
+     still get an empty array, which is the pre-existing default shape. */
+  if(!Array.isArray(p.times)){
+    p.times = (p.start || p.end) ? [{start:p.start||'', end:p.end||''}] : [];
+  }
 });
 /* unified display/export order shared across 排班類別 AND 其他勤務常用項目 —
    categories start at 0,10,20... (existing default order) so misc presets
@@ -2398,11 +2406,17 @@ function openStandbySubDutyEditor(plan, role, d, onDone){
         <div class="grow"><label>搜尋姓名</label><input type="text" id="sdSearch" placeholder="輸入姓名關鍵字"></div>
       </div>
       <div id="sdList" style="max-height:40vh;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:8px;margin-bottom:8px">
-        ${pool.length? pool.map(p=>`
-          <label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0">
-            <input type="checkbox" class="sd-person" value="${p.id}" style="width:auto" ${(cfg.personIds||[]).includes(p.id)?'checked':''}>
-            ${esc(p.name)}（${p.group||'未分組'}·${p.rank}${personBadges(p)}）
-          </label>`).join('') : `<div class="empty">請先選擇留守人員</div>`}
+        ${pool.length? [...pool].sort((a,b)=>{
+            const ra=preset? driverQualificationIssues(a,preset).length>0 : false;
+            const rb=preset? driverQualificationIssues(b,preset).length>0 : false;
+            return ra-rb;
+          }).map(p=>{
+            const reasons=preset? driverQualificationIssues(p,preset) : [];
+            return `
+          <label style="display:flex;align-items:flex-start;gap:6px;font-size:13px;padding:6px 0;border-bottom:1px solid var(--line);${reasons.length?'opacity:.6':''}">
+            <input type="checkbox" class="sd-person" value="${p.id}" style="width:auto;margin-top:2px" ${(cfg.personIds||[]).includes(p.id)?'checked':''}>
+            <span>${esc(p.name)}（${p.group||'未分組'}·${p.rank}${personBadges(p)}）${reasons.length? `<br><span class="warn" style="font-size:11px">🚫${esc(reasons.join('・'))}</span>`:''}</span>
+          </label>`;}).join('') : `<div class="empty">請先選擇留守人員</div>`}
       </div>
       <div class="row wrap">
         <button class="ghost grow danger" id="sdClear">清除</button>
@@ -2436,15 +2450,11 @@ function openStandbySubDutyEditor(plan, role, d, onDone){
   };
 }
 function preplanEligiblePeople(type){
-  const preset = type.presetRole? state.miscPresets.find(p=>p.role===type.presetRole) : null;
-  let list = state.personnel.slice();
-  /* qualified:true types (救護車/採買) only make sense with people who
-     actually meet the preset's licence/EMT/skill requirements — showing the
-     whole roster there just means scrolling past people who can't do it */
-  if(type.qualified && preset){
-    list = list.filter(p=>driverQualificationIssues(p, preset).length===0 || chiefEligible(p, preset, null));
-  }
-  return list.sort((a,b)=>groupIndex(a.group)-groupIndex(b.group)||rankIndex(a.rank)-rankIndex(b.rank));
+  // show everyone, always — qualification gaps are surfaced per-person via
+  // reasonsFn (🚫 + reason) in the picker instead of hiding people outright,
+  // consistent with how the rest of the app handles "nobody's ideal but you
+  // may still need to pick someone"
+  return state.personnel.slice().sort((a,b)=>groupIndex(a.group)-groupIndex(b.group)||rankIndex(a.rank)-rankIndex(b.rank));
 }
 function openPreplanDayEditor(key, date, onSaved){
   if(key==='standby') return openStandbyEditor(date, onSaved);
@@ -2474,11 +2484,16 @@ function openPreplanDayEditor(key, date, onSaved){
     listEl.addEventListener('change', update);
     update();
   };
-  const checkRows = (selectedIds, cls)=>pool.length? pool.map(p=>`
-      <label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:6px 0;border-bottom:1px solid var(--line)">
-        <input type="checkbox" class="${cls}" value="${p.id}" style="width:auto;flex-shrink:0" ${selectedIds.includes(p.id)?'checked':''}>
-        <span>${esc(p.name)}（${p.group||'未分組'}·${p.rank}${personBadges(p)}）</span>
-      </label>`).join('') : `<div class="empty">沒有符合資格的人員</div>`;
+  const checkRows = (selectedIds, cls, reasonsFn)=>{
+    if(!pool.length) return `<div class="empty">目前沒有人員</div>`;
+    const withReasons = pool.map(p=>({p, reasons: reasonsFn? reasonsFn(p) : []}));
+    withReasons.sort((a,b)=>(a.reasons.length>0)-(b.reasons.length>0));
+    return withReasons.map(({p,reasons})=>`
+      <label style="display:flex;align-items:flex-start;gap:6px;font-size:13px;padding:6px 0;border-bottom:1px solid var(--line);${reasons.length?'opacity:.6':''}">
+        <input type="checkbox" class="${cls}" value="${p.id}" style="width:auto;flex-shrink:0;margin-top:2px" ${selectedIds.includes(p.id)?'checked':''}>
+        <span>${esc(p.name)}（${p.group||'未分組'}·${p.rank}${personBadges(p)}）${reasons.length? `<br><span class="warn" style="font-size:11px">🚫${esc(reasons.join('・'))}</span>`:''}</span>
+      </label>`).join('');
+  };
   const radioRows = (selectedId, cls, name, reasonsFn)=>{
     if(!pool.length) return `<div class="empty">沒有符合資格的人員</div>`;
     const withReasons = pool.map(p=>({p, reasons: reasonsFn? reasonsFn(p) : []}));
@@ -2505,6 +2520,9 @@ function openPreplanDayEditor(key, date, onSaved){
       <div class="grow"><label>支援單位/人員（選填，直接打字）</label><input type="text" id="${id}" value="${esc(val||'')}" placeholder="例：三連 王小明"></div>
     </div>`;
   let body='';
+  // one shared preset-based eligibility check for every non-roles mode —
+  // roles mode (駕駛/車長) already has its own more detailed per-role check
+  const presetReasonsFn = preset? (p=>driverQualificationIssues(p, preset)) : null;
   if(type.mode==='people'){
     body = (type.editableTime? timeRow('ppT', plan.start||preplanDefault(key,'start',t0.start), plan.end||preplanDefault(key,'end',t0.end)) : '')
       + restRow('ppRest', plan.restUntil||preplanDefault(key,'rest',(preset&&preset.restUntil)||''))
@@ -2514,7 +2532,7 @@ function openPreplanDayEditor(key, date, onSaved){
            <button class="ghost small" id="ppSelectAll">全選(顯示中)</button>
            <button class="ghost small" id="ppClearAll">全部取消</button>
          </div>`
-      + listBox(checkRows(plan.personIds||[], 'pp-person'), 'ppList');
+      + listBox(checkRows(plan.personIds||[], 'pp-person', presetReasonsFn), 'ppList');
   } else if(type.mode==='roles'){
     const driverIdx=type.roles.indexOf('駕駛'), chiefIdx=type.roles.indexOf('車長');
     const currentDriver = driverIdx>-1? state.personnel.find(p=>p.id===(plan.personIds||[])[driverIdx]) : null;
@@ -2542,12 +2560,12 @@ function openPreplanDayEditor(key, date, onSaved){
       + timeRow('ppDayT', plan.dayStart||preplanDefault(key,'dayStart',dt.start), plan.dayEnd||preplanDefault(key,'dayEnd',dt.end))
       + restRow('ppDayRest', plan.dayRestUntil||preplanDefault(key,'dayRest',''), '日班補休至（選填）')
       + searchBlock('ppSearchD')
-      + listBox(checkRows(plan.dayPersonIds||(plan.dayPersonId?[plan.dayPersonId]:[]), 'pp-day'), 'ppListD')
+      + listBox(checkRows(plan.dayPersonIds||(plan.dayPersonId?[plan.dayPersonId]:[]), 'pp-day', presetReasonsFn), 'ppListD')
       + `<div class="divider"></div><div class="hint" style="margin:6px 0 2px"><b>夜班</b></div>`
       + timeRow('ppNightT', plan.nightStart||preplanDefault(key,'nightStart',nt.start), plan.nightEnd||preplanDefault(key,'nightEnd',nt.end))
       + restRow('ppNightRest', plan.nightRestUntil||preplanDefault(key,'nightRest',''), '夜班補休至（選填）')
       + searchBlock('ppSearchN')
-      + listBox(checkRows(plan.nightPersonIds||(plan.nightPersonId?[plan.nightPersonId]:[]), 'pp-night'), 'ppListN')
+      + listBox(checkRows(plan.nightPersonIds||(plan.nightPersonId?[plan.nightPersonId]:[]), 'pp-night', presetReasonsFn), 'ppListN')
       + supportRow('ppSupport', plan.support);
   } else if(type.mode==='fixedSlots'){
     body = supportRow('ppSupport', plan.support)
@@ -2565,7 +2583,7 @@ function openPreplanDayEditor(key, date, onSaved){
           <div class="pp-slot-body" data-slot-body="${i}" style="display:${on?'block':'none'}">
             ${restRow('ppSlotRest'+i, cfg.restUntil||preplanDefault(key,'slotRest'+i,''))}
             ${searchBlock('ppSearchS'+i)}
-            ${listBox(checkRows(ids, 'pp-slot'+i), 'ppListS'+i)}
+            ${listBox(checkRows(ids, 'pp-slot'+i, presetReasonsFn), 'ppListS'+i)}
           </div>
         </div>`;
       }).join('');
