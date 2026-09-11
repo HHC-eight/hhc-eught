@@ -55,6 +55,9 @@ button.primary{background:var(--accent);border-color:var(--accent);color:#1a140a
 button.ghost{background:transparent;}
 button.danger{color:var(--danger);border-color:var(--danger);background:transparent;}
 button.small{padding:5px 9px;font-size:12px;}
+.topbar button.small{padding:3px 6px;font-size:11px;}
+.topbar select{font-size:10px;padding:3px 4px;}
+.topbar h1#pageTitle{font-size:13px;}
 button{transition:transform .12s ease, opacity .12s ease;}
 button:active{opacity:.6;transform:scale(.94);}
 button:disabled{opacity:.3;cursor:default;}
@@ -128,28 +131,27 @@ textarea{min-height:50px;resize:vertical;}
     <span class="unit-banner-text">陸軍第八軍團 本部連</span>
   </div>
   <div class="topbar-main" style="flex-direction:column;align-items:stretch;gap:6px">
-    <div class="row" style="gap:6px;align-items:center">
+    <div class="row wrap" style="gap:4px;align-items:center">
       <button class="ghost small" id="preplanDrawerBtn" title="設定">☰</button>
-      <h1 id="pageTitle" style="flex:1">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v84</span></h1>
-      <select id="timeStepSelect" style="font-size:11px;padding:3px 6px;width:auto">
-        <option value="5">5分間隔</option>
-        <option value="10">10分間隔</option>
-        <option value="30">30分間隔</option>
+      <h1 id="pageTitle" style="margin:0">🌟 衛哨排班系統 <span class="muted" style="font-size:10px;font-weight:400">v89</span></h1>
+      <button class="ghost small" id="clearRangeBtn" title="清除一段時間">🧹 清除範圍</button>
+      <span style="flex:1"></span>
+      <select id="timeStepSelect" style="width:auto">
+        <option value="5">5分</option>
+        <option value="10">10分</option>
+        <option value="30">30分</option>
       </select>
       <button class="ghost small" id="exportBtn">匯出</button>
     </div>
-    <div class="row" style="gap:6px;align-items:center">
+    <div class="row wrap" style="gap:4px;align-items:center">
       <button class="ghost small" id="undoBtn" title="復原上一步" disabled>↩️</button>
       <button class="ghost small" id="redoBtn" title="取消復原（重做）" disabled>↪️</button>
-      <button class="ghost small" id="clearRangeBtn" title="清除一段時間">🧹 清除範圍</button>
+      <span class="muted" style="font-size:11px">日期：</span>
+      <button class="ghost small" id="globalDatePrev">◀</button>
+      <button class="ghost small" id="globalDateLabel"></button>
+      <button class="ghost small" id="globalDateNext">▶</button>
+      <button class="ghost small" id="globalDateToday">今天</button>
     </div>
-  </div>
-  <div class="row wrap" style="padding:0 14px 8px;gap:6px;align-items:center">
-    <span class="muted" style="font-size:11px">日期：</span>
-    <button class="ghost small" id="globalDatePrev">◀</button>
-    <button class="ghost small" id="globalDateLabel" style="font-size:12px"></button>
-    <button class="ghost small" id="globalDateNext">▶</button>
-    <button class="ghost small" id="globalDateToday">今天</button>
   </div>
 </div>
 
