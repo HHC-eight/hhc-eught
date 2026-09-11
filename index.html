@@ -133,7 +133,7 @@ textarea{min-height:50px;resize:vertical;}
   <div class="topbar-main" style="flex-direction:column;align-items:stretch;gap:6px">
     <div class="row wrap" style="gap:4px;align-items:center">
       <button class="ghost small" id="preplanDrawerBtn" title="設定">☰</button>
-      <h1 id="pageTitle" style="margin:0">🌟 衛哨排班系統 <span class="muted" style="font-size:10px;font-weight:400">v91</span></h1>
+      <h1 id="pageTitle" style="margin:0">🌟 衛哨排班系統 <span class="muted" style="font-size:10px;font-weight:400">v92</span></h1>
       <button class="ghost small" id="clearRangeBtn" title="清除一段時間">🧹 清除範圍</button>
       <span style="flex:1"></span>
       <select id="timeStepSelect" style="width:auto">
@@ -168,6 +168,85 @@ textarea{min-height:50px;resize:vertical;}
 <script>
 /* ---------------- storage ---------------- */
 const LS_KEY='drs_data_v1';
+/* independent save-checkpoints — separate from the 50-step in-memory undo
+   stack, which is lost on reload and only goes back so far. Each of the 9
+   預排 types and the personnel roster gets its own checkpoint list (scope
+   string), stored under its own localStorage key so restoring one never
+   touches another. Capped at 20 per scope, oldest dropped first. */
+function checkpointKey(scope){ return 'drs_checkpoint_'+scope; }
+function listCheckpoints(scope){
+  try{ return JSON.parse(localStorage.getItem(checkpointKey(scope))||'[]'); }
+  catch(e){ return []; }
+}
+function saveCheckpoint(scope, data, label){
+  const list = listCheckpoints(scope);
+  list.unshift({ts:Date.now(), label:label||'', data:JSON.stringify(data)});
+  if(list.length>20) list.length=20;
+  localStorage.setItem(checkpointKey(scope), JSON.stringify(list));
+}
+function deleteCheckpoint(scope, idx){
+  const list = listCheckpoints(scope);
+  list.splice(idx,1);
+  localStorage.setItem(checkpointKey(scope), JSON.stringify(list));
+}
+function checkpointTimeLabel(ts){
+  const d=new Date(ts);
+  return `${d.getFullYear()-1911}/${d.getMonth()+1}/${d.getDate()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+}
+/* generic modal reused by every scope — currentDataFn returns what to save,
+   applyDataFn receives a restored snapshot and writes it back into state */
+function openCheckpointModal(scope, title, currentDataFn, applyDataFn){
+  const modal=document.createElement('div');
+  modal.className='sheet-modal'; modal.style.zIndex='97';
+  const draw=()=>{
+    const list = listCheckpoints(scope);
+    modal.innerHTML=`
+      <div class="sheet-inner">
+        <div class="section-title"><h2 style="margin:0">存檔點：${esc(title)}</h2><button class="ghost small" id="cpClose">關閉</button></div>
+        <div class="hint" style="margin-bottom:8px">跟復原/重做不同，存檔點是手動建立、永久保存（最多留20個，滿了會自動丟掉最舊的），關閉分頁或重新整理也不會消失，適合在做大幅調整前先存一份。</div>
+        <div class="row wrap" style="margin-bottom:8px">
+          <div class="grow"><label>備註（選填）</label><input type="text" id="cpLabel" placeholder="例：9月整月排定"></div>
+        </div>
+        <button class="primary" id="cpSave" style="width:100%;margin-bottom:8px">📌 建立存檔點</button>
+        <div class="divider"></div>
+        <h3>已存的存檔點（${list.length}）</h3>
+        ${list.length? list.map((c,i)=>`
+          <div class="list-item">
+            <span class="grow">${checkpointTimeLabel(c.ts)}${c.label? `　${esc(c.label)}`:''}</span>
+            <button class="ghost small" data-cp-restore="${i}">回復</button>
+            <button class="ghost small danger" data-cp-del="${i}">刪除</button>
+          </div>`).join('') : `<div class="empty">還沒有存檔點</div>`}
+      </div>`;
+    document.getElementById('cpClose').onclick=()=>modal.remove();
+    document.getElementById('cpSave').onclick=()=>{
+      const label=document.getElementById('cpLabel').value.trim();
+      saveCheckpoint(scope, currentDataFn(), label);
+      showAlert('已建立存檔點。');
+      draw();
+    };
+    modal.querySelectorAll('[data-cp-restore]').forEach(b=>{
+      b.onclick=()=>{
+        const idx=Number(b.dataset.cpRestore);
+        const c=list[idx];
+        showConfirm(`確定要回復到「${checkpointTimeLabel(c.ts)}${c.label?'　'+c.label:''}」嗎？現在的內容會被取代（可以用左上角復原按鈕撤銷這次回復）。`, ()=>{
+          applyDataFn(JSON.parse(c.data));
+          saveState();
+          showAlert('已回復。');
+          modal.remove();
+          render();
+        });
+      };
+    });
+    modal.querySelectorAll('[data-cp-del]').forEach(b=>{
+      b.onclick=()=>{
+        deleteCheckpoint(scope, Number(b.dataset.cpDel));
+        draw();
+      };
+    });
+  };
+  document.body.appendChild(modal);
+  draw();
+}
 function loadState(){
   const raw=localStorage.getItem(LS_KEY);
   if(raw){ try{ return JSON.parse(raw); }catch(e){} }
@@ -816,7 +895,19 @@ function preplanFor(key, date){
 }
 function setPreplan(key, date, value){
   if(!state.preplan[key]) state.preplan[key]={};
-  if(value===null) delete state.preplan[key][date];
+  if(value===null){
+    delete state.preplan[key][date];
+    // a deleted 留守 block leaves its sub-duty 其他勤務 entries stranded
+    // with nothing to re-import and clear them — since they're tagged with
+    // which block wrote them, they can be cleaned up right here instead of
+    // waiting for a whole-month reimport that won't happen for a block that
+    // no longer exists
+    if(key==='standby'){
+      Object.keys(state.misc).forEach(d=>{
+        state.misc[d] = state.misc[d].filter(m=>m.standbyAnchor!==date);
+      });
+    }
+  }
   else state.preplan[key][date]=value;
 }
 // now that every migration/backfill above has run, this is the true
@@ -2122,7 +2213,11 @@ function openPreplanCalendar(key){
       <button class="ghost" id="calImportText" style="width:100%;margin-bottom:6px">📝 匯入填好的文字</button>
       ` : ''}
       <button class="primary" id="calImport" style="width:100%;margin-bottom:6px">📥 匯入本月預排到實際班表</button>
+      <button class="ghost" id="calCheckpoint" style="width:100%;margin-bottom:6px">📌 存檔點</button>
       <button class="ghost small danger" id="calClearMonth" style="width:100%">清空本月預排</button>`;
+    document.getElementById('calCheckpoint').onclick=()=>openCheckpointModal(key, type.name,
+      ()=>state.preplan[key]||{},
+      (data)=>{ state.preplan[key]=data; draw(); });
     if(preplanSupportsTextFormat(type)){
       document.getElementById('calExportText').onclick=()=>{
         openTextShareModal(`${type.name} 民國${y-1911}年${m}月`, generatePreplanFillText(key, ym));
@@ -2136,9 +2231,18 @@ function openPreplanCalendar(key){
     document.getElementById('calPrev').onclick=()=>{ preplanMonth=shiftMonth(preplanMonth,-1); draw(); };
     document.getElementById('calNext').onclick=()=>{ preplanMonth=shiftMonth(preplanMonth,1); draw(); };
     document.getElementById('calImport').onclick=()=>{
-      const dates=Object.keys(state.preplan[key]||{}).filter(d=>d.startsWith(ym)).sort();
-      if(!dates.length){ showAlert('本月還沒有預排任何日期。'); return; }
-      showConfirm(`確定要把「${type.name}」本月已預排的 ${dates.length} 天匯入實際班表嗎？每一天這個項目原本的內容會被覆寫（其他項目不受影響）。`, ()=>{
+      const plannedDates=Object.keys(state.preplan[key]||{}).filter(d=>d.startsWith(ym)).sort();
+      if(!plannedDates.length){ showAlert('本月還沒有預排任何日期。'); return; }
+      // 留守 is anchor-based (one entry can span several days), so it still
+      // only processes days that actually have a block starting — the other
+      // 7 types are one-entry-per-day, so re-importing the whole month also
+      // clears days you emptied out since the last import, not just the
+      // ones that still have content
+      const dates = key==='standby'? plannedDates : dateRangeList(`${ym}-01`, `${ym}-${String(daysInMonth(ym)).padStart(2,'0')}`);
+      const confirmMsg = key==='standby'
+        ? `確定要把「${type.name}」本月已預排的 ${plannedDates.length} 段匯入實際班表嗎？每一段這個項目原本的內容會被覆寫（其他項目不受影響）。`
+        : `確定要把「${type.name}」整個月匯入實際班表嗎？這個月每一天都會依照預排現況覆寫（沒排的日期會清空這個項目，其他項目不受影響）。`;
+      showConfirm(confirmMsg, ()=>{
         let n=0;
         dates.forEach(d=>{ if(importPreplanForDate(key, d)) n++; });
         saveState();
@@ -2151,7 +2255,7 @@ function openPreplanCalendar(key){
             miscEntryConflicts(m, d).forEach(c=>clashes.push(`${minguoLabel(d)} ${c}`));
           });
         });
-        showAlert(`已匯入 ${n} 天。` + (clashes.length
+        showAlert(`已處理 ${n} 天（含清空跟寫入）。` + (clashes.length
           ? `\n\n⚠️ 有 ${clashes.length} 筆衝突需要處理：\n` + clashes.slice(0,12).join('\n') + (clashes.length>12? `\n…還有 ${clashes.length-12} 筆`:'')
           : ''));
         render();
@@ -2985,23 +3089,40 @@ function openPersonDayEditor(personId, date, onDone){
    groups the ticked dates into consecutive runs and flags any run whose
    honor-day would actually fall back to a normal 18:00 start because the
    whole block (including front/back buffer) exceeds 5 days. */
-function leaveRunWarnings(pickedSet, honorSet){
+/* groups the ticked dates into consecutive runs and works out, per run,
+   whether it needs someone's approval to keep its length: 榮譽假 over 5
+   days (含前後緩衝), or ANY leave over 6 days (含前後緩衝) — approval is
+   the same single flag either way, checked by exact (start,end) so
+   shrinking or growing an already-approved run always asks again rather
+   than silently inheriting an approval that covered a different length. */
+function analyzeLeaveRuns(pickedSet, honorSet, approvedRuns){
   const dates=[...pickedSet].sort();
-  if(!dates.length) return [];
-  const warnings=[];
+  const approved = approvedRuns||[];
+  const runs=[];
+  if(!dates.length) return runs;
   let runStart=dates[0], prev=dates[0];
-  const check=(end)=>{
+  const push=(end)=>{
     const bufferDays=daysBetweenInclusive(prevDateStr(runStart), nextDateStr(end));
-    if(honorSet.has(runStart) && bufferDays>5){
-      warnings.push(`${minguoLabel(runStart)}~${minguoLabel(end)} 這段（含前後緩衝共${bufferDays}天）超過5天，榮譽假無法生效，匯入時會自動變成一般休假（18:00起）`);
-    }
+    const isHonor=honorSet.has(runStart);
+    const needsApproval = bufferDays>6 || (isHonor && bufferDays>5);
+    const isApproved = approved.some(r=>r.start===runStart && r.end===end);
+    runs.push({start:runStart, end, bufferDays, isHonor, needsApproval, isApproved});
   };
   for(let i=1;i<dates.length;i++){
     if(dates[i]===nextDateStr(prev)){ prev=dates[i]; continue; }
-    check(prev); runStart=dates[i]; prev=dates[i];
+    push(prev); runStart=dates[i]; prev=dates[i];
   }
-  check(prev);
-  return warnings;
+  push(prev);
+  return runs;
+}
+function leaveRunWarnings(pickedSet, honorSet, approvedRuns){
+  return analyzeLeaveRuns(pickedSet, honorSet, approvedRuns).filter(r=>r.needsApproval).map(r=>{
+    const reasonLabel = r.isHonor? '榮譽假':'休假';
+    if(r.isApproved){
+      return `✅ ${minguoLabel(r.start)}~${minguoLabel(r.end)}（含前後緩衝共${r.bufferDays}天）已經過同意，${reasonLabel}維持這個天數。`;
+    }
+    return `⚠️ ${minguoLabel(r.start)}~${minguoLabel(r.end)}（含前後緩衝共${r.bufferDays}天）超過${r.isHonor&&r.bufferDays<=6?'5天，榮譽假':'6天'}上限，按「確認休假」時需要再確認同意才能保留這個天數。`;
+  });
 }
 function openLeaveTableEditor(date, onSaved, presetPid){
   let ym = monthOf(date);
@@ -3096,9 +3217,10 @@ function openLeaveTableEditor(date, onSaved, presetPid){
         </div>
         ${leaveRunWarnings(
             new Set([...((store()[selectedPid]||{}).dates||[]).filter(d=>!d.startsWith(ym)), ...picked]),
-            new Set([...((store()[selectedPid]||{}).honorDates||[]).filter(d=>!d.startsWith(ym)), ...honorDates])
-          ).map(w=>`<div class="badge-issue">⚠️ ${esc(w)}</div>`).join('')}
-        <div class="hint" style="margin-bottom:8px">「休」＝一般休假（前一天18:00起）；「12休」＝榮譽假（前一天12:00起）；「留守」＝留守表已排他這天留守，跟這裡無關聯除非你也點成休假。榮譽假若整段（含前後緩衝）超過5天，匯入時會自動退回一般休假，上面會先提醒你。</div>
+            new Set([...((store()[selectedPid]||{}).honorDates||[]).filter(d=>!d.startsWith(ym)), ...honorDates]),
+            (store()[selectedPid]||{}).approvedRuns||[]
+          ).map(w=>`<div class="${w.startsWith('✅')?'hint':'badge-issue'}">${esc(w)}</div>`).join('')}
+        <div class="hint" style="margin-bottom:8px">「休」＝一般休假（前一天18:00起）；「12休」＝榮譽假（前一天12:00起）；「留守」＝留守表已排他這天留守，跟這裡無關聯除非你也點成休假。榮譽假整段（含前後緩衝）超過5天、或一般休假超過6天，需要經過同意才能保留，按「確認休假」時會再問一次。</div>
         <div class="row wrap" style="margin-bottom:8px">
           <button class="ghost grow" id="ltClearMonth">清空本月</button>
           <button class="primary grow" id="ltSave">確認休假</button>
@@ -3106,6 +3228,7 @@ function openLeaveTableEditor(date, onSaved, presetPid){
       ` : `<div class="empty">請先選擇一位人員</div>`}
       <div class="divider"></div>
       <button class="primary" id="ltImport" style="width:100%">📥 匯入本月休假到實際班表</button>
+      <button class="ghost" id="ltCheckpoint" style="width:100%;margin-top:6px">📌 存檔點</button>
       <div class="hint">連續的日子會自動合併成一段（含前後緩衝，以每段第一天是否設為榮譽假來判斷）。重複匯入不會疊加。</div>
       <div class="divider"></div>
       ${(()=>{
@@ -3126,6 +3249,9 @@ function openLeaveTableEditor(date, onSaved, presetPid){
           </div>`).join('') : `<div class="empty">目前沒有已生效的休假</div>`);
       })()}`;
     document.getElementById('ltClose').onclick=()=>modal.remove();
+    document.getElementById('ltCheckpoint').onclick=()=>openCheckpointModal('leave', '休假大表',
+      ()=>state.preplan.leave||{},
+      (data)=>{ state.preplan.leave=data; loadPerson(); draw(); });
     modal.querySelectorAll('[data-lt-goto]').forEach(b=>{
       b.onclick=()=>{ selectedPid=b.dataset.ltGoto; loadPerson(); draw(); };
     });
@@ -3197,14 +3323,30 @@ function openLeaveTableEditor(date, onSaved, presetPid){
       document.getElementById('ltSave').onclick=()=>{
         const curDates=((store()[selectedPid]||{}).dates||[]).filter(d=>!d.startsWith(ym));
         const curHonor=((store()[selectedPid]||{}).honorDates||[]).filter(d=>!d.startsWith(ym));
+        const curApproved=((store()[selectedPid]||{}).approvedRuns||[]);
         const mergedDates=[...curDates, ...picked].sort();
         const mergedHonor=[...curHonor, ...honorDates].sort();
-        if(!state.preplan.leave) state.preplan.leave={};
-        if(mergedDates.length) state.preplan.leave[selectedPid]={dates:mergedDates, honorDates:mergedHonor};
-        else delete state.preplan.leave[selectedPid];
-        saveState();
-        showAlert(`已儲存 ${person.name} 的休假（本月 ${picked.size} 天，其中榮譽假 ${honorDates.size} 天）。`);
-        draw(); if(onSaved) onSaved();
+        const runs = analyzeLeaveRuns(new Set(mergedDates), new Set(mergedHonor), curApproved);
+        const unapproved = runs.filter(r=>r.needsApproval && !r.isApproved);
+        const doSave=(approvedRuns)=>{
+          if(!state.preplan.leave) state.preplan.leave={};
+          if(mergedDates.length) state.preplan.leave[selectedPid]={dates:mergedDates, honorDates:mergedHonor, approvedRuns};
+          else delete state.preplan.leave[selectedPid];
+          saveState();
+          showAlert(`已儲存 ${person.name} 的休假（本月 ${picked.size} 天，其中榮譽假 ${honorDates.size} 天）。`);
+          draw(); if(onSaved) onSaved();
+        };
+        if(unapproved.length){
+          // 超過天數上限（榮譽假5天或一般假6天，含前後緩衝）一律要同意才能保留，
+          // 不同意就不儲存，逼你要嘛縮短天數要嘛真的走同意流程
+          const lines = unapproved.map(r=>`${minguoLabel(r.start)}~${minguoLabel(r.end)}（含前後緩衝共${r.bufferDays}天，${r.isHonor?'榮譽假':'一般休假'}）`);
+          showConfirm(`以下這幾段休假超過天數上限，需要同意才能保留：\n${lines.join('\n')}\n\n確定已經過同意，要保留這個天數嗎？不同意的話請先縮短天數再儲存。`, ()=>{
+            const newlyApproved = unapproved.map(r=>({start:r.start, end:r.end}));
+            doSave([...curApproved, ...newlyApproved]);
+          });
+        } else {
+          doSave(curApproved);
+        }
       };
     }
   };
@@ -3216,8 +3358,23 @@ function openLeaveTableEditor(date, onSaved, presetPid){
    that date are untouched). Returns true if anything was written. */
 function importPreplanForDate(key, date){
   const type = PREPLAN_TYPES.find(t=>t.key===key);
+  if(!type) return false;
   const plan = preplanFor(key, date);
-  if(!type || !plan) return false;
+  if(!plan){
+    // nothing planned for this day — for the 7 regular day-keyed types this
+    // still means "clear whatever this role wrote here before" so a
+    // whole-month reimport after deleting a day's plan actually removes the
+    // stale entry instead of leaving it behind forever. 留守 is excluded:
+    // its "date" is a block's anchor, not a per-day slot, so a blank anchor
+    // here is normal for most days and clearing on it would be wrong.
+    if(key!=='standby' && state.misc[date]){
+      const roleName = type.presetRole || type.name;
+      const before = state.misc[date].length;
+      state.misc[date] = state.misc[date].filter(m=>m.role!==roleName);
+      return state.misc[date].length!==before;
+    }
+    return false;
+  }
   const preset = type.presetRole? state.miscPresets.find(p=>p.role===type.presetRole) : null;
   if(!state.misc[date]) state.misc[date]=[];
   const roleName = type.presetRole || type.name;
@@ -3280,6 +3437,10 @@ function importPreplanForDate(key, date){
         const rp=state.miscPresets.find(x=>x.role===role);
         state.misc[d].push({id:uid(), role, start:cfg.start||'', end:cfg.end||'',
           restUntil:cfg.restUntil||(rp&&rp.restUntil)||'', personIds:[...(cfg.personIds||[])],
+          standbyAnchor:date, // traces this entry back to the 留守 block that wrote it, so a
+                               // future cleanup pass can safely remove sub-duty entries whose
+                               // block no longer exists, without touching same-named entries
+                               // someone entered by hand
           ...(cfg.support? {support:cfg.support}:{})});
       });
     });
@@ -3364,6 +3525,7 @@ function importLeaveTable(monthPrefix){
     const dates=(rec.dates||[]).filter(d=>!monthPrefix || d.startsWith(monthPrefix)).sort();
     if(!dates.length) return;
     const honorSet=new Set(rec.honorDates||(rec.honor? dates:[]));
+    const approvedRuns=rec.approvedRuns||[];
     // drop this person's existing generated blocks that fall in range first
     dates.forEach(d=>{
       const lid=findLeaveIdForPerson(pid, d);
@@ -3373,7 +3535,8 @@ function importLeaveTable(monthPrefix){
     let runStart=dates[0], prev=dates[0];
     const person=state.personnel.find(p=>p.id===pid);
     const flush=(end)=>{
-      const r=createLeaveSegment(pid, runStart, end, honorSet.has(runStart));
+      const isApproved = approvedRuns.some(r=>r.start===runStart && r.end===end);
+      const r=createLeaveSegment(pid, runStart, end, honorSet.has(runStart), isApproved);
       count++;
       if(r.honorDowngraded) downgraded.push({personId:pid, name:person?person.name:pid, start:runStart, end});
     };
@@ -4011,8 +4174,12 @@ function renderPeople(){
     <div class="hint">💡 名單一次輸入後會持續保留在此裝置（localStorage）；用右上角「匯出」可備份，之後可再匯入。</div>
     <div class="card">
       <button class="ghost small" id="importBtn">📥 匯入備份 JSON</button>
+      <button class="ghost small" id="pplCheckpoint">📌 存檔點</button>
     </div>
   `;
+  document.getElementById('pplCheckpoint').onclick=()=>openCheckpointModal('personnel', '人員名冊',
+    ()=>state.personnel,
+    (data)=>{ state.personnel=data; render(); });
   document.getElementById('closePeoplePage').onclick=()=>{ currentTab='schedule'; render(); };
 function wirePeopleListButtons(){
     document.querySelectorAll('[data-del-person]').forEach(b=>{
@@ -4435,9 +4602,9 @@ function renderLeaveGroupSummary(date){
 /* creates one leave block (with its own leaveId + buffer entries) for one
    person — extracted so both the 新增人員休假 form and the 編輯休假 modal
    (which can split one block into several) share the exact same logic */
-function createLeaveSegment(personId, s, e, honorRequested){
+function createLeaveSegment(personId, s, e, honorRequested, approved){
   const bufferDays=daysBetweenInclusive(prevDateStr(s), nextDateStr(e));
-  const honorApplies = honorRequested && bufferDays<=5;
+  const honorApplies = honorRequested && (bufferDays<=5 || approved);
   const firstRoster=prevDateStr(s);
   const lastRoster=nextDateStr(e);
   const firstStart = honorApplies? '12:00':'18:00';
