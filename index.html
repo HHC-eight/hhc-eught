@@ -114,6 +114,8 @@ textarea{min-height:50px;resize:vertical;}
 .cal-cell.standby-marked{border-color:var(--ok);}
 .cal-cell.leave-marked{border-color:var(--danger);}
 .cal-cell.leave-marked .cal-mark{color:var(--danger);}
+.cal-cell.leave-partial-marked{border-color:var(--warn,#d9a441);border-style:dashed;}
+.cal-cell.leave-partial-marked .cal-mark{color:var(--warn,#d9a441);font-style:italic;}
 .cal-cell.incident-marked{border-color:var(--warn,#d9a441);}
 .cal-cell.standby-marked .cal-mark{color:var(--ok);}
 .cal-cell.holiday .cal-day{color:var(--danger);}
@@ -133,7 +135,7 @@ textarea{min-height:50px;resize:vertical;}
   <div class="topbar-main" style="flex-direction:column;align-items:stretch;gap:6px">
     <div class="row wrap" style="gap:4px;align-items:center">
       <button class="ghost small" id="preplanDrawerBtn" title="設定">☰</button>
-      <h1 id="pageTitle" style="margin:0">🌟 衛哨排班系統 <span class="muted" style="font-size:10px;font-weight:400">v92</span></h1>
+      <h1 id="pageTitle" style="margin:0">🌟 衛哨排班系統 <span class="muted" style="font-size:10px;font-weight:400">v93</span></h1>
       <button class="ghost small" id="clearRangeBtn" title="清除一段時間">🧹 清除範圍</button>
       <span style="flex:1"></span>
       <select id="timeStepSelect" style="width:auto">
@@ -673,6 +675,35 @@ function validateMiscEntry(entry){
   });
   return issues;
 }
+/* if the chief ends up junior to the driver (violates "車長不可低階於駕駛"),
+   swap them instead of just flagging it — but only when the swap actually
+   works: the newly-promoted driver (the old chief) still needs to meet the
+   driver's own requirements, most importantly a valid license, since a
+   swap that fixes rank order by breaking the license rule isn't a fix at
+   all. If the swap wouldn't be clean, nothing changes and the existing
+   warning in validateMiscEntry still applies. */
+function autoSwapDriverChief(entry, presetOverride){
+  if(!entry.roles) return false;
+  const chiefIdx=entry.roles.indexOf('車長');
+  const driverIdx=entry.roles.indexOf('駕駛');
+  if(chiefIdx===-1 || driverIdx===-1) return false;
+  const chiefId=entry.personIds[chiefIdx], driverId=entry.personIds[driverIdx];
+  if(!chiefId || !driverId || chiefId===driverId) return false;
+  const chief=state.personnel.find(p=>p.id===chiefId);
+  const driver=state.personnel.find(p=>p.id===driverId);
+  if(!chief || !driver) return false;
+  if(rankIndex(chief.rank)<=rankIndex(driver.rank)) return false; // already fine, no swap needed
+  const preset = presetOverride || presetForEntry(entry);
+  // the old chief would become the new driver — needs the driver's license
+  if(preset && driverQualificationIssues(chief, preset).length) return false;
+  // the old driver would become the new chief — needs to meet chief requirements
+  if(!['士官','軍官'].includes(rankCategory(driver.rank))) return false;
+  if(preset && preset.chiefRequiredMedCert && !driver.medCert) return false;
+  if(preset && (preset.chiefRequiredLicenses||[]).length && !preset.chiefRequiredLicenses.some(l=>licenseCovers(driver.license,l))) return false;
+  entry.personIds[chiefIdx]=driverId;
+  entry.personIds[driverIdx]=chiefId;
+  return true;
+}
 
 let state = loadState();
 if(!state.miscCustomPresets) state.miscCustomPresets=[];
@@ -870,6 +901,14 @@ const STANDBY_DEFAULTS = {startTime:'14:00', leaveStartTime:'16:00', endTime:'07
 /* which 常用項目 count as "留守日子勤務" and can be filled in from the
    留守 page — user-configurable so adding a new one needs no code change */
 if(!state.standbySubRoles) state.standbySubRoles = ['日督','夜督','話務','伙房'];
+/* 留守子項目's OWN copy of each role's requirements (角色制/駕照/專長等) —
+   deliberately separate from state.miscPresets so tightening or loosening
+   a rule for留守 (e.g. 消防車車長 not needing a license during 留守 even
+   though the regular 消防車 任務 does) never touches the other. Seeded
+   from the matching 常用項目 the first time a role is turned on, then
+   lives independently. Missing entry = plain single/multi-person mode
+   with no special requirements. */
+if(!state.standbySubConfigs) state.standbySubConfigs = {};
 /* user-draggable order of the preplan drawer entries */
 if(!state.preplanOrder) state.preplanOrder = PREPLAN_TYPES.map(t=>t.key);
 /* last-used times / rest-until values per preplan type, so recurring duties
@@ -2486,36 +2525,183 @@ function openStandbyOverrideEditor(plan, pid, onDone){
 function openStandbySubRolePicker(onDone){
   const modal=document.createElement('div');
   modal.className='sheet-modal'; modal.style.zIndex='94';
-  const cur=state.standbySubRoles||[];
+  const draw=()=>{
+    const cur=state.standbySubRoles||[];
+    const presetNames=new Set(state.miscPresets.map(p=>p.role));
+    // 留守-only items (created directly here, never a 常用項目) still show
+    // up in `cur` but have no matching preset — list them alongside, with
+    // their own delete option since there's no 其他勤務 entry to manage them from
+    const standaloneOnly=cur.filter(r=>!presetNames.has(r));
+    modal.innerHTML=`
+      <div class="sheet-inner">
+        <div class="section-title"><h2 style="margin:0">留守日子勤務項目</h2><button class="ghost small" id="srClose">關閉</button></div>
+        <div class="hint" style="margin-bottom:8px">勾選哪些項目要出現在留守頁面裡供指派。每個項目在留守裡的角色制/駕照/專長要求是留守自己的一份設定（旁邊⚙️可以調整），跟「其他勤務」常用項目分開，互相不會牽動。</div>
+        <div style="max-height:50vh;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:8px;margin-bottom:8px">
+          ${state.miscPresets.length? state.miscPresets.map(p=>`
+            <div class="row" style="align-items:center;padding:4px 0">
+              <label style="display:flex;align-items:center;gap:6px;font-size:13px" class="grow">
+                <input type="checkbox" class="sr-role" value="${esc(p.role)}" style="width:auto" ${cur.includes(p.role)?'checked':''}>
+                ${esc(p.role)}${presetTimes(p).length? `（${presetTimes(p)[0].start}-${presetTimes(p)[0].end}）`:''}
+              </label>
+              <button class="ghost small" data-sr-config="${esc(p.role)}">⚙️</button>
+            </div>`).join('') : `<div class="empty">尚無常用項目</div>`}
+          ${standaloneOnly.length? `<div class="divider"></div><div class="hint">只在留守用的項目：</div>` + standaloneOnly.map(r=>`
+            <div class="row" style="align-items:center;padding:4px 0">
+              <label style="display:flex;align-items:center;gap:6px;font-size:13px" class="grow">
+                <input type="checkbox" class="sr-role sr-standalone" value="${esc(r)}" style="width:auto" checked>
+                ${esc(r)}
+              </label>
+              <button class="ghost small" data-sr-config="${esc(r)}">⚙️</button>
+              <button class="ghost small danger" data-sr-del-standalone="${esc(r)}">刪除</button>
+            </div>`).join('') : ''}
+        </div>
+        <button class="ghost" id="srAddNew" style="width:100%;margin-bottom:8px">＋新增只在留守用的項目</button>
+        <button class="primary" id="srSave" style="width:100%">儲存</button>
+      </div>`;
+    document.getElementById('srClose').onclick=()=>modal.remove();
+    document.getElementById('srSave').onclick=()=>{
+      const checked=[...modal.querySelectorAll('.sr-role:checked')].map(cb=>cb.value);
+      state.standbySubRoles=checked;
+      saveState(); modal.remove(); onDone();
+    };
+    document.getElementById('srAddNew').onclick=()=>{
+      showPrompt('新項目名稱', '', (name)=>{
+        name=(name||'').trim();
+        if(!name) return;
+        if(!state.standbySubRoles.includes(name)) state.standbySubRoles=[...state.standbySubRoles, name];
+        if(!state.standbySubConfigs[name]) state.standbySubConfigs[name]={roles:null,requiredLicenses:[],requiredMedCert:false,requiredSkills:[],chiefRequiredLicenses:[],chiefRequiredMedCert:false,chiefRequiredSkills:[],restUntil:''};
+        saveState(); draw();
+      });
+    };
+    modal.querySelectorAll('[data-sr-del-standalone]').forEach(b=>{
+      b.onclick=()=>{
+        const name=b.dataset.srDelStandalone;
+        showConfirm(`確定要刪除「${name}」這個留守專用項目嗎？`, ()=>{
+          state.standbySubRoles=state.standbySubRoles.filter(r=>r!==name);
+          delete state.standbySubConfigs[name];
+          saveState(); draw();
+        });
+      };
+    });
+    modal.querySelectorAll('[data-sr-config]').forEach(b=>{
+      b.onclick=()=>openStandbySubConfigEditor(b.dataset.srConfig, draw);
+    });
+  };
+  document.body.appendChild(modal);
+  draw();
+}
+/* 留守子項目自己的一份需求設定（角色制開關、駕照/EMT/專長要求），跟常用項目
+   互相獨立。第一次打開某個項目的設定時，如果它本來對應一個常用項目，就用
+   那個常用項目的設定當起點；之後改這裡不會回頭動到常用項目。 */
+function openStandbySubConfigEditor(role, onDone){
+  if(!state.standbySubConfigs[role]){
+    const preset=state.miscPresets.find(p=>p.role===role);
+    state.standbySubConfigs[role] = preset? {
+      roles: preset.roles? [...preset.roles] : null,
+      requiredLicenses:[...(preset.requiredLicenses||[])], requiredMedCert:!!preset.requiredMedCert, requiredSkills:[...(preset.requiredSkills||[])],
+      chiefRequiredLicenses:[...(preset.chiefRequiredLicenses||[])], chiefRequiredMedCert:!!preset.chiefRequiredMedCert, chiefRequiredSkills:[...(preset.chiefRequiredSkills||[])],
+      restUntil:preset.restUntil||'',
+    } : {roles:null,requiredLicenses:[],requiredMedCert:false,requiredSkills:[],chiefRequiredLicenses:[],chiefRequiredMedCert:false,chiefRequiredSkills:[],restUntil:''};
+  }
+  const cfg=state.standbySubConfigs[role];
+  const modal=document.createElement('div');
+  modal.className='sheet-modal'; modal.style.zIndex='95';
+  const licenseOpts=['小型車','大型車','大客車'];
   modal.innerHTML=`
     <div class="sheet-inner">
-      <div class="section-title"><h2 style="margin:0">留守日子勤務項目</h2><button class="ghost small" id="srClose">關閉</button></div>
-      <div class="hint" style="margin-bottom:8px">勾選哪些「常用項目」要出現在留守頁面裡供指派。沒有在常用項目裡的，請先去「其他勤務」分頁新增。</div>
-      <div style="max-height:56vh;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:8px;margin-bottom:8px">
-        ${state.miscPresets.length? state.miscPresets.map(p=>`
-          <label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0">
-            <input type="checkbox" class="sr-role" value="${esc(p.role)}" style="width:auto" ${cur.includes(p.role)?'checked':''}>
-            ${esc(p.role)}${presetTimes(p).length? `（${presetTimes(p)[0].start}-${presetTimes(p)[0].end}）`:''}
-          </label>`).join('') : `<div class="empty">尚無常用項目</div>`}
+      <div class="section-title"><h2 style="margin:0">${esc(role)}（留守）</h2><button class="ghost small" id="scClose">關閉</button></div>
+      <div class="hint" style="margin-bottom:8px">這是這個項目在「留守」裡自己的一份設定，跟「其他勤務」常用項目分開，改這裡不會影響常用項目本身。</div>
+      <label style="display:flex;align-items:center;gap:6px;font-size:13px;margin-bottom:8px">
+        <input type="checkbox" id="scRoleMode" style="width:auto" ${cfg.roles? 'checked':''}> 角色制（駕駛/車長分開選，各自不同資格）
+      </label>
+      <div id="scMainReq" style="display:${cfg.roles?'none':'block'}">
+        <div class="hint" style="margin-bottom:4px">需求（單人模式）</div>
+        <div class="row wrap" style="gap:10px;margin-bottom:6px">
+          ${licenseOpts.map(l=>`<label style="display:flex;align-items:center;gap:4px;font-size:12px"><input type="checkbox" class="sc-license" value="${l}" style="width:auto" ${(cfg.requiredLicenses||[]).includes(l)?'checked':''}>${l}</label>`).join('')}
+        </div>
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px;margin-bottom:8px"><input type="checkbox" id="scMedCert" style="width:auto" ${cfg.requiredMedCert?'checked':''}>需具備EMT或醫生證書</label>
       </div>
-      <button class="primary" id="srSave" style="width:100%">儲存</button>
+      <div id="scChiefReq" style="display:${cfg.roles?'block':'none'}">
+        <div class="hint" style="margin-bottom:4px">駕駛需求</div>
+        <div class="row wrap" style="gap:10px;margin-bottom:6px">
+          ${licenseOpts.map(l=>`<label style="display:flex;align-items:center;gap:4px;font-size:12px"><input type="checkbox" class="sc-d-license" value="${l}" style="width:auto" ${(cfg.requiredLicenses||[]).includes(l)?'checked':''}>${l}</label>`).join('')}
+        </div>
+        <div class="hint" style="margin-bottom:4px">車長需求（不需要駕照的話兩個駕照選項都不要勾）</div>
+        <div class="row wrap" style="gap:10px;margin-bottom:6px">
+          ${licenseOpts.map(l=>`<label style="display:flex;align-items:center;gap:4px;font-size:12px"><input type="checkbox" class="sc-c-license" value="${l}" style="width:auto" ${(cfg.chiefRequiredLicenses||[]).includes(l)?'checked':''}>${l}</label>`).join('')}
+        </div>
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px;margin-bottom:8px"><input type="checkbox" id="scChiefMedCert" style="width:auto" ${cfg.chiefRequiredMedCert?'checked':''}>車長需具備EMT或醫生證書</label>
+        <div class="hint" style="margin-bottom:8px">車長階級規則固定為「不可低於駕駛」，不用另外設定。</div>
+      </div>
+      <button class="primary" id="scSave" style="width:100%">儲存</button>
     </div>`;
   document.body.appendChild(modal);
-  document.getElementById('srClose').onclick=()=>modal.remove();
-  document.getElementById('srSave').onclick=()=>{
-    state.standbySubRoles=[...modal.querySelectorAll('.sr-role:checked')].map(cb=>cb.value);
-    saveState(); modal.remove(); onDone();
+  document.getElementById('scClose').onclick=()=>modal.remove();
+  document.getElementById('scRoleMode').onchange=(e)=>{
+    document.getElementById('scMainReq').style.display=e.target.checked?'none':'block';
+    document.getElementById('scChiefReq').style.display=e.target.checked?'block':'none';
+  };
+  document.getElementById('scSave').onclick=()=>{
+    const roleMode=document.getElementById('scRoleMode').checked;
+    if(roleMode){
+      cfg.roles=['駕駛','車長'];
+      cfg.requiredLicenses=[...modal.querySelectorAll('.sc-d-license:checked')].map(cb=>cb.value);
+      cfg.chiefRequiredLicenses=[...modal.querySelectorAll('.sc-c-license:checked')].map(cb=>cb.value);
+      cfg.chiefRequiredMedCert=document.getElementById('scChiefMedCert').checked;
+    } else {
+      cfg.roles=null;
+      cfg.requiredLicenses=[...modal.querySelectorAll('.sc-license:checked')].map(cb=>cb.value);
+      cfg.requiredMedCert=document.getElementById('scMedCert').checked;
+    }
+    saveState(); modal.remove(); if(onDone) onDone();
   };
 }
 function openStandbySubDutyEditor(plan, role, d, onDone){
   const preset=state.miscPresets.find(p=>p.role===role);
+  const subCfg=state.standbySubConfigs[role]||{};
   const t0=preset? (presetTimes(preset)[0]||{start:'',end:''}) : {start:'',end:''};
   const cfg=((plan.subDuties[role]||{})[d])||{};
   const blockDates=(plan.startDate<=plan.endDate)? dateRangeList(plan.startDate, plan.endDate) : [d];
   const pool=plan.personIds.map(pid=>state.personnel.find(p=>p.id===pid)).filter(Boolean)
     .sort((a,b)=>groupIndex(a.group)-groupIndex(b.group)||rankIndex(a.rank)-rankIndex(b.rank));
+  const isRoleMode = Array.isArray(subCfg.roles) && subCfg.roles.length===2;
+  // 留守自己的資格判斷，用 standbySubConfigs（跟常用項目分開的一份），不是
+  // 常用項目本身的 preset —— 這樣消防車在留守跟平常各自的要求可以不一樣
+  const subPreset = {requiredLicenses:subCfg.requiredLicenses||[], requiredMedCert:!!subCfg.requiredMedCert,
+    requiredSkills:subCfg.requiredSkills||[], chiefRequiredLicenses:subCfg.chiefRequiredLicenses||[],
+    chiefRequiredMedCert:!!subCfg.chiefRequiredMedCert, chiefRequiredSkills:subCfg.chiefRequiredSkills||[]};
   const modal=document.createElement('div');
   modal.className='sheet-modal'; modal.style.zIndex='94';
+  const currentDriverId = isRoleMode? (cfg.personIds||[])[0] : null;
+  const currentDriver = currentDriverId? state.personnel.find(p=>p.id===currentDriverId) : null;
+  const roleBlockHTML = isRoleMode? subCfg.roles.map((r,i)=>{
+    const selId=(cfg.personIds||[])[i]||'';
+    const isChief = r==='車長';
+    const reasonsFn = p=>{
+      const reasons=[];
+      if(isChief){
+        if(!['士官','軍官'].includes(rankCategory(p.rank))) reasons.push('需為士官以上');
+        if(currentDriver && rankIndex(p.rank)>rankIndex(currentDriver.rank)) reasons.push('階級不可低於駕駛');
+        if(subPreset.chiefRequiredMedCert && !p.medCert) reasons.push('需具備EMT或醫生證書');
+        if((subPreset.chiefRequiredLicenses||[]).length && !subPreset.chiefRequiredLicenses.some(l=>licenseCovers(p.license,l))) reasons.push('需持有'+subPreset.chiefRequiredLicenses.join('或')+'駕照');
+      } else {
+        reasons.push(...driverQualificationIssues(p, subPreset));
+      }
+      return reasons;
+    };
+    const rows=[...pool].sort((a,b)=>(reasonsFn(a).length>0)-(reasonsFn(b).length>0)).map(p=>{
+      const reasons=reasonsFn(p);
+      return `<label style="display:flex;align-items:flex-start;gap:6px;font-size:13px;padding:6px 0;border-bottom:1px solid var(--line);${reasons.length?'opacity:.6':''}">
+        <input type="radio" name="sd-role${i}" class="sd-role${i}" value="${p.id}" style="width:auto;margin-top:2px" ${p.id===selId?'checked':''}>
+        <span>${esc(p.name)}（${p.group||'未分組'}·${p.rank}${personBadges(p)}）${reasons.length? `<br><span class="warn" style="font-size:11px">🚫${esc(reasons.join('・'))}</span>`:''}</span>
+      </label>`;
+    }).join('');
+    return `<div class="hint" style="margin:6px 0 2px"><b>${esc(r)}</b></div>
+      <label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0">
+        <input type="radio" name="sd-role${i}" class="sd-role${i}" value="" style="width:auto" ${!selId?'checked':''}>（未指派）
+      </label>
+      <div id="sdRoleList${i}" style="max-height:30vh;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:8px;margin-bottom:8px">${pool.length?rows:`<div class="empty">請先選擇留守人員</div>`}</div>`;
+  }).join('') : '';
   modal.innerHTML=`
     <div class="sheet-inner">
       <div class="section-title"><h2 style="margin:0">${esc(role)}：${minguoLabel(d)}</h2><button class="ghost small" id="sdClose">關閉</button></div>
@@ -2523,8 +2709,9 @@ function openStandbySubDutyEditor(plan, role, d, onDone){
         <div class="grow"><label>開始</label>${timeSelectHTML('sdStart', cfg.start||t0.start, {allowEmpty:true})}</div>
         <div class="grow"><label>結束</label>${timeSelectHTML('sdEnd', cfg.end||t0.end, {allowEmpty:true})}</div>
       </div>
+      <div class="hint" style="margin-bottom:8px">⏰ 結束時間不晚於開始時間，代表跨到隔天（例：07:00 → 隔天07:00）。</div>
       <div class="row wrap" style="margin-bottom:8px">
-        <div class="grow"><label>補休至（選填）</label>${timeSelectHTML('sdRest', cfg.restUntil||(preset&&preset.restUntil)||'', {allowEmpty:true})}</div>
+        <div class="grow"><label>補休至（選填）</label>${timeSelectHTML('sdRest', cfg.restUntil||subCfg.restUntil||(preset&&preset.restUntil)||'', {allowEmpty:true})}</div>
       </div>
       <div class="row wrap" style="margin-bottom:8px">
         <div class="grow"><label>支援單位/人員（選填）</label><input type="text" id="sdSupport" value="${esc(cfg.support||'')}" placeholder="例：三連 王小明"></div>
@@ -2532,23 +2719,24 @@ function openStandbySubDutyEditor(plan, role, d, onDone){
       ${blockDates.length>1? `<label style="display:flex;align-items:center;gap:6px;font-size:13px;margin-bottom:8px">
         <input type="checkbox" id="sdAllDays" style="width:auto"> 同樣內容套用到這段留守的每一天（共${blockDates.length}天）
       </label>`:''}
+      ${isRoleMode? roleBlockHTML : `
       <div class="hint" style="margin-bottom:4px">從留守名單中指派（${pool.length}人）</div>
       <div class="row wrap" style="margin-bottom:6px">
         <div class="grow"><label>搜尋姓名</label><input type="text" id="sdSearch" placeholder="輸入姓名關鍵字"></div>
       </div>
       <div id="sdList" style="max-height:40vh;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:8px;margin-bottom:8px">
         ${pool.length? [...pool].sort((a,b)=>{
-            const ra=preset? driverQualificationIssues(a,preset).length>0 : false;
-            const rb=preset? driverQualificationIssues(b,preset).length>0 : false;
+            const ra=driverQualificationIssues(a,subPreset).length>0;
+            const rb=driverQualificationIssues(b,subPreset).length>0;
             return ra-rb;
           }).map(p=>{
-            const reasons=preset? driverQualificationIssues(p,preset) : [];
+            const reasons=driverQualificationIssues(p,subPreset);
             return `
           <label style="display:flex;align-items:flex-start;gap:6px;font-size:13px;padding:6px 0;border-bottom:1px solid var(--line);${reasons.length?'opacity:.6':''}">
             <input type="checkbox" class="sd-person" value="${p.id}" style="width:auto;margin-top:2px" ${(cfg.personIds||[]).includes(p.id)?'checked':''}>
             <span>${esc(p.name)}（${p.group||'未分組'}·${p.rank}${personBadges(p)}）${reasons.length? `<br><span class="warn" style="font-size:11px">🚫${esc(reasons.join('・'))}</span>`:''}</span>
           </label>`;}).join('') : `<div class="empty">請先選擇留守人員</div>`}
-      </div>
+      </div>`}
       <div class="row wrap">
         <button class="ghost grow danger" id="sdClear">清除</button>
         <button class="primary grow" id="sdSave">儲存</button>
@@ -2556,24 +2744,58 @@ function openStandbySubDutyEditor(plan, role, d, onDone){
     </div>`;
   document.body.appendChild(modal);
   document.getElementById('sdClose').onclick=()=>modal.remove();
-  const se=document.getElementById('sdSearch'), le=document.getElementById('sdList');
-  se.oninput=()=>{
-    const term=se.value.trim();
-    le.querySelectorAll('label').forEach(l=>{ l.style.display=(!term||l.textContent.includes(term))?'flex':'none'; });
-  };
-  keepSearchFocusOnPick(le, se);
+  if(!isRoleMode){
+    const se=document.getElementById('sdSearch'), le=document.getElementById('sdList');
+    se.oninput=()=>{
+      const term=se.value.trim();
+      le.querySelectorAll('label').forEach(l=>{ l.style.display=(!term||l.textContent.includes(term))?'flex':'none'; });
+    };
+    keepSearchFocusOnPick(le, se);
+  } else {
+    // 選駕駛後車長清單要即時重新判斷（同一套邏輯跟主要救護車/採買編輯器一樣）
+    modal.querySelectorAll('.sd-role0').forEach(r=>{
+      r.addEventListener('change', ()=>{
+        const newDriver = r.value? state.personnel.find(p=>p.id===r.value) : null;
+        const chiefListEl=document.getElementById('sdRoleList1');
+        const curChief=modal.querySelector('.sd-role1:checked');
+        const curVal=curChief? curChief.value : '';
+        const reasonsFn = p=>{
+          const reasons=[];
+          if(!['士官','軍官'].includes(rankCategory(p.rank))) reasons.push('需為士官以上');
+          if(newDriver && rankIndex(p.rank)>rankIndex(newDriver.rank)) reasons.push('階級不可低於駕駛');
+          if(subPreset.chiefRequiredMedCert && !p.medCert) reasons.push('需具備EMT或醫生證書');
+          if((subPreset.chiefRequiredLicenses||[]).length && !subPreset.chiefRequiredLicenses.some(l=>licenseCovers(p.license,l))) reasons.push('需持有'+subPreset.chiefRequiredLicenses.join('或')+'駕照');
+          return reasons;
+        };
+        if(chiefListEl && pool.length){
+          const rows=[...pool].sort((a,b)=>(reasonsFn(a).length>0)-(reasonsFn(b).length>0)).map(p=>{
+            const reasons=reasonsFn(p);
+            return `<label style="display:flex;align-items:flex-start;gap:6px;font-size:13px;padding:6px 0;border-bottom:1px solid var(--line);${reasons.length?'opacity:.6':''}">
+              <input type="radio" name="sd-role1" class="sd-role1" value="${p.id}" style="width:auto;margin-top:2px" ${p.id===curVal?'checked':''}>
+              <span>${esc(p.name)}（${p.group||'未分組'}·${p.rank}${personBadges(p)}）${reasons.length? `<br><span class="warn" style="font-size:11px">🚫${esc(reasons.join('・'))}</span>`:''}</span>
+            </label>`;
+          }).join('');
+          chiefListEl.innerHTML=rows;
+        }
+      });
+    });
+  }
   document.getElementById('sdClear').onclick=()=>{
     if(plan.subDuties[role]) delete plan.subDuties[role][d];
     modal.remove(); onDone();
   };
   document.getElementById('sdSave').onclick=()=>{
-    const ids=[...modal.querySelectorAll('.sd-person:checked')].map(cb=>cb.value);
+    const ids = isRoleMode
+      ? subCfg.roles.map((_,i)=>{ const sel=modal.querySelector(`.sd-role${i}:checked`); return sel&&sel.value? sel.value:undefined; })
+      : [...modal.querySelectorAll('.sd-person:checked')].map(cb=>cb.value);
+    if(isRoleMode) autoSwapDriverChief({roles:subCfg.roles, personIds:ids}, subPreset);
     const support=document.getElementById('sdSupport').value.trim();
     const allDays=document.getElementById('sdAllDays');
     const targets = (allDays && allDays.checked)? blockDates : [d];
     if(!plan.subDuties[role]) plan.subDuties[role]={};
+    const hasAny = isRoleMode? ids.some(Boolean) : ids.length;
     targets.forEach(td=>{
-      if(!ids.length && !support) delete plan.subDuties[role][td];
+      if(!hasAny && !support) delete plan.subDuties[role][td];
       else plan.subDuties[role][td]={personIds:ids, start:getTimeSelectValue('sdStart'),
         end:getTimeSelectValue('sdEnd'), restUntil:getTimeSelectValue('sdRest'), support};
     });
@@ -2616,18 +2838,23 @@ function openPreplanDayEditor(key, date, onSaved){
     listEl.addEventListener('change', update);
     update();
   };
-  const checkRows = (selectedIds, cls, reasonsFn)=>{
+  const checkRows = (selectedIds, cls, reasonsFn, nominalIds)=>{
     if(!pool.length) return `<div class="empty">目前沒有人員</div>`;
+    const nomSet = new Set(nominalIds||[]);
     const withReasons = pool.map(p=>({p, reasons: reasonsFn? reasonsFn(p) : []}));
     withReasons.sort((a,b)=>(a.reasons.length>0)-(b.reasons.length>0));
     return withReasons.map(({p,reasons})=>`
       <label style="display:flex;align-items:flex-start;gap:6px;font-size:13px;padding:6px 0;border-bottom:1px solid var(--line);${reasons.length?'opacity:.6':''}">
         <input type="checkbox" class="${cls}" value="${p.id}" style="width:auto;flex-shrink:0;margin-top:2px" ${selectedIds.includes(p.id)?'checked':''}>
-        <span>${esc(p.name)}（${p.group||'未分組'}·${p.rank}${personBadges(p)}）${reasons.length? `<br><span class="warn" style="font-size:11px">🚫${esc(reasons.join('・'))}</span>`:''}</span>
+        <span class="grow">${esc(p.name)}（${p.group||'未分組'}·${p.rank}${personBadges(p)}）${reasons.length? `<br><span class="warn" style="font-size:11px">🚫${esc(reasons.join('・'))}</span>`:''}</span>
+        <label style="display:flex;align-items:center;gap:3px;font-size:11px;color:var(--dim);flex-shrink:0;margin-top:2px" title="掛名：排進去但不算忙碌，可以同時被排別的任務">
+          <input type="checkbox" class="${cls}-nom" value="${p.id}" style="width:auto" ${nomSet.has(p.id)?'checked':''}>掛
+        </label>
       </label>`).join('');
   };
-  const radioRows = (selectedId, cls, name, reasonsFn)=>{
+  const radioRows = (selectedId, cls, name, reasonsFn, nominalIds)=>{
     if(!pool.length) return `<div class="empty">沒有符合資格的人員</div>`;
+    const nomSet = new Set(nominalIds||[]);
     const withReasons = pool.map(p=>({p, reasons: reasonsFn? reasonsFn(p) : []}));
     withReasons.sort((a,b)=>(a.reasons.length>0)-(b.reasons.length>0));
     return `<label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0">
@@ -2635,7 +2862,10 @@ function openPreplanDayEditor(key, date, onSaved){
       </label>`+withReasons.map(({p,reasons})=>`
       <label style="display:flex;align-items:flex-start;gap:6px;font-size:13px;padding:6px 0;border-bottom:1px solid var(--line);${reasons.length?'opacity:.6':''}">
         <input type="radio" name="${name}" class="${cls}" value="${p.id}" style="width:auto;margin-top:2px" ${p.id===selectedId?'checked':''}>
-        <span>${esc(p.name)}（${p.group||'未分組'}·${p.rank}${personBadges(p)}）${reasons.length? `<br><span class="warn" style="font-size:11px">🚫${esc(reasons.join('・'))}</span>`:''}</span>
+        <span class="grow">${esc(p.name)}（${p.group||'未分組'}·${p.rank}${personBadges(p)}）${reasons.length? `<br><span class="warn" style="font-size:11px">🚫${esc(reasons.join('・'))}</span>`:''}</span>
+        <label style="display:flex;align-items:center;gap:3px;font-size:11px;color:var(--dim);flex-shrink:0;margin-top:2px" title="掛名：排進去但不算忙碌，可以同時被排別的任務">
+          <input type="checkbox" class="${cls}-nom" value="${p.id}" style="width:auto" ${nomSet.has(p.id)?'checked':''}>掛
+        </label>
       </label>`).join('');
   };
   const timeRow = (idBase, st, en, label)=>`
@@ -2664,7 +2894,7 @@ function openPreplanDayEditor(key, date, onSaved){
            <button class="ghost small" id="ppSelectAll">全選(顯示中)</button>
            <button class="ghost small" id="ppClearAll">全部取消</button>
          </div>`
-      + listBox(checkRows(plan.personIds||[], 'pp-person', presetReasonsFn), 'ppList');
+      + listBox(checkRows(plan.personIds||[], 'pp-person', presetReasonsFn, plan.nominalIds), 'ppList');
   } else if(type.mode==='roles'){
     const driverIdx=type.roles.indexOf('駕駛'), chiefIdx=type.roles.indexOf('車長');
     const currentDriver = driverIdx>-1? state.personnel.find(p=>p.id===(plan.personIds||[])[driverIdx]) : null;
@@ -2683,7 +2913,8 @@ function openPreplanDayEditor(key, date, onSaved){
           const selId=(plan.personIds||[])[i]||'';
           return `<div class="hint" style="margin:6px 0 2px"><b>${esc(r)}</b></div>`
             + searchBlock('ppSearch'+i)
-            + listBox(radioRows(selId, 'pp-role'+i, 'pprole'+i, reasonsFn), 'ppList'+i);
+            + listBox(radioRows(selId, 'pp-role'+i, 'pprole'+i, reasonsFn, plan.nominalIds), 'ppList'+i)
+            + `<div class="row wrap" style="margin:6px 0 2px"><div class="grow"><label>${esc(r)}支援（選填，找不到適合的人時手打）</label><input type="text" id="ppRoleNote${i}" value="${esc((plan.notes||[])[i]||'')}" placeholder="例：三連支援"></div></div>`;
         }).join('');
   } else if(type.mode==='dayNight'){
     const times = preset? presetTimes(preset) : [];
@@ -2692,12 +2923,12 @@ function openPreplanDayEditor(key, date, onSaved){
       + timeRow('ppDayT', plan.dayStart||preplanDefault(key,'dayStart',dt.start), plan.dayEnd||preplanDefault(key,'dayEnd',dt.end))
       + restRow('ppDayRest', plan.dayRestUntil||preplanDefault(key,'dayRest',''), '日班補休至（選填）')
       + searchBlock('ppSearchD')
-      + listBox(checkRows(plan.dayPersonIds||(plan.dayPersonId?[plan.dayPersonId]:[]), 'pp-day', presetReasonsFn), 'ppListD')
+      + listBox(checkRows(plan.dayPersonIds||(plan.dayPersonId?[plan.dayPersonId]:[]), 'pp-day', presetReasonsFn, plan.dayNominalIds), 'ppListD')
       + `<div class="divider"></div><div class="hint" style="margin:6px 0 2px"><b>夜班</b></div>`
       + timeRow('ppNightT', plan.nightStart||preplanDefault(key,'nightStart',nt.start), plan.nightEnd||preplanDefault(key,'nightEnd',nt.end))
       + restRow('ppNightRest', plan.nightRestUntil||preplanDefault(key,'nightRest',''), '夜班補休至（選填）')
       + searchBlock('ppSearchN')
-      + listBox(checkRows(plan.nightPersonIds||(plan.nightPersonId?[plan.nightPersonId]:[]), 'pp-night', presetReasonsFn), 'ppListN')
+      + listBox(checkRows(plan.nightPersonIds||(plan.nightPersonId?[plan.nightPersonId]:[]), 'pp-night', presetReasonsFn, plan.nightNominalIds), 'ppListN')
       + supportRow('ppSupport', plan.support);
   } else if(type.mode==='fixedSlots'){
     body = supportRow('ppSupport', plan.support)
@@ -2715,7 +2946,7 @@ function openPreplanDayEditor(key, date, onSaved){
           <div class="pp-slot-body" data-slot-body="${i}" style="display:${on?'block':'none'}">
             ${restRow('ppSlotRest'+i, cfg.restUntil||preplanDefault(key,'slotRest'+i,''))}
             ${searchBlock('ppSearchS'+i)}
-            ${listBox(checkRows(ids, 'pp-slot'+i, presetReasonsFn), 'ppListS'+i)}
+            ${listBox(checkRows(ids, 'pp-slot'+i, presetReasonsFn, cfg.nominalIds), 'ppListS'+i)}
           </div>
         </div>`;
       }).join('');
@@ -2770,7 +3001,7 @@ function openPreplanDayEditor(key, date, onSaved){
           const chiefListEl=document.getElementById('ppList'+chiefIdx);
           const currentChief=modal.querySelector('.pp-role'+chiefIdx+':checked');
           const currentVal=currentChief? currentChief.value : '';
-          if(chiefListEl) chiefListEl.innerHTML=radioRows(currentVal, 'pp-role'+chiefIdx, 'pprole'+chiefIdx, reasonsFn);
+          if(chiefListEl) chiefListEl.innerHTML=radioRows(currentVal, 'pp-role'+chiefIdx, 'pprole'+chiefIdx, reasonsFn, plan.nominalIds);
         });
       });
     }
@@ -2789,8 +3020,9 @@ function openPreplanDayEditor(key, date, onSaved){
     const support=(document.getElementById('ppSupport')||{}).value||'';
     if(type.mode==='people'){
       const ids=[...modal.querySelectorAll('.pp-person:checked')].map(cb=>cb.value);
+      const nominalIds=[...modal.querySelectorAll('.pp-person-nom:checked')].map(cb=>cb.value).filter(id=>ids.includes(id));
       if(!ids.length && !support) return null;
-      return {personIds:ids, support,
+      return {personIds:ids, nominalIds, support,
         start:type.editableTime? getTimeSelectValue('ppTStart') : undefined,
         end:type.editableTime? getTimeSelectValue('ppTEnd') : undefined,
         restUntil:getTimeSelectValue('ppRest')};
@@ -2800,8 +3032,16 @@ function openPreplanDayEditor(key, date, onSaved){
         const sel=modal.querySelector(`.pp-role${i}:checked`);
         return sel && sel.value? sel.value : undefined;
       });
-      if(!ids.some(Boolean) && !support) return null;
-      return {personIds:ids, support,
+      const notes=type.roles.map((_,i)=>{
+        const el=document.getElementById('ppRoleNote'+i);
+        return el? el.value.trim() : '';
+      });
+      const nominalIds=type.roles.map((_,i)=>{
+        const nom=modal.querySelector(`.pp-role${i}-nom:checked`);
+        return (nom && nom.checked && nom.value===ids[i])? ids[i] : null;
+      }).filter(Boolean);
+      if(!ids.some(Boolean) && !notes.some(Boolean) && !support) return null;
+      return {personIds:ids, notes, nominalIds, support,
         start:type.editableTime? getTimeSelectValue('ppTStart') : undefined,
         end:type.editableTime? getTimeSelectValue('ppTEnd') : undefined,
         restUntil:getTimeSelectValue('ppRest')};
@@ -2809,8 +3049,10 @@ function openPreplanDayEditor(key, date, onSaved){
     if(type.mode==='dayNight'){
       const dayIds=[...modal.querySelectorAll('.pp-day:checked')].map(cb=>cb.value);
       const nightIds=[...modal.querySelectorAll('.pp-night:checked')].map(cb=>cb.value);
+      const dayNominalIds=[...modal.querySelectorAll('.pp-day-nom:checked')].map(cb=>cb.value).filter(id=>dayIds.includes(id));
+      const nightNominalIds=[...modal.querySelectorAll('.pp-night-nom:checked')].map(cb=>cb.value).filter(id=>nightIds.includes(id));
       if(!dayIds.length && !nightIds.length && !support) return null;
-      return {dayPersonIds:dayIds, nightPersonIds:nightIds, support,
+      return {dayPersonIds:dayIds, nightPersonIds:nightIds, dayNominalIds, nightNominalIds, support,
         dayStart:getTimeSelectValue('ppDayTStart'), dayEnd:getTimeSelectValue('ppDayTEnd'),
         nightStart:getTimeSelectValue('ppNightTStart'), nightEnd:getTimeSelectValue('ppNightTEnd'),
         dayRestUntil:getTimeSelectValue('ppDayRest'), nightRestUntil:getTimeSelectValue('ppNightRest')};
@@ -2821,7 +3063,8 @@ function openPreplanDayEditor(key, date, onSaved){
         const on=modal.querySelector(`.pp-slot-on[data-slot="${i}"]`);
         if(!on||!on.checked) return;
         const ids=[...modal.querySelectorAll(`.pp-slot${i}:checked`)].map(cb=>cb.value);
-        slots[i]={personIds:ids, restUntil:getTimeSelectValue('ppSlotRest'+i)};
+        const nominalIds=[...modal.querySelectorAll(`.pp-slot${i}-nom:checked`)].map(cb=>cb.value).filter(id=>ids.includes(id));
+        slots[i]={personIds:ids, nominalIds, restUntil:getTimeSelectValue('ppSlotRest'+i)};
       });
       if(!Object.keys(slots).length && !support) return null;
       return {slots, support};
@@ -2963,7 +3206,7 @@ function personDayItems(personId, date){
   });
   // personal incidents
   (state.unavail[date]||[]).filter(u=>u.personId===personId).forEach(u=>{
-    out.push({kind:'unavail', id:u.id, leaveId:u.leaveId,
+    out.push({kind:'unavail', id:u.id, leaveId:u.leaveId, allDay:u.allDay, isLeave:isLeaveReason(u.reason),
       label:`🚫 ${u.allDay?'全天':`${u.start}-${u.end}`}${u.reason? '（'+u.reason+'）':''}`});
   });
   return out;
@@ -2986,12 +3229,18 @@ function openPersonCalendarEditor(date, onSaved){
     for(let d=1;d<=total;d++){
       const ds=`${ym}-${String(d).padStart(2,'0')}`;
       const items=person? personDayItems(person.id, ds):[];
-      const hasLeave=items.some(x=>x.kind==='leave'||(x.kind==='unavail'&&/假/.test(x.label)));
-      const hasIncident=items.some(x=>x.kind==='unavail'&&!/假/.test(x.label));
+      // 休假的前後緩衝（例如前一天18:00-24:00那半天）isn't a full day off —
+      // showing it as the same plain "休" as a full day made it impossible
+      // to tell "he's gone all day" from "he's off from tonight" at a
+      // glance, so partial-day leave gets its own mark + colour
+      const fullLeave=items.some(x=>x.kind==='leave'||(x.kind==='unavail'&&x.isLeave&&x.allDay));
+      const partialLeave=!fullLeave && items.some(x=>x.kind==='unavail'&&x.isLeave&&!x.allDay);
+      const partialItem = partialLeave? items.find(x=>x.kind==='unavail'&&x.isLeave&&!x.allDay) : null;
+      const hasIncident=items.some(x=>x.kind==='unavail'&&!x.isLeave);
       const hasDuty=items.some(x=>['preplan','assign','misc'].includes(x.kind));
-      let mark = hasLeave? '休' : (hasDuty? String(items.filter(x=>['preplan','assign','misc'].includes(x.kind)).length) : '');
+      let mark = fullLeave? '休' : (partialLeave? `休${partialItem.label.match(/(\d{2}):\d{2}-(\d{2}):\d{2}/)? partialItem.label.match(/(\d{2}):\d{2}-(\d{2}):\d{2}/).slice(1).join('-') : ''}` : (hasDuty? String(items.filter(x=>['preplan','assign','misc'].includes(x.kind)).length) : ''));
       if(hasIncident) mark = (mark? mark+'･':'')+'事';
-      const cls = hasLeave? 'leave-marked' : (hasIncident? 'incident-marked' : (hasDuty? 'has':''));
+      const cls = fullLeave? 'leave-marked' : (partialLeave? 'leave-partial-marked' : (hasIncident? 'incident-marked' : (hasDuty? 'has':'')));
       cells.push(`<div class="cal-cell ${cls} ${isHolidayDate(ds)?'holiday':''}" data-pc-date="${ds}">
         <div class="cal-day">${d}</div><div class="cal-mark">${esc(mark)}</div>
       </div>`);
@@ -3021,7 +3270,7 @@ function openPersonCalendarEditor(date, onSaved){
           ${['日','一','二','三','四','五','六'].map(w=>`<div class="cal-head">${w}</div>`).join('')}
           ${cells.join('')}
         </div>
-        <div class="hint">數字＝當天勤務筆數；「休」＝休假；「事」＝有個人事故。</div>
+        <div class="hint">數字＝當天勤務筆數；「休」＝整天休假；<span class="leave-partial-marked" style="color:var(--warn,#d9a441);font-style:italic">「休HH-HH」（虛線框）</span>＝只有當天部分時段是休假緩衝（不是整天都休）；「事」＝有個人事故。</div>
       ` : `<div class="empty">請先選擇一位人員</div>`}`;
     document.getElementById('pcClose').onclick=()=>modal.remove();
     const se=document.getElementById('pcSearch'), le=document.getElementById('pcPeople');
@@ -3248,8 +3497,8 @@ function openLeaveTableEditor(date, onSaved, presetPid){
             <button class="ghost small danger" data-lt-del-block="${b.leaveId}">刪除整段</button>
           </div>`).join('') : `<div class="empty">目前沒有已生效的休假</div>`);
       })()}`;
-    document.getElementById('ltClose').onclick=()=>modal.remove();
-    document.getElementById('ltCheckpoint').onclick=()=>openCheckpointModal('leave', '休假大表',
+    modal.querySelector('#ltClose').onclick=()=>modal.remove();
+    modal.querySelector('#ltCheckpoint').onclick=()=>openCheckpointModal('leave', '休假大表',
       ()=>state.preplan.leave||{},
       (data)=>{ state.preplan.leave=data; loadPerson(); draw(); });
     modal.querySelectorAll('[data-lt-goto]').forEach(b=>{
@@ -3280,7 +3529,7 @@ function openLeaveTableEditor(date, onSaved, presetPid){
         });
       };
     });
-    const se=document.getElementById('ltSearch'), le=document.getElementById('ltPeople');
+    const se=modal.querySelector('#ltSearch'), le=modal.querySelector('#ltPeople');
     se.oninput=()=>{
       const term=se.value.trim();
       le.querySelectorAll('label').forEach(l=>{ l.style.display=(!term||l.textContent.includes(term))?'flex':'none'; });
@@ -3289,7 +3538,7 @@ function openLeaveTableEditor(date, onSaved, presetPid){
     modal.querySelectorAll('.lt-person').forEach(r=>{
       r.onchange=()=>{ selectedPid=r.value; loadPerson(); draw(); };
     });
-    document.getElementById('ltImport').onclick=()=>{
+    modal.querySelector('#ltImport').onclick=()=>{
       const st=store();
       const totalDays=Object.values(st).reduce((n,r)=>n+((r.dates||[]).filter(d=>d.startsWith(ym)).length),0);
       if(!totalDays){ showAlert('本月還沒有排任何休假。'); return; }
@@ -3317,10 +3566,10 @@ function openLeaveTableEditor(date, onSaved, presetPid){
           draw();
         };
       });
-      document.getElementById('ltPrev').onclick=()=>{ ym=shiftMonth(ym,-1); preplanMonth=ym; loadPerson(); draw(); };
-      document.getElementById('ltNext').onclick=()=>{ ym=shiftMonth(ym,1); preplanMonth=ym; loadPerson(); draw(); };
-      document.getElementById('ltClearMonth').onclick=()=>{ picked=new Set(); honorDates=new Set(); draw(); };
-      document.getElementById('ltSave').onclick=()=>{
+      modal.querySelector('#ltPrev').onclick=()=>{ ym=shiftMonth(ym,-1); preplanMonth=ym; loadPerson(); draw(); };
+      modal.querySelector('#ltNext').onclick=()=>{ ym=shiftMonth(ym,1); preplanMonth=ym; loadPerson(); draw(); };
+      modal.querySelector('#ltClearMonth').onclick=()=>{ picked=new Set(); honorDates=new Set(); draw(); };
+      modal.querySelector('#ltSave').onclick=()=>{
         const curDates=((store()[selectedPid]||{}).dates||[]).filter(d=>!d.startsWith(ym));
         const curHonor=((store()[selectedPid]||{}).honorDates||[]).filter(d=>!d.startsWith(ym));
         const curApproved=((store()[selectedPid]||{}).approvedRuns||[]);
@@ -3430,18 +3679,24 @@ function importPreplanForDate(key, date){
     const linkedRoles=new Set(PREPLAN_TYPES.filter(t=>t.mode!=='standby' && t.key!=='duty' && t.presetRole).map(t=>t.presetRole));
     Object.entries(plan.subDuties||{}).forEach(([role, byDate])=>{
       if(linkedRoles.has(role)) return;
+      const subCfg=state.standbySubConfigs[role]||{};
+      const isRoleMode=Array.isArray(subCfg.roles) && subCfg.roles.length===2;
       Object.entries(byDate).forEach(([d, cfg])=>{
-        if(!cfg || (!(cfg.personIds||[]).length && !cfg.support)) return;
+        if(!cfg || (!(cfg.personIds||[]).some(Boolean) && !cfg.support)) return;
         if(!state.misc[d]) state.misc[d]=[];
         state.misc[d]=state.misc[d].filter(m=>m.role!==role);
         const rp=state.miscPresets.find(x=>x.role===role);
-        state.misc[d].push({id:uid(), role, start:cfg.start||'', end:cfg.end||'',
+        const newEntry={id:uid(), role, start:cfg.start||'', end:cfg.end||'',
           restUntil:cfg.restUntil||(rp&&rp.restUntil)||'', personIds:[...(cfg.personIds||[])],
+          ...(isRoleMode? {roles:[...subCfg.roles]} : {}),
           standbyAnchor:date, // traces this entry back to the 留守 block that wrote it, so a
                                // future cleanup pass can safely remove sub-duty entries whose
                                // block no longer exists, without touching same-named entries
                                // someone entered by hand
-          ...(cfg.support? {support:cfg.support}:{})});
+          ...(cfg.support? {support:cfg.support}:{})};
+        if(isRoleMode) autoSwapDriverChief(newEntry, {requiredLicenses:subCfg.requiredLicenses||[], requiredMedCert:!!subCfg.requiredMedCert,
+          chiefRequiredLicenses:subCfg.chiefRequiredLicenses||[], chiefRequiredMedCert:!!subCfg.chiefRequiredMedCert});
+        state.misc[d].push(newEntry);
       });
     });
     return true;
@@ -3466,10 +3721,12 @@ function importPreplanForDate(key, date){
     const ids=(plan.personIds||[]).slice(0,type.roles.length);
     const notes=(plan.notes||[]).filter(Boolean).join('、');
     if(!ids.some(Boolean) && !plan.support && !notes) return false;
-    state.misc[date].push({id:uid(), role:roleName,
+    const newEntry={id:uid(), role:roleName,
       start:plan.start||t0.start, end:plan.end||t0.end,
       restUntil:plan.restUntil||(preset&&preset.restUntil)||'', roles:[...type.roles], personIds:ids,
-      nominalIds:plan.nominalIds||[], lockedSlots:type.roles.map(()=>false), ...mergeSupport(plan.support, notes)});
+      nominalIds:plan.nominalIds||[], lockedSlots:type.roles.map(()=>false), ...mergeSupport(plan.support, notes)};
+    autoSwapDriverChief(newEntry);
+    state.misc[date].push(newEntry);
   } else if(type.mode==='dayNight'){
     const dayT = times[0]||{start:'',end:''};
     const nightT = times[1]||times[0]||{start:'',end:''};
@@ -8294,8 +8551,11 @@ function renderMisc(){
       if(existing){
         existing.role=role; existing.start=start; existing.end=end; existing.restUntil=miscSelectedRestUntil;
         existing.roles=miscSelectedRoles; existing.personIds=personIds; existing.lockedSlots=lockedSlots;
+        autoSwapDriverChief(existing);
       } else {
-        state.misc[currentDate].push({id:uid(),role,start,end,restUntil:miscSelectedRestUntil,roles:miscSelectedRoles,personIds,lockedSlots});
+        const newEntry={id:uid(),role,start,end,restUntil:miscSelectedRestUntil,roles:miscSelectedRoles,personIds,lockedSlots};
+        autoSwapDriverChief(newEntry);
+        state.misc[currentDate].push(newEntry);
       }
     } else {
       const personIds=[...miscFreeformCheckedIds];
