@@ -116,6 +116,7 @@ textarea{min-height:50px;resize:vertical;}
 .cal-cell.holiday .cal-day{color:var(--danger);}
 .cal-day{font-size:11px;color:var(--dim);line-height:1.2;}
 .cal-mark{font-size:10px;color:var(--accent);line-height:1.15;text-align:center;word-break:break-all;}
+.cal-mark-outside{color:var(--warn,#d9a441);font-style:italic;}
 .time-select-colon{color:var(--dim);}
 </style>
 </head>
@@ -132,7 +133,7 @@ textarea{min-height:50px;resize:vertical;}
       <button class="ghost small" id="undoBtn" title="復原上一步" disabled>↩️</button>
       <button class="ghost small" id="redoBtn" title="取消復原（重做）" disabled>↪️</button>
       <button class="ghost small" id="dayResetBtn" title="還原這一天">♻️</button>
-      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v77</span></h1>
+      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v78</span></h1>
     </div>
     <div class="row" style="gap:6px;align-items:center">
       <select id="timeStepSelect" style="font-size:11px;padding:3px 6px;width:auto">
@@ -1684,43 +1685,6 @@ let preplanMonth = null; // 'YYYY-MM' currently shown in the calendar
    moving the whole plan somewhere else or restoring a hand-typed backup,
    not for merging a partial slice (use 分工匯出/匯入 on the schedule tab
    for that instead). */
-function openPreplanImportModal(onDone){
-  const modal=document.createElement('div');
-  modal.className='sheet-modal'; modal.style.zIndex='96';
-  modal.innerHTML=`
-    <div class="sheet-inner">
-      <div class="section-title"><h2 style="margin:0">匯入預排</h2><button class="ghost small" id="piClose">關閉</button></div>
-      <div class="hint" style="margin-bottom:8px">貼上先前「匯出所有預排」的內容（或手打符合格式的內容）。匯入會整個取代目前的預排資料。</div>
-      <textarea id="piText" placeholder="貼上內容…" style="min-height:160px;font-family:monospace;font-size:11px;margin-bottom:8px"></textarea>
-      <button class="primary" id="piCheck" style="width:100%">檢查並匯入</button>
-      <div id="piResult" style="margin-top:10px"></div>
-    </div>`;
-  document.body.appendChild(modal);
-  document.getElementById('piClose').onclick=()=>modal.remove();
-  document.getElementById('piCheck').onclick=()=>{
-    let data=null;
-    try{ data=JSON.parse(document.getElementById('piText').value); }
-    catch(e){ showAlert('內容不是有效的 JSON，請確認完整貼上。'); return; }
-    if(!data || data.format!=='drs-preplan-v1' || !data.preplan){
-      document.getElementById('piResult').innerHTML=`<div class="badge-issue">⚠️ 這不是預排匯出檔（格式不符）</div>`;
-      return;
-    }
-    const counts=Object.entries(data.preplan).map(([k,v])=>{
-      const t=PREPLAN_TYPES.find(x=>x.key===k);
-      const n=k==='leave'? Object.values(v).reduce((a,r)=>a+((r.dates||[]).length),0) : Object.keys(v).length;
-      return `${t?t.name:k}：${n}`;
-    }).join('、');
-    showConfirm(`確定要匯入嗎？這會整個取代目前的預排資料（${counts||'無內容'}）。已經匯入到實際班表的內容不受影響。`, ()=>{
-      state.preplan=data.preplan;
-      if(data.standbySubRoles) state.standbySubRoles=data.standbySubRoles;
-      if(data.preplanOrder) state.preplanOrder=data.preplanOrder;
-      saveState();
-      showAlert('已匯入預排資料。');
-      modal.remove();
-      if(onDone) onDone();
-    });
-  };
-}
 function openPreplanDrawer(){
   const backdrop=document.createElement('div');
   backdrop.className='drawer-backdrop';
@@ -1746,18 +1710,8 @@ function openPreplanDrawer(){
           <span style="color:var(--dim)">›</span>
         </div>`;
       }).join('')}
-      </div>
-      <div class="divider"></div>
-      <button class="ghost" id="ppExportAll" style="width:100%;margin-bottom:6px">📤 匯出所有預排</button>
-      <button class="ghost" id="ppImportAll" style="width:100%">📥 匯入預排</button>
       </div>`;
     document.getElementById('drawerClose').onclick=close;
-    document.getElementById('ppExportAll').onclick=()=>{
-      const payload={format:'drs-preplan-v1', createdAt:new Date().toISOString(),
-        preplan:state.preplan, standbySubRoles:state.standbySubRoles, preplanOrder:state.preplanOrder};
-      openTextShareModal('所有預排資料', JSON.stringify(payload, null, 2));
-    };
-    document.getElementById('ppImportAll').onclick=()=>openPreplanImportModal(drawDrawer);
     drawer.querySelectorAll('[data-preplan-open]').forEach(b=>{
       b.onclick=(e)=>{
         if(e.target.hasAttribute('data-pp-handle')) return;
@@ -1846,25 +1800,33 @@ function preplanOwnerFor(key, date){
 function preplanCellMark(type, plan){
   if(!plan) return '';
   const nm = id=>{ const p=state.personnel.find(x=>x.id===id); return p? p.name : ''; };
+  /* names resolved to a real person in the roster render in the normal
+     accent color; free text that couldn't be matched (支援/別單位的人，見
+     parsePreplanFillText 的 note 欄位) renders in a distinct muted-orange
+     style so it's visually obvious "this isn't one of ours" at a glance
+     rather than silently missing from the month view */
+  const ours = ids => (ids||[]).filter(Boolean).map(id=>esc(nm(id))).filter(Boolean);
+  const outside = note => note? [`<span class="cal-mark-outside">${esc(note)}</span>`] : [];
   if(type.mode==='standby'){
     const n=(plan.personIds||[]).length;
     return n? `${n}人` : '';
   }
   if(type.mode==='people'){
-    const ids=(plan.personIds||[]).filter(Boolean);
-    if(!ids.length) return '';
-    return ids.map(nm).join('･');
+    const parts=[...ours(plan.personIds), ...outside(plan.note)];
+    return parts.join('･');
   }
   if(type.mode==='roles'){
-    const ids=(plan.personIds||[]).filter(Boolean);
-    return ids.length? ids.map(nm).join('･') : '';
+    const parts=[...ours(plan.personIds), ...(plan.notes||[]).flatMap(n=>outside(n))];
+    return parts.join('･');
   }
   if(type.mode==='dayNight'){
     const dayIds=plan.dayPersonIds||(plan.dayPersonId?[plan.dayPersonId]:[]);
     const nightIds=plan.nightPersonIds||(plan.nightPersonId?[plan.nightPersonId]:[]);
     const parts=[];
-    if(dayIds.length) parts.push('日'+dayIds.map(nm).join('/'));
-    if(nightIds.length) parts.push('夜'+nightIds.map(nm).join('/'));
+    const dayNames=[...ours(dayIds), ...outside(plan.dayNote)];
+    const nightNames=[...ours(nightIds), ...outside(plan.nightNote)];
+    if(dayNames.length) parts.push('日'+dayNames.join('/'));
+    if(nightNames.length) parts.push('夜'+nightNames.join('/'));
     return parts.join('･');
   }
   if(type.mode==='fixedSlots'){
@@ -1874,7 +1836,8 @@ function preplanCellMark(type, plan){
     const parts=[];
     Object.entries(plan.slots||{}).forEach(([idx,cfg])=>{
       const ids=cfg&&(cfg.personIds||(cfg.personId?[cfg.personId]:[]));
-      if(!ids||!ids.length) return;
+      const hasNote=cfg&&cfg.note;
+      if((!ids||!ids.length) && !hasNote) return;
       const label=type.slots[Number(idx)]||'';
       const short=label.replace(/:\d\d/g,'');  // "00:00-02:00" -> "00-02"
       parts.push(short);
@@ -2102,7 +2065,7 @@ function openPreplanCalendar(key){
       const mark = owner? preplanCellMark(type, owner.plan) : '';
       const hol=isHolidayDate(ds);
       cells.push(`<div class="cal-cell ${mark?'has':''} ${hol?'holiday':''}" data-cal-date="${ds}" data-cal-anchor="${owner? owner.anchor : ds}">
-        <div class="cal-day">${d}</div><div class="cal-mark">${esc(mark)}</div>
+        <div class="cal-day">${d}</div><div class="cal-mark">${mark}</div>
       </div>`);
     }
     const plannedCount=Object.keys(state.preplan[key]||{}).filter(d=>d.startsWith(ym) && preplanCellMark(type, state.preplan[key][d])).length;
@@ -2118,7 +2081,7 @@ function openPreplanCalendar(key){
         ${['日','一','二','三','四','五','六'].map(w=>`<div class="cal-head">${w}</div>`).join('')}
         ${cells.join('')}
       </div>
-      <div class="hint" style="margin-bottom:8px">點日期輸入當天內容；已排的日期外框會變色。假日以紅字標示。</div>
+      <div class="hint" style="margin-bottom:8px">點日期輸入當天內容；已排的日期外框會變色。假日以紅字標示。名字顏色：<span style="color:var(--accent)">一般顏色</span>＝我們單位的人，<span class="cal-mark-outside">橘色斜體</span>＝找不到、可能是別單位支援的人。</div>
       ${preplanSupportsTextFormat(type)? `
       <button class="ghost" id="calExportText" style="width:100%;margin-bottom:6px">📝 匯出本月文字（給人填空缺）</button>
       <button class="ghost" id="calImportText" style="width:100%;margin-bottom:6px">📝 匯入填好的文字</button>
