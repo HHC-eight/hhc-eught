@@ -132,7 +132,7 @@ textarea{min-height:50px;resize:vertical;}
       <button class="ghost small" id="undoBtn" title="復原上一步" disabled>↩️</button>
       <button class="ghost small" id="redoBtn" title="取消復原（重做）" disabled>↪️</button>
       <button class="ghost small" id="dayResetBtn" title="還原這一天">♻️</button>
-      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v76</span></h1>
+      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v77</span></h1>
     </div>
     <div class="row" style="gap:6px;align-items:center">
       <select id="timeStepSelect" style="font-size:11px;padding:3px 6px;width:auto">
@@ -1971,7 +1971,7 @@ function parsePreplanFillText(key, ym, text){
       const nominal=/[（(]掛[)）]$/.test(tok);
       const name=tok.replace(/[（(]掛[)）]$/,'');
       const p=nameToId(name);
-      if(p){ ids.push(p.id); if(nominal) nominalIds.push(p.id); }
+      if(p){ ids.push(p.id); if(nominal){ nominalIds.push(p.id); nominalMatches.push({date:curDate, label, name:p.name}); } }
       else { notes.push(tok); unresolved.push({date:curDate, label, name:tok}); }
     });
     return {ids, nominalIds, note:notes.join('、')};
@@ -1980,6 +1980,7 @@ function parsePreplanFillText(key, ym, text){
   let curDate=null, buf={};
   const result={}; // date -> plan
   const unresolved=[]; // {date,label,name} — couldn't match exactly one person; kept as a note, not dropped
+  const nominalMatches=[]; // {date,label,name} — successfully recognised as 掛名, for confirming the marker was actually read
   const flush=()=>{
     if(!curDate) return;
     if(type.mode==='people'){
@@ -2020,14 +2021,17 @@ function parsePreplanFillText(key, ym, text){
     if(!curDate) return;
     for(const lbl of labelStarts){
       if(trimmed===lbl){ buf[lbl]=''; return; }
-      if(trimmed.startsWith(lbl+' ') || trimmed.startsWith(lbl+'：') || trimmed.startsWith(lbl+':')){
-        buf[lbl]=trimmed.slice(lbl.length).replace(/^[：:]\s*/,'').trim();
+      // no space/colon required after the label — "00-02陳小明" is just as
+      // valid as "00-02 陳小明"; treating a missing space as "nothing filled"
+      // silently threw away real answers
+      if(trimmed.startsWith(lbl)){
+        buf[lbl]=trimmed.slice(lbl.length).replace(/^[：:\s]+/,'').trim();
         return;
       }
     }
   });
   flush();
-  return {result, unresolved};
+  return {result, unresolved, nominalMatches};
 }
 function openPreplanTextImportModal(key, ym, onDone){
   const type=PREPLAN_TYPES.find(t=>t.key===key);
@@ -2046,18 +2050,19 @@ function openPreplanTextImportModal(key, ym, onDone){
   document.getElementById('tiCheck').onclick=()=>{
     const text=document.getElementById('tiText').value;
     if(!text.trim()){ showAlert('請先貼上內容。'); return; }
-    const {result, unresolved}=parsePreplanFillText(key, ym, text);
+    const {result, unresolved, nominalMatches}=parsePreplanFillText(key, ym, text);
     const dates=Object.keys(result).sort();
     const box=document.getElementById('tiResult');
     if(!dates.length && !unresolved.length){
-      box.innerHTML=`<div class="badge-issue">⚠️ 沒有解析出任何內容，請確認格式（日期行要是「9/1」這種格式，冒號後面要有名字）</div>`;
+      box.innerHTML=`<div class="badge-issue">⚠️ 沒有解析出任何內容，請確認格式（日期行要是「9/1」這種格式，項目名稱後面直接接名字）</div>`;
       return;
     }
     box.innerHTML=`
       <div class="card" style="padding:10px">
         <div style="font-weight:600;margin-bottom:6px">解析結果：</div>
         <div class="muted">・可套用：${dates.length} 天</div>
-        ${unresolved.length? `<div class="badge-issue">⚠️ 有 ${unresolved.length} 個名字在名冊裡找不到唯一符合的人，這些會被略過：<br>${unresolved.slice(0,10).map(u=>`${minguoLabel(u.date)}：「${esc(u.name)}」`).join('<br>')}${unresolved.length>10?'<br>…':''}</div>`:''}
+        ${nominalMatches.length? `<div class="hint">✅ 已辨識為「掛名」的共 ${nominalMatches.length} 筆：<br>${nominalMatches.slice(0,10).map(x=>`${minguoLabel(x.date)} ${esc(x.label)}：${esc(x.name)}(掛)`).join('<br>')}${nominalMatches.length>10?'<br>…':''}</div>`:''}
+        ${unresolved.length? `<div class="badge-issue">⚠️ 有 ${unresolved.length} 個名字在名冊裡找不到唯一符合的人，會以文字方式保留在該筆勤務的備註（不會加入名冊，也不會誤配對）：<br>${unresolved.slice(0,10).map(u=>`${minguoLabel(u.date)} ${esc(u.label)}：「${esc(u.name)}」`).join('<br>')}${unresolved.length>10?'<br>…':''}</div>`:''}
         ${dates.length? `<button class="primary" id="tiApply" style="width:100%;margin-top:8px">套用這 ${dates.length} 天</button>`:''}
       </div>`;
     if(dates.length){
