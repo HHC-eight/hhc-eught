@@ -130,7 +130,7 @@ textarea{min-height:50px;resize:vertical;}
   <div class="topbar-main" style="flex-direction:column;align-items:stretch;gap:6px">
     <div class="row" style="gap:6px;align-items:center">
       <button class="ghost small" id="preplanDrawerBtn" title="設定">☰</button>
-      <h1 id="pageTitle" style="flex:1">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v83</span></h1>
+      <h1 id="pageTitle" style="flex:1">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v84</span></h1>
       <select id="timeStepSelect" style="font-size:11px;padding:3px 6px;width:auto">
         <option value="5">5分間隔</option>
         <option value="10">10分間隔</option>
@@ -1708,11 +1708,6 @@ document.getElementById('preplanDrawerBtn').addEventListener('click', (e)=>{ fla
    never touched. */
 /* ---------------- 預排 UI ---------------- */
 let preplanMonth = null; // 'YYYY-MM' currently shown in the calendar
-/* import a whole 預排 dump exported from this device (or another). Replaces
-   state.preplan entirely with what's in the file — this is meant for
-   moving the whole plan somewhere else or restoring a hand-typed backup,
-   not for merging a partial slice (use 分工匯出/匯入 on the schedule tab
-   for that instead). */
 function openPreplanDrawer(){
   const backdrop=document.createElement('div');
   backdrop.className='drawer-backdrop';
@@ -3598,140 +3593,6 @@ function openClearRangeModal(){
   };
 }
 document.getElementById('exportBtn').addEventListener('click', openExportModal);
-/* ---------------- 分工匯出/匯入 ----------------
-   Lets the roster be split across several people: export a date range as a
-   self-contained packet, hand it to another 承辦人 to fill in, then merge
-   their returned file back without disturbing anything outside that range.
-   The packet carries the roster and duty definitions read-only (so the
-   other person sees the same names/rules) plus the editable per-day data. */
-const SHARE_FORMAT='drs-share-v1';
-function buildSharePacket(fromDate, toDate, opts){
-  opts = opts || {};
-  const dates = dateRangeList(fromDate, toDate);
-  const days = {};
-  dates.forEach(d=>{
-    days[d] = {
-      assign: opts.includeAssign===false? undefined : (state.assign[d]||undefined),
-      misc: opts.includeMisc===false? undefined : (state.misc[d]||undefined),
-      unavail: opts.includeUnavail===false? undefined : (state.unavail[d]||undefined),
-      dailyShiftOverrides: state.dailyShiftOverrides[d]||undefined,
-      longTermSuspensions: state.longTermSuspensions[d]||undefined,
-      dutyChanges: state.dutyChanges[d]||undefined,
-    };
-  });
-  return {
-    format: SHARE_FORMAT,
-    createdAt: new Date().toISOString(),
-    range: {from: fromDate, to: toDate},
-    note: opts.note||'',
-    // reference data so the other person's app shows the same names and rules
-    personnel: state.personnel,
-    categories: state.categories,
-    categoryShiftDefaults: state.categoryShiftDefaults,
-    miscPresets: state.miscPresets,
-    skillOptions: state.skillOptions,
-    days,
-  };
-}
-/* what a packet would change if merged — shown for confirmation before
-   anything is written, so an incoming file can never silently clobber work */
-function summarizeSharePacket(packet){
-  if(!packet || packet.format!==SHARE_FORMAT) return {valid:false, reason:'這不是班表分工檔（格式不符）'};
-  if(!packet.range || !packet.range.from || !packet.range.to) return {valid:false, reason:'檔案缺少日期範圍'};
-  const dates = Object.keys(packet.days||{}).sort();
-  if(!dates.length) return {valid:false, reason:'檔案沒有任何日期資料'};
-  let assignDays=0, miscEntries=0, unavailEntries=0, overrideDays=0;
-  dates.forEach(d=>{
-    const day=packet.days[d]||{};
-    if(day.assign && Object.keys(day.assign).length) assignDays++;
-    if(day.misc) miscEntries+=day.misc.length;
-    if(day.unavail) unavailEntries+=day.unavail.length;
-    if(day.dailyShiftOverrides) overrideDays++;
-  });
-  // people in the packet who don't exist locally (renamed/added elsewhere)
-  const localIds=new Set(state.personnel.map(p=>p.id));
-  const unknown=(packet.personnel||[]).filter(p=>!localIds.has(p.id));
-  return {valid:true, dates, from:dates[0], to:dates[dates.length-1],
-    assignDays, miscEntries, unavailEntries, overrideDays,
-    unknownPeople:unknown, note:packet.note||'', createdAt:packet.createdAt};
-}
-/* merge a packet in. Only the dates it covers are touched, and only the
-   sections it actually carries — a packet exported without 事故 leaves the
-   local 事故 alone. Unknown personnel are added so their assignments
-   resolve to a name instead of a dangling id. */
-/* paste-or-pick a returned share packet, show exactly what it would change,
-   and only merge after confirmation */
-function openShareImportModal(){
-  const modal=document.createElement('div');
-  modal.className='sheet-modal'; modal.style.zIndex='70';
-  modal.innerHTML=`
-    <div class="sheet-inner">
-      <div class="section-title"><h2 style="margin:0">匯入分工班表</h2><button class="ghost small" id="siClose">關閉</button></div>
-      <div class="hint" style="margin-bottom:8px">把對方回傳的檔案內容貼進來，或選擇檔案。匯入前會先列出這個檔案會改動哪些日期，確認後才寫入。</div>
-      <input type="file" id="siFile" accept="application/json,.json" style="margin-bottom:8px">
-      <textarea id="siText" placeholder="或直接貼上檔案內容…" style="min-height:140px;font-family:monospace;font-size:11px;margin-bottom:8px"></textarea>
-      <button class="primary" id="siCheck" style="width:100%">檢查內容</button>
-      <div id="siResult" style="margin-top:10px"></div>
-    </div>`;
-  document.body.appendChild(modal);
-  document.getElementById('siClose').onclick=()=>modal.remove();
-  document.getElementById('siFile').onchange=(e)=>{
-    const f=e.target.files && e.target.files[0];
-    if(!f) return;
-    const rd=new FileReader();
-    rd.onload=()=>{ document.getElementById('siText').value=rd.result; };
-    rd.readAsText(f);
-  };
-  document.getElementById('siCheck').onclick=()=>{
-    let packet=null;
-    try{ packet=JSON.parse(document.getElementById('siText').value); }
-    catch(err){ showAlert('檔案內容不是有效的 JSON，請確認完整貼上。'); return; }
-    const sm=summarizeSharePacket(packet);
-    const box=document.getElementById('siResult');
-    if(!sm.valid){ box.innerHTML=`<div class="badge-issue">⚠️ ${esc(sm.reason)}</div>`; return; }
-    box.innerHTML=`
-      <div class="card" style="padding:10px">
-        <div style="font-weight:600;margin-bottom:6px">這個檔案會改動：</div>
-        <div class="muted">・日期範圍：${minguoLabel(sm.from)} ~ ${minguoLabel(sm.to)}（共 ${sm.dates.length} 天）</div>
-        <div class="muted">・衛哨排班：${sm.assignDays} 天</div>
-        <div class="muted">・其他勤務：${sm.miscEntries} 筆</div>
-        <div class="muted">・休假/事故：${sm.unavailEntries} 筆</div>
-        ${sm.overrideDays? `<div class="muted">・當日班別設定：${sm.overrideDays} 天</div>`:''}
-        ${sm.note? `<div class="hint" style="margin-top:6px">📝 對方備註：${esc(sm.note)}</div>`:''}
-        ${sm.unknownPeople.length? `<div class="badge-issue">⚠️ 檔案中有 ${sm.unknownPeople.length} 位你名冊上沒有的人員（${sm.unknownPeople.slice(0,5).map(p=>esc(p.name)).join('、')}${sm.unknownPeople.length>5?'…':''}），不會被加入名冊，班表上這些人的名字可能顯示不出來——如果需要正常顯示，請先手動把他們加進人員名冊</div>`:''}
-        <div class="hint" style="margin-top:6px">只有上列日期會被覆蓋，其他日期完全不受影響。</div>
-        <button class="primary" id="siMerge" style="width:100%;margin-top:8px">確認匯入</button>
-      </div>`;
-    document.getElementById('siMerge').onclick=()=>{
-      showConfirm(`確定要匯入 ${sm.dates.length} 天的班表嗎？這些日期原本的內容會被檔案取代（可用左上角復原按鈕還原）。`, ()=>{
-        const r=mergeSharePacket(packet,{});
-        if(!r.ok){ showAlert('匯入失敗：'+r.reason); return; }
-        saveState();
-        showAlert(`已匯入 ${r.dates.length} 天${r.unknownPeople? `。有 ${r.unknownPeople} 位人員不在名冊裡，名字可能顯示不出來`:''}。`);
-        modal.remove(); render();
-      });
-    };
-  };
-}
-function mergeSharePacket(packet, opts){
-  opts = opts||{};
-  const s = summarizeSharePacket(packet);
-  if(!s.valid) return {ok:false, reason:s.reason};
-  // 名冊只由你自己登載——分工匯入絕不新增人員，即使封包裡有本地沒有的人。
-  // 那些人在排班/勤務裡仍會用他們的 id 顯示，只是名字對不上（personName 會
-  // 顯示「—」），summarizeSharePacket 已經把這些人算進 unknownPeople 供事先提醒。
-  let touched=0;
-  s.dates.forEach(d=>{
-    const day=packet.days[d]||{};
-    if(opts.assign!==false && day.assign!==undefined){ state.assign[d]=JSON.parse(JSON.stringify(day.assign)); touched++; }
-    if(opts.misc!==false && day.misc!==undefined){ state.misc[d]=JSON.parse(JSON.stringify(day.misc)); touched++; }
-    if(opts.unavail!==false && day.unavail!==undefined){ state.unavail[d]=JSON.parse(JSON.stringify(day.unavail)); touched++; }
-    if(day.dailyShiftOverrides!==undefined){ state.dailyShiftOverrides[d]=JSON.parse(JSON.stringify(day.dailyShiftOverrides)); }
-    if(day.longTermSuspensions!==undefined){ state.longTermSuspensions[d]=JSON.parse(JSON.stringify(day.longTermSuspensions)); }
-    if(day.dutyChanges!==undefined){ state.dutyChanges[d]=JSON.parse(JSON.stringify(day.dutyChanges)); }
-  });
-  return {ok:true, dates:s.dates, touched, unknownPeople:s.unknownPeople.length};
-}
 function openExportModal(){
   const dataStr = JSON.stringify(state, null, 2);
   const fileName = 'duty-roster-backup-'+todayStr()+'.json';
@@ -6017,23 +5878,6 @@ function renderSchedule(){
       <button class="primary" id="copyDayBtn" style="width:100%">複製</button>
       <div class="hint">「排班類別班別結構」「其他勤務項目結構」只複製時段/人數/角色等設定本身，不複製當天已排入的人員——因為衛哨規則不允許同一人連續兩天站同一時段，直接複製人員容易違規，複製後仍需手動或自動補空缺重新指派。「休假登記」跟「一般事故登記」分開勾選，可以只複製其中一種（例如假日留守，禮拜日多半跟禮拜六是同一批人休假，但不一定要連出車、體檢這類一般事故也一起複製）；休假會重建成完整的一天份紀錄（含前後6小時緩衝），可以在「目前登記的休假」正常編輯。「長期事故暫停狀態」複製的是「今天暫停長期事故、恢復正常排班」這個名單本身。複製是「同步」而不是單純附加：勾選的項目如果目標日期已經有同一筆（同一人同一項目、同一人同一段休假、或同一人同原因的事故），會先移除舊的再放新的，重複按複製不會越疊越多份；沒勾選、跟這次複製無關的資料完全不受影響。如果複製結果不理想，用左上角的復原（↩️）按鈕還原即可。</div>
     `)}
-    ${collapsibleCardHTML('shareRange', '分工：匯出/匯入一段日期的班表', `
-      <div class="hint" style="margin-bottom:8px">把一段日期的班表匯出成檔案，交給其他承辦人填完再回傳匯入，不必一個人做完所有登載。匯入時只會覆蓋檔案涵蓋的日期，其他日期完全不動。</div>
-      <div class="row wrap" style="margin-bottom:8px">
-        <div class="grow"><label>從</label><input type="date" id="shareFrom" value="${currentDate}"></div>
-        <div class="grow"><label>到</label><input type="date" id="shareTo" value="${currentDate}"></div>
-      </div>
-      <div class="row wrap" style="gap:10px;margin-bottom:8px">
-        <label style="display:flex;align-items:center;gap:6px;font-size:13px"><input type="checkbox" id="shareAssign" style="width:auto" checked> 衛哨排班</label>
-        <label style="display:flex;align-items:center;gap:6px;font-size:13px"><input type="checkbox" id="shareMisc" style="width:auto" checked> 其他勤務</label>
-        <label style="display:flex;align-items:center;gap:6px;font-size:13px"><input type="checkbox" id="shareUnavail" style="width:auto" checked> 休假/事故</label>
-      </div>
-      <div class="row wrap" style="margin-bottom:8px">
-        <div class="grow"><label>備註（選填，給對方看的說明）</label><input type="text" id="shareNote" placeholder="例：請幫忙填10/1-10/7的衛哨"></div>
-      </div>
-      <button class="primary" id="shareExport" style="width:100%;margin-bottom:6px">📤 匯出這段日期</button>
-      <button class="ghost" id="shareImport" style="width:100%">📥 匯入回傳的檔案</button>
-    `)}
     ${missingDefaults.length? collapsibleCardHTML('missingDefaults', `⚠️ 少了預設類別（${missingDefaults.length}）`, `
       <div class="muted" style="margin-bottom:8px">偵測到以下類別目前不在清單中（可能是被刪除了），可一鍵還原班別設定（該類別過去已排的內容無法救回，只能還原空白班表結構）：</div>
       <div class="row wrap">
@@ -6128,18 +5972,6 @@ function renderSchedule(){
       });
     };
   });
-  document.getElementById('shareExport').onclick=()=>{
-    const from=document.getElementById('shareFrom').value, to=document.getElementById('shareTo').value;
-    if(!from||!to||from>to){ showAlert('請確認日期範圍正確'); return; }
-    const packet=buildSharePacket(from,to,{
-      includeAssign:document.getElementById('shareAssign').checked,
-      includeMisc:document.getElementById('shareMisc').checked,
-      includeUnavail:document.getElementById('shareUnavail').checked,
-      note:document.getElementById('shareNote').value.trim(),
-    });
-    openTextShareModal(`班表分工 ${from}~${to}`, JSON.stringify(packet, null, 2));
-  };
-  document.getElementById('shareImport').onclick=()=>openShareImportModal();
   document.getElementById('copyDayBtn').onclick=()=>{
     const from=document.getElementById('copyFromDate').value;
     const to=document.getElementById('copyToDate').value;
