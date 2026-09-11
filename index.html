@@ -132,7 +132,7 @@ textarea{min-height:50px;resize:vertical;}
       <button class="ghost small" id="undoBtn" title="復原上一步" disabled>↩️</button>
       <button class="ghost small" id="redoBtn" title="取消復原（重做）" disabled>↪️</button>
       <button class="ghost small" id="dayResetBtn" title="還原這一天">♻️</button>
-      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v73</span></h1>
+      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v74</span></h1>
     </div>
     <div class="row" style="gap:6px;align-items:center">
       <select id="timeStepSelect" style="font-size:11px;padding:3px 6px;width:auto">
@@ -734,7 +734,7 @@ const PREPLAN_TYPES = [
   {key:'duty',     name:'值星',       icon:'⭐', mode:'people',   presetRole:'值星', editableTime:true,
    hint:'值星人員負責安排勤務，原則上不再自己出勤——被排為值星的日子，系統自動排班會避開他們。'},
   {key:'patrol',   name:'查哨',       icon:'🔦', mode:'fixedSlots', presetRole:'查哨',
-   slots:['12:00-14:00','22:00-00:00','00:00-02:00','02:00-04:00','04:00-06:00'],
+   slots:['12:00-14:00','22:00-24:00','00:00-02:00','02:00-04:00','04:00-06:00'],
    hint:'跟其他單位輪流，不是每天都有。直接勾選哪幾班要填人，可各自設定補休。'},
   {key:'mess',     name:'督伙',       icon:'🍚', mode:'people',   presetRole:'督伙', editableTime:true, hint:'跟其他單位輪流，大約每3天一次。時段可調整。'},
   {key:'ambulance',name:'救護車',     icon:'🚑', mode:'roles',    presetRole:'救護車', roles:['駕駛','車長'], qualified:true, editableTime:true, hint:'每天都會先排好。名單只列出符合資格的人。'},
@@ -1726,12 +1726,12 @@ function openPreplanDrawer(){
            but be empty (e.g. everything cleared out of it), and counting
            bare keys made "清空本月" look like it hadn't worked */
         const planned = t.key==='leave'
-          ? Object.values(store).reduce((n,r)=>n+((r.dates||[]).length),0)
+          ? Object.values(store).filter(r=>(r.dates||[]).length).length
           : Object.keys(store).filter(d=>preplanCellMark(t, store[d])).length;
         return `<div class="drawer-item" data-pp-idx="${i}" data-preplan-open="${t.key}">
           <span data-pp-handle style="cursor:grab;color:var(--dim);padding-right:2px;touch-action:none">⠿</span>
           <span style="font-size:18px">${t.icon}</span>
-          <span class="grow">${t.name}<br><span class="hint">${planned? (t.key==='leave'? `已排 ${planned} 人日`:`已預排 ${planned} 天`):'尚未預排'}</span></span>
+          <span class="grow">${t.name}<br><span class="hint">${planned? (t.key==='leave'? `已排 ${planned} 人`:`已預排 ${planned} 天`):'尚未預排'}</span></span>
           <span style="color:var(--dim)">›</span>
         </div>`;
       }).join('')}
@@ -1872,6 +1872,167 @@ function preplanCellMark(type, plan){
   }
   return '';
 }
+/* which duty types support the fill-in-the-blank text format: only the
+   simple per-day shapes (one line per slot) — 留守 and 休假大表 have
+   date-range/checkbox structure that doesn't reduce to fill-in-the-blank
+   lines cleanly, so they stay JSON-only via the whole-store export. */
+function preplanSupportsTextFormat(type){
+  return ['people','roles','dayNight','fixedSlots'].includes(type.mode);
+}
+/* one line per slot for a single date, in the fill-in-the-blank shape:
+   "驗菜：___", "駕駛：___" / "車長：___", "日班：___" / "夜班：___",
+   or one line per fixed time-slot for 查哨. Existing values are filled in;
+   empty slots show the blank placeholder for someone else to type into. */
+function preplanFillLines(type, plan){
+  const BLANK='？？？';
+  const nm=id=>{ const p=state.personnel.find(x=>x.id===id); return p? p.name : ''; };
+  const joinNames=ids=>{ const n=(ids||[]).filter(Boolean).map(nm).filter(Boolean); return n.length? n.join('、') : BLANK; };
+  if(type.mode==='people') return [`${type.name}：${plan? joinNames(plan.personIds) : BLANK}`];
+  if(type.mode==='roles') return type.roles.map((r,i)=>`${r}：${plan? joinNames([( plan.personIds||[])[i]]) : BLANK}`);
+  if(type.mode==='dayNight'){
+    const dayIds=plan? (plan.dayPersonIds||(plan.dayPersonId?[plan.dayPersonId]:[])) : [];
+    const nightIds=plan? (plan.nightPersonIds||(plan.nightPersonId?[plan.nightPersonId]:[])) : [];
+    return [`日班：${plan? joinNames(dayIds) : BLANK}`, `夜班：${plan? joinNames(nightIds) : BLANK}`];
+  }
+  if(type.mode==='fixedSlots'){
+    return type.slots.map((sl,i)=>{
+      const short=sl.replace(/:\d\d/g,'');
+      const cfg=plan? (plan.slots||{})[i] : null;
+      const ids=cfg? (cfg.personIds||(cfg.personId?[cfg.personId]:[])) : [];
+      return `${short}：${cfg? joinNames(ids) : BLANK}`;
+    });
+  }
+  return [];
+}
+function generatePreplanFillText(key, ym){
+  const type=PREPLAN_TYPES.find(t=>t.key===key);
+  const total=daysInMonth(ym);
+  const [y,m]=ym.split('-').map(Number);
+  const lines=[`${type.name}　民國${y-1911}年${m}月`, `（請把「？？？」改成人名，其他不用動，填完整段傳回即可）`, ''];
+  for(let d=1;d<=total;d++){
+    const ds=`${ym}-${String(d).padStart(2,'0')}`;
+    const plan=preplanFor(key, ds);
+    lines.push(`${m}/${d}`);
+    preplanFillLines(type, plan).forEach(l=>lines.push(l));
+    lines.push('');
+  }
+  return lines.join('\n');
+}
+/* parses a filled-in template back. Tolerant of the header/instruction
+   lines being left in place (only date headers "M/D" and "label：value"
+   lines are meaningful); anything else is ignored rather than rejected,
+   since the file passed through someone else's hands. */
+function parsePreplanFillText(key, ym, text){
+  const type=PREPLAN_TYPES.find(t=>t.key===key);
+  const [y,m]=ym.split('-').map(Number);
+  const BLANK_RE=/^(？+|\?+|_+)$/;
+  const nameToId=name=>{
+    const matches=state.personnel.filter(p=>p.name===name.trim());
+    return matches.length===1? matches[0] : null;
+  };
+  const lines=text.split(/\r?\n/);
+  let curDate=null, buf={};
+  const result={}; // date -> plan
+  const unresolved=[]; // names typed that don't match exactly one person
+  const flush=()=>{
+    if(!curDate) return;
+    if(type.mode==='people'){
+      const raw=buf[type.name];
+      if(raw!==undefined && !BLANK_RE.test(raw.trim()) && raw.trim()){
+        const ids=raw.split(/[、,，\s]+/).filter(Boolean).map(n=>{
+          const p=nameToId(n); if(!p) unresolved.push({date:curDate,name:n}); return p? p.id:null;
+        }).filter(Boolean);
+        if(ids.length) result[curDate]={personIds:ids};
+      }
+    } else if(type.mode==='roles'){
+      const ids=type.roles.map(r=>{
+        const raw=buf[r];
+        if(raw===undefined || BLANK_RE.test(raw.trim()) || !raw.trim()) return undefined;
+        const p=nameToId(raw.split(/[、,，\s]+/)[0]);
+        if(!p) unresolved.push({date:curDate,name:raw});
+        return p? p.id : undefined;
+      });
+      if(ids.some(Boolean)) result[curDate]={personIds:ids};
+    } else if(type.mode==='dayNight'){
+      const parseOne=(label)=>{
+        const raw=buf[label];
+        if(raw===undefined || BLANK_RE.test(raw.trim()) || !raw.trim()) return [];
+        return raw.split(/[、,，\s]+/).filter(Boolean).map(n=>{
+          const p=nameToId(n); if(!p) unresolved.push({date:curDate,name:n}); return p? p.id:null;
+        }).filter(Boolean);
+      };
+      const dayIds=parseOne('日班'), nightIds=parseOne('夜班');
+      if(dayIds.length||nightIds.length) result[curDate]={dayPersonIds:dayIds, nightPersonIds:nightIds};
+    } else if(type.mode==='fixedSlots'){
+      const slots={};
+      type.slots.forEach((sl,i)=>{
+        const short=sl.replace(/:\d\d/g,'');
+        const raw=buf[short];
+        if(raw===undefined || BLANK_RE.test(raw.trim()) || !raw.trim()) return;
+        const ids=raw.split(/[、,，\s]+/).filter(Boolean).map(n=>{
+          const p=nameToId(n); if(!p) unresolved.push({date:curDate,name:n}); return p? p.id:null;
+        }).filter(Boolean);
+        if(ids.length) slots[i]={personIds:ids};
+      });
+      if(Object.keys(slots).length) result[curDate]={slots};
+    }
+    buf={};
+  };
+  lines.forEach(line=>{
+    const dm=line.trim().match(/^(\d{1,2})\/(\d{1,2})$/);
+    if(dm){
+      flush();
+      curDate=`${y}-${String(m).padStart(2,'0')}-${String(Number(dm[2])).padStart(2,'0')}`;
+      return;
+    }
+    const km=line.match(/^([^：:]+)[：:](.*)$/);
+    if(km && curDate) buf[km[1].trim()]=km[2].trim();
+  });
+  flush();
+  return {result, unresolved};
+}
+function openPreplanTextImportModal(key, ym, onDone){
+  const type=PREPLAN_TYPES.find(t=>t.key===key);
+  const modal=document.createElement('div');
+  modal.className='sheet-modal'; modal.style.zIndex='96';
+  modal.innerHTML=`
+    <div class="sheet-inner">
+      <div class="section-title"><h2 style="margin:0">匯入填好的文字：${type.name}</h2><button class="ghost small" id="tiClose">關閉</button></div>
+      <div class="hint" style="margin-bottom:8px">把對方填好的整段文字貼回這裡。系統會依姓名比對名冊，「？？？」或空白代表沒有變動。</div>
+      <textarea id="tiText" placeholder="貼上內容…" style="min-height:200px;font-size:13px;margin-bottom:8px"></textarea>
+      <button class="primary" id="tiCheck" style="width:100%">檢查並套用</button>
+      <div id="tiResult" style="margin-top:10px"></div>
+    </div>`;
+  document.body.appendChild(modal);
+  document.getElementById('tiClose').onclick=()=>modal.remove();
+  document.getElementById('tiCheck').onclick=()=>{
+    const text=document.getElementById('tiText').value;
+    if(!text.trim()){ showAlert('請先貼上內容。'); return; }
+    const {result, unresolved}=parsePreplanFillText(key, ym, text);
+    const dates=Object.keys(result).sort();
+    const box=document.getElementById('tiResult');
+    if(!dates.length && !unresolved.length){
+      box.innerHTML=`<div class="badge-issue">⚠️ 沒有解析出任何內容，請確認格式（日期行要是「9/1」這種格式，冒號後面要有名字）</div>`;
+      return;
+    }
+    box.innerHTML=`
+      <div class="card" style="padding:10px">
+        <div style="font-weight:600;margin-bottom:6px">解析結果：</div>
+        <div class="muted">・可套用：${dates.length} 天</div>
+        ${unresolved.length? `<div class="badge-issue">⚠️ 有 ${unresolved.length} 個名字在名冊裡找不到唯一符合的人，這些會被略過：<br>${unresolved.slice(0,10).map(u=>`${minguoLabel(u.date)}：「${esc(u.name)}」`).join('<br>')}${unresolved.length>10?'<br>…':''}</div>`:''}
+        ${dates.length? `<button class="primary" id="tiApply" style="width:100%;margin-top:8px">套用這 ${dates.length} 天</button>`:''}
+      </div>`;
+    if(dates.length){
+      document.getElementById('tiApply').onclick=()=>{
+        dates.forEach(d=>setPreplan(key, d, result[d]));
+        saveState();
+        showAlert(`已套用 ${dates.length} 天的內容到「${type.name}」預排。`);
+        modal.remove();
+        if(onDone) onDone();
+      };
+    }
+  };
+}
 function openPreplanCalendar(key){
   const type = PREPLAN_TYPES.find(t=>t.key===key);
   if(!type) return;
@@ -1915,8 +2076,18 @@ function openPreplanCalendar(key){
         ${cells.join('')}
       </div>
       <div class="hint" style="margin-bottom:8px">點日期輸入當天內容；已排的日期外框會變色。假日以紅字標示。</div>
+      ${preplanSupportsTextFormat(type)? `
+      <button class="ghost" id="calExportText" style="width:100%;margin-bottom:6px">📝 匯出本月文字（給人填空缺）</button>
+      <button class="ghost" id="calImportText" style="width:100%;margin-bottom:6px">📝 匯入填好的文字</button>
+      ` : ''}
       <button class="primary" id="calImport" style="width:100%;margin-bottom:6px">📥 匯入本月預排到實際班表</button>
       <button class="ghost small danger" id="calClearMonth" style="width:100%">清空本月預排</button>`;
+    if(preplanSupportsTextFormat(type)){
+      document.getElementById('calExportText').onclick=()=>{
+        openTextShareModal(`${type.name} 民國${y-1911}年${m}月`, generatePreplanFillText(key, ym));
+      };
+      document.getElementById('calImportText').onclick=()=>openPreplanTextImportModal(key, ym, draw);
+    }
     modal.querySelectorAll('[data-cal-date]').forEach(c=>{
       c.onclick=()=>openPreplanDayEditor(key, c.dataset.calAnchor||c.dataset.calDate, draw);
     });
@@ -2018,11 +2189,23 @@ function openStandbyEditor(date, onSaved){
       </div>
       <div class="divider"></div>
       <div class="section-title"><h3 style="margin:0">留守日子勤務</h3><button class="ghost small" id="sbEditRoles">設定項目</button></div>
-      <div class="hint" style="margin-bottom:8px">只能從上面的留守名單裡指派。時段預設沿用「常用項目」，可個別調整。</div>
+      <div class="hint" style="margin-bottom:8px">只能從上面的留守名單裡指派。時段預設沿用「常用項目」，可個別調整。如果這個項目本身也是抽屜裡的獨立預排（例如中央監控值班），會直接沿用那邊排好的內容，不用在這裡重填。</div>
       ${staying.length? blockDates.map(d=>`
         <div class="card" style="padding:8px 10px">
           <div style="font-weight:600;margin-bottom:6px">${minguoLabel(d)}</div>
           ${subRoles.length? subRoles.map(role=>{
+            // if this sub-duty role is ALSO its own top-level preplan type
+            // (e.g. 中央監控值班), that's the single source of truth — show
+            // it read-only here instead of asking for the same thing twice
+            const linkedType = PREPLAN_TYPES.find(t=>t.presetRole===role && t.mode!=='standby' && t.key!=='duty');
+            if(linkedType){
+              const linkedPlan = preplanFor(linkedType.key, d);
+              const linkedLines = preplanFillLines(linkedType, linkedPlan).join('　');
+              return `<div class="row" style="align-items:flex-start;margin-bottom:4px">
+                <span class="muted grow">${esc(role)}（沿用「${esc(linkedType.name)}」預排）：${linkedPlan? esc(linkedLines.replace(/？？？/g,'未指派')) : '（尚未在該預排項目設定）'}</span>
+                <button class="ghost small" data-sb-linked="${linkedType.key}" data-sb-subdate="${d}">前往設定</button>
+              </div>`;
+            }
             const cfg=((plan.subDuties[role]||{})[d])||{};
             const preset=state.miscPresets.find(p=>p.role===role);
             const t0=preset? (presetTimes(preset)[0]||{start:'',end:''}) : {start:'',end:''};
@@ -2060,6 +2243,9 @@ function openStandbyEditor(date, onSaved){
     });
     modal.querySelectorAll('[data-sb-sub]').forEach(b=>{
       b.onclick=()=>{ sync(); openStandbySubDutyEditor(plan, b.dataset.sbSub, b.dataset.sbSubdate, draw); };
+    });
+    modal.querySelectorAll('[data-sb-linked]').forEach(b=>{
+      b.onclick=()=>{ sync(); openPreplanDayEditor(b.dataset.sbLinked, b.dataset.sbSubdate, draw); };
     });
     document.getElementById('sbDelete').onclick=()=>{
       showConfirm('確定要清除這筆留守預排嗎？', ()=>{
@@ -2267,7 +2453,21 @@ function openPreplanDayEditor(key, date, onSaved){
   const searchBlock = (id)=>`<div class="row wrap" style="margin-bottom:6px">
       <div class="grow"><label>搜尋姓名</label><input type="text" id="${id}" placeholder="輸入姓名關鍵字"></div>
     </div>`;
-  const listBox = (inner, id)=>`<div id="${id}" class="pp-picklist" style="max-height:40vh;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:8px;margin-bottom:8px">${inner}</div>`;
+  const listBox = (inner, id)=>`<div id="${id}-selsum" class="hint" style="margin-bottom:4px">已選：（無）</div><div id="${id}" class="pp-picklist" style="max-height:40vh;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:8px;margin-bottom:8px">${inner}</div>`;
+  /* checkbox/radio lists can run to dozens of names — without this, seeing
+     who you've actually picked means scrolling back up through the whole
+     filtered list. Keeps a running "已選：X、Y" line above each list. */
+  const wireSelectedSummary=(listId)=>{
+    const listEl=document.getElementById(listId), sumEl=document.getElementById(listId+'-selsum');
+    if(!listEl||!sumEl) return;
+    const update=()=>{
+      const checked=[...listEl.querySelectorAll('input:checked')].filter(i=>i.value);
+      const names=checked.map(i=>{ const p=state.personnel.find(x=>x.id===i.value); return p?p.name:''; }).filter(Boolean);
+      sumEl.textContent='已選：'+(names.length? names.join('、') : '（無）');
+    };
+    listEl.addEventListener('change', update);
+    update();
+  };
   const checkRows = (selectedIds, cls)=>pool.length? pool.map(p=>`
       <label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:6px 0;border-bottom:1px solid var(--line)">
         <input type="checkbox" class="${cls}" value="${p.id}" style="width:auto;flex-shrink:0" ${selectedIds.includes(p.id)?'checked':''}>
@@ -2324,9 +2524,10 @@ function openPreplanDayEditor(key, date, onSaved){
             if(preset && (preset.chiefRequiredLicenses||[]).length && !preset.chiefRequiredLicenses.some(l=>licenseCovers(p.license,l))) reasons.push('需持有'+preset.chiefRequiredLicenses.join('或')+'駕照');
             return reasons;
           }) : (r==='駕駛' && preset)? (p=>driverQualificationIssues(p, preset)) : null;
+          const selId=(plan.personIds||[])[i]||'';
           return `<div class="hint" style="margin:6px 0 2px"><b>${esc(r)}</b></div>`
             + searchBlock('ppSearch'+i)
-            + listBox(radioRows((plan.personIds||[])[i]||'', 'pp-role'+i, 'pprole'+i, reasonsFn), 'ppList'+i);
+            + listBox(radioRows(selId, 'pp-role'+i, 'pprole'+i, reasonsFn), 'ppList'+i);
         }).join('');
   } else if(type.mode==='dayNight'){
     const times = preset? presetTimes(preset) : [];
@@ -2388,11 +2589,11 @@ function openPreplanDayEditor(key, date, onSaved){
     keepSearchFocusOnPick(le, se);
   };
   if(type.mode==='people'){
-    wireSearch('ppSearch','ppList');
+    wireSearch('ppSearch','ppList'); wireSelectedSummary('ppList');
     document.getElementById('ppSelectAll').onclick=()=>modal.querySelectorAll('.pp-person').forEach(cb=>{ if(cb.closest('label').style.display!=='none') cb.checked=true; });
     document.getElementById('ppClearAll').onclick=()=>modal.querySelectorAll('.pp-person').forEach(cb=>cb.checked=false);
   } else if(type.mode==='roles'){
-    type.roles.forEach((_,i)=>wireSearch('ppSearch'+i,'ppList'+i));
+    type.roles.forEach((_,i)=>{ wireSearch('ppSearch'+i,'ppList'+i); wireSelectedSummary('ppList'+i); });
     const driverIdx=type.roles.indexOf('駕駛'), chiefIdx=type.roles.indexOf('車長');
     if(driverIdx>-1 && chiefIdx>-1){
       // picking 駕駛 changes who's eligible/ranked-in for 車長, so the chief
@@ -2418,9 +2619,9 @@ function openPreplanDayEditor(key, date, onSaved){
       });
     }
   } else if(type.mode==='dayNight'){
-    wireSearch('ppSearchD','ppListD'); wireSearch('ppSearchN','ppListN');
+    wireSearch('ppSearchD','ppListD'); wireSearch('ppSearchN','ppListN'); wireSelectedSummary('ppListD'); wireSelectedSummary('ppListN');
   } else if(type.mode==='fixedSlots'){
-    type.slots.forEach((_,i)=>wireSearch('ppSearchS'+i,'ppListS'+i));
+    type.slots.forEach((_,i)=>{ wireSearch('ppSearchS'+i,'ppListS'+i); wireSelectedSummary('ppListS'+i); });
     modal.querySelectorAll('.pp-slot-on').forEach(cb=>{
       cb.onchange=()=>{
         const b=modal.querySelector(`[data-slot-body="${cb.dataset.slot}"]`);
@@ -2728,6 +2929,28 @@ function openPersonDayEditor(personId, date, onDone){
   document.body.appendChild(modal);
   draw();
 }
+/* live warning shown right on the leave calendar (not just at import time):
+   groups the ticked dates into consecutive runs and flags any run whose
+   honor-day would actually fall back to a normal 18:00 start because the
+   whole block (including front/back buffer) exceeds 5 days. */
+function leaveRunWarnings(pickedSet, honorSet){
+  const dates=[...pickedSet].sort();
+  if(!dates.length) return [];
+  const warnings=[];
+  let runStart=dates[0], prev=dates[0];
+  const check=(end)=>{
+    const bufferDays=daysBetweenInclusive(prevDateStr(runStart), nextDateStr(end));
+    if(honorSet.has(runStart) && bufferDays>5){
+      warnings.push(`${minguoLabel(runStart)}~${minguoLabel(end)} 這段（含前後緩衝共${bufferDays}天）超過5天，榮譽假無法生效，匯入時會自動變成一般休假（18:00起）`);
+    }
+  };
+  for(let i=1;i<dates.length;i++){
+    if(dates[i]===nextDateStr(prev)){ prev=dates[i]; continue; }
+    check(prev); runStart=dates[i]; prev=dates[i];
+  }
+  check(prev);
+  return warnings;
+}
 function openLeaveTableEditor(date, onSaved){
   let ym = monthOf(date);
   let selectedPid = null;
@@ -2788,7 +3011,11 @@ function openLeaveTableEditor(date, onSaved){
           ${['日','一','二','三','四','五','六'].map(w=>`<div class="cal-head">${w}</div>`).join('')}
           ${cells.join('')}
         </div>
-        <div class="hint" style="margin-bottom:8px">「休」＝一般休假（前一天18:00起）；「12休」＝榮譽假（前一天12:00起）；「留守」＝留守表已排他這天留守，跟這裡無關聯除非你也點成休假。榮譽假若整段（含前後緩衝）超過5天，匯入時會自動退回一般休假並提示你。</div>
+        ${leaveRunWarnings(
+            new Set([...((store()[selectedPid]||{}).dates||[]).filter(d=>!d.startsWith(ym)), ...picked]),
+            new Set([...((store()[selectedPid]||{}).honorDates||[]).filter(d=>!d.startsWith(ym)), ...honorDates])
+          ).map(w=>`<div class="badge-issue">⚠️ ${esc(w)}</div>`).join('')}
+        <div class="hint" style="margin-bottom:8px">「休」＝一般休假（前一天18:00起）；「12休」＝榮譽假（前一天12:00起）；「留守」＝留守表已排他這天留守，跟這裡無關聯除非你也點成休假。榮譽假若整段（含前後緩衝）超過5天，匯入時會自動退回一般休假，上面會先提醒你。</div>
         <div class="row wrap" style="margin-bottom:8px">
           <button class="ghost grow" id="ltClearMonth">清空本月</button>
           <button class="primary grow" id="ltSave">確認休假</button>
@@ -2910,8 +3137,13 @@ function importPreplanForDate(key, date){
         state.unavail[dayBefore].push({id:uid(),personId:pid,allDay:false,start:plan.startTime||STANDBY_DEFAULTS.startTime,end:ov.start,reason:'留守較晚到營'});
       }
     });
-    // sub-duties become ordinary 其他勤務 entries on their own dates
+    // sub-duties become ordinary 其他勤務 entries on their own dates —
+    // except roles that are ALSO their own top-level preplan type (e.g.
+    // 中央監控值班), which are that type's own responsibility to import so
+    // the two don't fight over the same 其他勤務 entry
+    const linkedRoles=new Set(PREPLAN_TYPES.filter(t=>t.mode!=='standby' && t.key!=='duty' && t.presetRole).map(t=>t.presetRole));
     Object.entries(plan.subDuties||{}).forEach(([role, byDate])=>{
+      if(linkedRoles.has(role)) return;
       Object.entries(byDate).forEach(([d, cfg])=>{
         if(!cfg || (!(cfg.personIds||[]).length && !cfg.support)) return;
         if(!state.misc[d]) state.misc[d]=[];
@@ -5500,7 +5732,7 @@ function showAlert(message){
   modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:200;display:flex;align-items:center;justify-content:center;padding:20px;';
   modal.innerHTML=`
     <div style="background:var(--panel);max-width:320px;width:100%;border-radius:10px;padding:16px;border:1px solid var(--line);">
-      <div style="margin-bottom:14px;font-size:14px;line-height:1.5;color:var(--text)">${esc(message)}</div>
+      <div style="margin-bottom:14px;font-size:14px;line-height:1.5;color:var(--text);white-space:pre-wrap">${esc(message)}</div>
       <button class="primary" id="alertOk" style="width:100%">確定</button>
     </div>`;
   document.body.appendChild(modal);
@@ -5525,7 +5757,7 @@ function showConfirm(message, onConfirm){
   modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:200;display:flex;align-items:center;justify-content:center;padding:20px;';
   modal.innerHTML=`
     <div style="background:var(--panel);max-width:320px;width:100%;border-radius:10px;padding:16px;border:1px solid var(--line);">
-      <div style="margin-bottom:14px;font-size:14px;line-height:1.5;color:var(--text)">${esc(message)}</div>
+      <div style="margin-bottom:14px;font-size:14px;line-height:1.5;color:var(--text);white-space:pre-wrap">${esc(message)}</div>
       <div class="row wrap">
         <button class="ghost grow" id="confirmCancel">取消</button>
         <button class="primary grow" id="confirmOk">確定</button>
