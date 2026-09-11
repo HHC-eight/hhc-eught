@@ -133,7 +133,7 @@ textarea{min-height:50px;resize:vertical;}
   <div class="topbar-main" style="flex-direction:column;align-items:stretch;gap:6px">
     <div class="row wrap" style="gap:4px;align-items:center">
       <button class="ghost small" id="preplanDrawerBtn" title="設定">☰</button>
-      <h1 id="pageTitle" style="margin:0">🌟 衛哨排班系統 <span class="muted" style="font-size:10px;font-weight:400">v89</span></h1>
+      <h1 id="pageTitle" style="margin:0">🌟 衛哨排班系統 <span class="muted" style="font-size:10px;font-weight:400">v91</span></h1>
       <button class="ghost small" id="clearRangeBtn" title="清除一段時間">🧹 清除範圍</button>
       <span style="flex:1"></span>
       <select id="timeStepSelect" style="width:auto">
@@ -1016,6 +1016,7 @@ const LONGTERM_REASON_DEFAULT_INCAMP = {主官:true, 高勤傳令:true, 高勤�
    removed later */
 if(!state.longtermReasonOptions) state.longtermReasonOptions=[...LONGTERM_REASON_PRESETS];
 if(!state.dailyReasonOptions) state.dailyReasonOptions=[...UNAVAIL_REASON_PRESETS];
+function isDeparted(p){ return !!(p.departureDate && p.departureDate<=todayStr()); }
 function personLongTerm(p){
   if(p.longTerm) return {inCamp:true, ...p.longTerm}; // inCamp defaults true for records saved before this field existed
   if(p.longTermUnavailable) return {mode:'allday', inCamp:true};
@@ -1084,6 +1085,7 @@ function isPersonUnavailable(personId, date, s, e, excludeCatShift){
   // s,e in minutes-of-day (0-1440-ish), plain (not absolute-unwrapped)
   const person = state.personnel.find(p=>p.id===personId);
   if(person){
+    if(person.departureDate && date>=person.departureDate) return true;
     const lt = effectiveLongTerm(person, date);
     if(lt.mode==='allday') return true;
     if(lt.mode==='range' && lt.start && lt.end && windowsOverlapRecurring(s,e,toMin(lt.start),toMin(lt.end))) return true;
@@ -1145,6 +1147,7 @@ function unavailabilityReasonsInRange(personId, date, s, e){
   const out=[];
   const person = state.personnel.find(p=>p.id===personId);
   if(person){
+    if(person.departureDate && date>=person.departureDate) out.push(`已離退（${minguoLabel(person.departureDate)}起）`);
     const lt = effectiveLongTerm(person, date);
     if(lt.mode==='allday') out.push('長期事故：全天不可排');
     else if(lt.mode==='range' && lt.start && lt.end && windowsOverlapRecurring(s,e,toMin(lt.start),toMin(lt.end))) out.push(`長期事故：每天 ${lt.start}-${lt.end} 不可排`);
@@ -2477,8 +2480,9 @@ function preplanEligiblePeople(type){
   // show everyone, always — qualification gaps are surfaced per-person via
   // reasonsFn (🚫 + reason) in the picker instead of hiding people outright,
   // consistent with how the rest of the app handles "nobody's ideal but you
-  // may still need to pick someone"
-  return state.personnel.slice().sort((a,b)=>groupIndex(a.group)-groupIndex(b.group)||rankIndex(a.rank)-rankIndex(b.rank));
+  // may still need to pick someone". Departed people are the one exception:
+  // they're not a qualification gap, they're not part of the roster anymore.
+  return state.personnel.filter(p=>!isDeparted(p)).sort((a,b)=>groupIndex(a.group)-groupIndex(b.group)||rankIndex(a.rank)-rankIndex(b.rank));
 }
 function openPreplanDayEditor(key, date, onSaved){
   if(key==='standby') return openStandbyEditor(date, onSaved);
@@ -3680,6 +3684,104 @@ function batchLtPeopleCheckboxesHTML(groupFilter, searchFilter){
       </label>`).join('');
   }).join('');
 }
+/* everything from today onward that references this person, across every
+   place a personId can end up — used before deleting someone from the
+   roster so a transfer/discharge/mistake doesn't silently leave a duty
+   short-handed without anyone noticing until the day arrives. Past dates
+   are deliberately excluded: history isn't something that needs a warning
+   or a reassignment, only what's still ahead does. */
+function personFutureCommitments(personId){
+  const today = todayStr();
+  const out = [];
+  Object.entries(state.assign).forEach(([d,cats])=>{
+    if(d<today) return;
+    Object.entries(cats).forEach(([catId,shifts])=>{
+      const cat = state.categories.find(c=>c.id===catId);
+      Object.entries(shifts).forEach(([sid,arr])=>{
+        if((arr||[]).includes(personId)){
+          const sh = cat? effectiveShifts(cat,d).find(s=>s.id===sid) : null;
+          out.push({date:d, label:`${cat?cat.name:'?'}${sh?` ${sh.start}-${sh.end}`:''}`});
+        }
+      });
+    });
+  });
+  Object.entries(state.misc).forEach(([d,arr])=>{
+    if(d<today) return;
+    (arr||[]).forEach(m=>{ if((m.personIds||[]).includes(personId)) out.push({date:d, label:`${m.role}${m.start?` ${m.start}-${m.end}`:''}`}); });
+  });
+  Object.entries(state.preplan||{}).forEach(([key,store])=>{
+    const type = PREPLAN_TYPES.find(t=>t.key===key);
+    if(!type) return;
+    if(key==='leave'){
+      const rec = store[personId];
+      if(rec && (rec.dates||[]).some(d=>d>=today)) out.push({date:(rec.dates||[]).filter(d=>d>=today).sort()[0], label:'休假大表'});
+      return;
+    }
+    Object.entries(store).forEach(([d,plan])=>{
+      if(key==='standby'){
+        if(d<today && plan.endDate<today) return;
+        if((plan.personIds||[]).includes(personId)) out.push({date:d, label:'留守'});
+        return;
+      }
+      if(d<today) return;
+      const ids = plan.personIds || plan.dayPersonIds || plan.nightPersonIds ||
+        Object.values(plan.slots||{}).flatMap(s=>s&&s.personIds||[]);
+      if((ids||[]).includes(personId)) out.push({date:d, label:`預排-${type.name}`});
+    });
+  });
+  return out.sort((a,b)=>a.date<b.date?-1:1);
+}
+/* thoroughly removes a person from every place a personId can be stored —
+   assign, misc (incl. nominalIds), unavail, and every 預排 type — not just
+   assign+unavail like before, which left dangling references in 其他勤務
+   and predata that would silently show "—" instead of a name. */
+function purgePersonEverywhere(personId){
+  Object.values(state.unavail).forEach(arr=>{
+    const i=arr.findIndex(u=>u.personId===personId);
+    if(i>-1) arr.splice(i,1);
+  });
+  Object.values(state.assign).forEach(cats=>Object.values(cats).forEach(shifts=>Object.keys(shifts).forEach(sid=>{
+    shifts[sid]=shifts[sid].filter(pid=>pid!==personId);
+  })));
+  Object.values(state.misc).forEach(arr=>{
+    (arr||[]).forEach(m=>{
+      if(m.personIds) m.personIds = m.personIds.map(id=>id===personId? undefined : id);
+      if(m.nominalIds) m.nominalIds = m.nominalIds.filter(id=>id!==personId);
+    });
+  });
+  Object.entries(state.preplan||{}).forEach(([key,store])=>{
+    if(key==='leave'){ delete store[personId]; return; }
+    const type = PREPLAN_TYPES.find(t=>t.key===key);
+    Object.values(store).forEach(plan=>{
+      if(!plan) return;
+      // 'roles' mode (救護車/採買) keeps position (index 0=駕駛, 1=車長), so
+      // that slot is cleared rather than removed; every other personIds-like
+      // field (留守名單, dayNight的日/夜班) is an unordered list and should
+      // just have the person filtered out entirely
+      if(type && type.mode==='roles' && Array.isArray(plan.personIds)){
+        plan.personIds = plan.personIds.map(id=>id===personId? undefined : id);
+      } else if(Array.isArray(plan.personIds)){
+        plan.personIds = plan.personIds.filter(id=>id!==personId);
+      }
+      ['dayPersonIds','nightPersonIds','nominalIds','dayNominalIds','nightNominalIds'].forEach(f=>{
+        if(Array.isArray(plan[f])) plan[f] = plan[f].filter(id=>id!==personId);
+      });
+      if(plan.slots) Object.values(plan.slots).forEach(s=>{
+        if(s && s.personIds) s.personIds = s.personIds.filter(id=>id!==personId);
+        if(s && s.nominalIds) s.nominalIds = s.nominalIds.filter(id=>id!==personId);
+      });
+      if(plan.overrides) delete plan.overrides[personId];
+      if(plan.subDuties) Object.values(plan.subDuties).forEach(byDate=>{
+        Object.values(byDate).forEach(cfg=>{ if(cfg && cfg.personIds) cfg.personIds=cfg.personIds.filter(id=>id!==personId); });
+      });
+    });
+  });
+  Object.values(state.longTermSuspensions||{}).forEach(arr=>{
+    const i=(arr||[]).indexOf(personId);
+    if(i>-1) arr.splice(i,1);
+  });
+}
+
 function renderPeople(){
   const groups = [...new Set(state.personnel.map(p=>p.group).filter(Boolean))].sort((a,b)=>groupIndex(a)-groupIndex(b));
   const npFormHTML = collapsibleCardHTML('npForm', '新增人員', `
@@ -3768,12 +3870,17 @@ function renderPeople(){
         </div>
       </div>
       <div class="row wrap" style="margin-bottom:8px">
+        <div class="grow"><label>離退日期（選填，調職/退伍/新進待離）</label><input type="date" id="npDepartureDate"></div>
+      </div>
+      <div class="hint" style="margin-bottom:8px">設定後，從這天開始這個人不會再被排班（含衛哨、其他勤務、預排），但資料還在，之後可以在下面「已離退人員」看到、需要的話再調整或永久刪除。設定當下如果這個人在離退日後還有已經排好的班，會先提醒你有哪些需要找人補上。</div>
+      <div class="row wrap" style="margin-bottom:8px">
         <div class="grow"><label>備考(選填)</label><input type="text" id="npNote" placeholder="例：新兵、隔宿另計"></div>
       </div>
       <button class="primary" id="npAdd" style="width:100%">新增</button>
 `);
-  const pplRosterHTML = collapsibleCardHTML('pplRoster', `<span id="pplCountLabel">名冊（${state.personnel.length}人）</span>`, `
-      <div id="pplSummary">${personListSummaryHTML(state.personnel, state.personnel)}</div>
+  const activePersonnel = state.personnel.filter(p=>!isDeparted(p));
+  const pplRosterHTML = collapsibleCardHTML('pplRoster', `<span id="pplCountLabel">名冊（${activePersonnel.length}人）</span>`, `
+      <div id="pplSummary">${personListSummaryHTML(activePersonnel, activePersonnel)}</div>
       <div class="row wrap" style="margin-bottom:8px">
         <div class="grow"><label>搜尋姓名</label><input type="text" id="pplSearch" placeholder="輸入姓名關鍵字" value="${esc(pplFilterState.kw)}"></div>
         <div style="width:120px"><label>排組篩選</label>
@@ -3827,8 +3934,17 @@ function renderPeople(){
         </div>
       </div>
       ${groups.length===0 && state.personnel.length===0 ? `<div class="empty">尚未新增人員</div>` : ''}
-      <div id="pplListArea">${renderPeopleGroups(groups)}</div>
+      <div id="pplListArea">${renderPeopleGroups(groups, p=>!isDeparted(p))}</div>
     `, `<button class="ghost small" id="pplClearFilter">清除篩選</button>`);
+  const departedList = state.personnel.filter(isDeparted).sort((a,b)=>(a.departureDate<b.departureDate?-1:1));
+  const departedHTML = departedList.length? collapsibleCardHTML('departedPeople', `已離退人員（${departedList.length}）`, departedList.map(p=>`
+      <div class="list-item">
+        <span class="tag rank-${rankCategory(p.rank)}">${p.rank}</span>
+        <span class="grow">${esc(p.name)}（${p.group||'未分組'}）<div class="muted">離退日期：${minguoLabel(p.departureDate)}</div>${p.note? `<div class="muted">備考：${esc(p.note)}</div>`:''}</span>
+        <button class="ghost small" data-reactivate-person="${p.id}">恢復</button>
+        <button class="ghost small danger" data-del-person="${p.id}">永久刪除</button>
+      </div>`).join('') + `<div class="hint" style="margin-top:6px">「恢復」會清掉離退日期，回到一般名冊繼續可以被排班；「永久刪除」會把這個人的資料整個移除（含歷史排班紀錄），這個動作無法復原。</div>`)
+    : '';
   const batchLtHTML = collapsibleCardHTML('batchLt', '批次設定長期事故（勾選多位人員，套用同一組設定）', `
       <div class="row wrap" style="margin-bottom:8px">
         <div class="grow"><label>搜尋姓名</label><input type="text" id="batchLtSearch" placeholder="輸入姓名關鍵字" value="${esc(batchLtFilterState.search)}"></div>
@@ -3887,8 +4003,9 @@ function renderPeople(){
   const cardDefs = [
     {key:'npForm', html:npFormHTML},
     {key:'pplRoster', html:pplRosterHTML},
+    {key:'departedPeople', html:departedHTML},
     {key:'batchLt', html:batchLtHTML},
-  ];
+  ].filter(c=>c.html);
   app.innerHTML = `<div class="card"><div class="section-title"><h2 style="margin:0">👤 人員名冊</h2><button class="ghost small" id="closePeoplePage">← 返回</button></div></div>`
     + renderCardList('peopleCardsContainer', 'people', cardDefs) + `
     <div class="hint">💡 名單一次輸入後會持續保留在此裝置（localStorage）；用右上角「匯出」可備份，之後可再匯入。</div>
@@ -3897,22 +4014,37 @@ function renderPeople(){
     </div>
   `;
   document.getElementById('closePeoplePage').onclick=()=>{ currentTab='schedule'; render(); };
-  function wirePeopleListButtons(){
+function wirePeopleListButtons(){
     document.querySelectorAll('[data-del-person]').forEach(b=>{
       b.onclick=()=>{
-        showConfirm('刪除此人員？（也會一併移除其請假紀錄與排班）', ()=>{
-          const id=b.dataset.delPerson;
+        const id=b.dataset.delPerson;
+        const person=state.personnel.find(p=>p.id===id);
+        const commitments = personFutureCommitments(id);
+        const proceed=()=>{
           state.personnel = state.personnel.filter(p=>p.id!==id);
-          Object.values(state.unavail).forEach(arr=>{ const i=arr.findIndex(u=>u.personId===id); if(i>-1) arr.splice(i,1); });
-          Object.values(state.assign).forEach(cats=>Object.values(cats).forEach(shifts=>Object.keys(shifts).forEach(sid=>{
-            shifts[sid]=shifts[sid].filter(pid=>pid!==id);
-          })));
+          purgePersonEverywhere(id);
           saveState(); render();
-        });
+        };
+        if(commitments.length){
+          const lines = commitments.slice(0,10).map(c=>`${minguoLabel(c.date)}：${c.label}`);
+          showConfirm(`⚠️ ${person?person.name:'此人'}今天以後還有 ${commitments.length} 筆排班/預排：\n${lines.join('\n')}${commitments.length>10?`\n…還有 ${commitments.length-10} 筆`:''}\n\n刪除後這些名額會變成空缺，需要自己找人補上。確定要刪除嗎？（如果只是要記錄他離開，之後不用再排班，也可以考慮先不刪除，等這些班表處理完再刪）`, proceed);
+        } else {
+          showConfirm('刪除此人員？（也會一併移除其請假紀錄與排班；已搜尋後續日期均無執勤）', proceed);
+        }
       };
     });
     document.querySelectorAll('[data-edit-person]').forEach(b=>{
       b.onclick=()=>openPersonEditor(b.dataset.editPerson);
+    });
+    document.querySelectorAll('[data-reactivate-person]').forEach(b=>{
+      b.onclick=()=>{
+        const p=state.personnel.find(x=>x.id===b.dataset.reactivatePerson);
+        if(!p) return;
+        showConfirm(`確定要恢復 ${p.name} 嗎？會清掉離退日期，之後可以再被排班。`, ()=>{
+          delete p.departureDate;
+          saveState(); render();
+        });
+      };
     });
   }
   function applyPeopleFilter(){
@@ -3923,6 +4055,7 @@ function renderPeople(){
     const sf=[...document.querySelectorAll('.ppl-skill-cb:checked')].map(cb=>cb.value);
     pplFilterState = {kw, group:gf, license:lf, medCert:mf, skills:sf};
     const filterFn = p=>{
+      if(isDeparted(p)) return false;
       if(kw && !p.name.includes(kw)) return false;
       if(gf==='__none' && p.group) return false;
       if(gf && gf!=='__none' && p.group!==gf) return false;
@@ -3944,13 +4077,14 @@ function renderPeople(){
     const html=renderPeopleGroups(groups, filterFn);
     area.innerHTML = html || `<div class="empty">找不到符合的人員</div>`;
     wirePeopleListButtons();
+    const activeTotal = state.personnel.filter(p=>!isDeparted(p)).length;
     const filteredPeople = state.personnel.filter(filterFn);
-    document.getElementById('pplSummary').innerHTML = personListSummaryHTML(filteredPeople, state.personnel);
+    document.getElementById('pplSummary').innerHTML = personListSummaryHTML(filteredPeople, state.personnel.filter(p=>!isDeparted(p)));
     const filteredTotal = filteredPeople.length;
     const isFiltering = kw || gf || lf.length || mf.length || sf.length;
     document.getElementById('pplCountLabel').textContent = isFiltering
-      ? `名冊（篩選出 ${filteredTotal} / 共 ${state.personnel.length} 人）`
-      : `名冊（${state.personnel.length}人）`;
+      ? `名冊（篩選出 ${filteredTotal} / 共 ${activeTotal} 人）`
+      : `名冊（${activeTotal}人）`;
   }
   document.getElementById('pplSearch').oninput=applyPeopleFilter;
   document.getElementById('pplGroupFilter').onchange=applyPeopleFilter;
@@ -4016,8 +4150,9 @@ function renderPeople(){
     }
     const note = document.getElementById('npNote').value.trim();
     const outingRestriction = document.getElementById('npOutingRestriction').value;
+    const departureDate = document.getElementById('npDepartureDate').value || undefined;
     if(!name) return;
-    state.personnel.push({id:uid(),name,group,rank,phone,license,medCert,skills,longTerm,note,outingRestriction});
+    state.personnel.push({id:uid(),name,group,rank,phone,license,medCert,skills,longTerm,note,outingRestriction,departureDate});
     saveState(); render();
   };
   document.getElementById('importBtn').onclick=()=>document.getElementById('importFile').click();
@@ -4163,6 +4298,9 @@ function openPersonEditor(personId){
         <option value="dayOnly" ${p.outingRestriction==='dayOnly'?'selected':''}>僅能外散（不可過夜，24:00前需返營）</option>
         <option value="none" ${p.outingRestriction==='none'?'selected':''}>完全不可外散宿</option>
       </select>
+      <label>離退日期（選填，調職/退伍/新進待離）</label>
+      <input type="date" id="epDepartureDate" value="${p.departureDate||''}" style="margin-bottom:4px">
+      <div class="hint" style="margin-bottom:8px">設定後，從這天開始這個人不會再被排班，但資料還在，可以在人員名冊「已離退人員」找到、需要的話再調整或永久刪除。</div>
       <label>備考</label><input type="text" id="epNote" value="${esc(p.note||'')}" placeholder="例：新兵、隔宿另計" style="margin-bottom:8px">
       <button class="primary" id="saveP" style="width:100%">儲存</button>
     </div>
@@ -4222,7 +4360,17 @@ function openPersonEditor(personId){
     p.note = document.getElementById('epNote').value.trim();
     p.outingRestriction = document.getElementById('epOutingRestriction').value;
     delete p.longTermUnavailable;
-    saveState(); modal.remove(); render();
+    const newDeparture = document.getElementById('epDepartureDate').value || undefined;
+    const finish=()=>{ p.departureDate=newDeparture; saveState(); modal.remove(); render(); };
+    if(newDeparture && newDeparture!==p.departureDate){
+      const after = personFutureCommitments(p.id).filter(c=>c.date>=newDeparture);
+      if(after.length){
+        const lines = after.slice(0,10).map(c=>`${minguoLabel(c.date)}：${c.label}`);
+        showConfirm(`⚠️ ${p.name} 離退日期（${minguoLabel(newDeparture)}）之後還有 ${after.length} 筆排班/預排：\n${lines.join('\n')}${after.length>10?`\n…還有 ${after.length-10} 筆`:''}\n\n設定離退日期後這些名額不會自動清掉，仍需要自己找人補上，確定要設定嗎？`, finish);
+        return;
+      }
+    }
+    finish();
   };
 }
 function renderPeopleGroups(groups, filterFn){
@@ -5584,6 +5732,7 @@ function hardUnavailabilityReasons(personId, date, s, e){
   const out=[];
   const person = state.personnel.find(p=>p.id===personId);
   if(person){
+    if(person.departureDate && date>=person.departureDate) out.push(`已離退（${minguoLabel(person.departureDate)}起）`);
     const lt = effectiveLongTerm(person, date);
     if(lt.mode==='allday') out.push('長期事故：全天不可排');
     else if(lt.mode==='range' && lt.start && lt.end && windowsOverlapRecurring(s,e,toMin(lt.start),toMin(lt.end))) out.push(`長期事故：每天 ${lt.start}-${lt.end} 不可排`);
@@ -7400,7 +7549,7 @@ function roleIneligibilityReasons(person, role, preset, driver, date, s, eRaw, e
    person id, so every existing call site that reads
    `document.getElementById(idPrefix).value` keeps working unchanged. */
 function rolePickerHTML(idPrefix, selectedId, reasonsFn){
-  const list=[...state.personnel].sort((a,b)=>{
+  const list=state.personnel.filter(p=>!isDeparted(p)).sort((a,b)=>{
     const ra=reasonsFn(a), rb=reasonsFn(b);
     const pa=ra.length?1:0, pb=rb.length?1:0;
     if(pa!==pb) return pa-pb;
