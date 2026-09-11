@@ -130,7 +130,7 @@ textarea{min-height:50px;resize:vertical;}
   <div class="topbar-main" style="flex-direction:column;align-items:stretch;gap:6px">
     <div class="row" style="gap:6px;align-items:center">
       <button class="ghost small" id="preplanDrawerBtn" title="設定">☰</button>
-      <h1 id="pageTitle" style="flex:1">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v82</span></h1>
+      <h1 id="pageTitle" style="flex:1">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v83</span></h1>
       <select id="timeStepSelect" style="font-size:11px;padding:3px 6px;width:auto">
         <option value="5">5分間隔</option>
         <option value="10">10分間隔</option>
@@ -365,6 +365,28 @@ const MISC_PRESETS=[
 /* a preset may carry multiple time slots under one name (e.g. 查哨 at five
    different times a day) — always read them through this so both the old
    single start/end shape and the newer times[] shape work the same way */
+/* looks back through every past 其他勤務 entry (any date) for the most
+   recent one with this exact role name, so a hand-typed ad-hoc task that
+   recurs — "G027電梯維修" today, the same thing again next week — can
+   auto-fill from what was used last time instead of retyping everything.
+   Only matches entries that AREN'T already a saved 常用項目, since those
+   already have their own one-tap flow. */
+function recentMiscEntryByRole(role, excludeDate){
+  if(!role) return null;
+  let best=null, bestDate=null;
+  Object.entries(state.misc).forEach(([d,arr])=>{
+    if(d===excludeDate) return;
+    (arr||[]).forEach(m=>{
+      if(m.role===role && (!bestDate || d>bestDate)){ best=m; bestDate=d; }
+    });
+  });
+  return best;
+}
+function miscRoleHistoryCount(role){
+  let n=0;
+  Object.values(state.misc).forEach(arr=>{ (arr||[]).forEach(m=>{ if(m.role===role) n++; }); });
+  return n;
+}
 function presetTimes(preset){
   if(preset.times && preset.times.length) return preset.times;
   return [{start:preset.start||'06:00', end:preset.end||'07:00'}];
@@ -7776,13 +7798,20 @@ function renderMisc(){
     `);
   const miscAddFormHTML = collapsibleCardHTML('miscAddForm', miscEditingId? '編輯項目' : '新增項目', `
       <div class="row wrap" style="margin-bottom:8px">
-        <div class="grow"><label>項目名稱</label><input type="text" id="mRole" placeholder="例：技工 / 採買 / 查哨"></div>
+        <div class="grow"><label>項目名稱</label><input type="text" id="mRole" list="mRoleHistory" placeholder="例：技工 / 採買 / 查哨" autocomplete="off"></div>
       </div>
+      <datalist id="mRoleHistory">${[...new Set(Object.values(state.misc).flat().map(m=>m.role))].filter(r=>!state.miscPresets.some(mp=>mp.role===r)).map(r=>`<option value="${esc(r)}">`).join('')}</datalist>
+      <div id="mRoleRecallHint" class="hint" style="display:none;margin-bottom:6px"></div>
       <div class="row wrap" style="margin-bottom:8px">
         <div class="grow"><label>開始(選填)</label>${timeSelectHTML('mStart', '', {allowEmpty:true})}</div>
         <div class="grow"><label>結束(選填)</label>${timeSelectHTML('mEnd', '', {allowEmpty:true})}</div>
       </div>
       <div class="hint" id="mNextDayHint" style="margin-bottom:8px;display:none">⏰ 結束時間不晚於開始時間，代表跨到隔天（例：07:00 → 隔天07:00）。</div>
+      <div id="mSaveAsPresetRow" style="display:none;margin-bottom:8px">
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px">
+          <input type="checkbox" id="mSaveAsPreset" style="width:auto"> 這已經是第 <span id="mRecurCount"></span> 次了，存成常用項目以後一鍵帶入
+        </label>
+      </div>
       ${miscSelectedRoles? `
         <div class="hint" style="margin-bottom:6px">此項目需分別指定：${miscSelectedRoles.join('、')}</div>
         ${miscSelectedRoles.map((r,i)=>{
@@ -8069,6 +8098,37 @@ function renderMisc(){
   }
   wireAdhocAddButtons();
   document.getElementById('openAddPresetModal').onclick=()=>openMiscPresetModal();
+  if(document.getElementById('mRole') && !miscEditingId){
+    // typing a name that's shown up before (and isn't already a preset)
+    // auto-fills the time from last time, and offers to save it as a
+    // proper 常用項目 once it's recurred a couple of times
+    document.getElementById('mRole').addEventListener('change', ()=>{
+      const role = document.getElementById('mRole').value.trim();
+      const hint = document.getElementById('mRoleRecallHint');
+      const saveRow = document.getElementById('mSaveAsPresetRow');
+      if(!role || state.miscPresets.some(mp=>mp.role===role)){
+        hint.style.display='none'; saveRow.style.display='none'; return;
+      }
+      const recent = recentMiscEntryByRole(role, currentDate);
+      const count = miscRoleHistoryCount(role);
+      if(recent){
+        if(!getTimeSelectValue('mStart') && !getTimeSelectValue('mEnd') && recent.start && recent.end){
+          setTimeSelectValue('mStart', recent.start);
+          setTimeSelectValue('mEnd', recent.end);
+        }
+        hint.textContent = `📋 帶入上次「${role}」的時段（${recent.start||'?'}-${recent.end||'?'}）`;
+        hint.style.display='block';
+      } else {
+        hint.style.display='none';
+      }
+      if(count>=2){
+        document.getElementById('mRecurCount').textContent = count;
+        saveRow.style.display='block';
+      } else {
+        saveRow.style.display='none';
+      }
+    });
+  }
   document.getElementById('mAdd').onclick=()=>{
     const role=document.getElementById('mRole').value.trim();
     if(!role) return;
@@ -8112,6 +8172,13 @@ function renderMisc(){
     miscEditingId=null;
     if(wasNewEntry){
       autoAssignMiscForDate(currentDate);
+    }
+    const saveAsPresetCb = document.getElementById('mSaveAsPreset');
+    if(saveAsPresetCb && saveAsPresetCb.checked && !state.miscPresets.some(mp=>mp.role===role)){
+      state.miscPresets.push({role, times:[{start,end}], roles:miscSelectedRoles||null, standbyMode:'off',
+        requiredLicenses:[], requiredMedCert:false, requiredSkills:[], chiefRequiredSkills:[],
+        chiefRequiredLicenses:[], chiefRequiredMedCert:false, restUntil:miscSelectedRestUntil||'',
+        sortOrder:(state.miscPresets.length?Math.max(...state.miscPresets.map(p=>p.sortOrder||0)):0)+1});
     }
     saveState(); render();
   };
