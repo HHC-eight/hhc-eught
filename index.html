@@ -133,7 +133,8 @@ textarea{min-height:50px;resize:vertical;}
       <button class="ghost small" id="undoBtn" title="復原上一步" disabled>↩️</button>
       <button class="ghost small" id="redoBtn" title="取消復原（重做）" disabled>↪️</button>
       <button class="ghost small" id="dayResetBtn" title="還原這一天">♻️</button>
-      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v80</span></h1>
+      <button class="ghost small" id="clearRangeBtn" title="清除一段時間">🧹</button>
+      <h1 id="pageTitle">🌟 衛哨排班系統 <span class="muted" style="font-size:11px;font-weight:400">v81</span></h1>
     </div>
     <div class="row" style="gap:6px;align-items:center">
       <select id="timeStepSelect" style="font-size:11px;padding:3px 6px;width:auto">
@@ -1679,6 +1680,7 @@ document.getElementById('undoBtn').addEventListener('click', (e)=>{ flashPressed
 document.getElementById('redoBtn').addEventListener('click', (e)=>{ flashPressed(e.currentTarget); redoLastAction(); });
 refreshUndoButton();
 document.getElementById('dayResetBtn').addEventListener('click', (e)=>{ flashPressed(e.currentTarget); openDayResetModal(); });
+document.getElementById('clearRangeBtn').addEventListener('click', (e)=>{ flashPressed(e.currentTarget); openClearRangeModal(); });
 document.getElementById('preplanDrawerBtn').addEventListener('click', (e)=>{ flashPressed(e.currentTarget); openPreplanDrawer(); });
 /* two levels of "start this date over", both scoped to currentDate only:
    level 1 keeps the day's structural setup (per-day 班別 overrides, 其他
@@ -1718,8 +1720,12 @@ function openPreplanDrawer(){
           <span style="color:var(--dim)">›</span>
         </div>`;
       }).join('')}
+      </div>
+      <div class="divider"></div>
+      <button class="ghost small danger" id="drawerClearRange" style="width:100%">🧹 清除一段時間的資料</button>
       </div>`;
     document.getElementById('drawerClose').onclick=close;
+    document.getElementById('drawerClearRange').onclick=()=>openClearRangeModal();
     drawer.querySelectorAll('[data-preplan-open]').forEach(b=>{
       b.onclick=(e)=>{
         if(e.target.hasAttribute('data-pp-handle')) return;
@@ -3280,6 +3286,110 @@ function importLeaveTable(monthPrefix){
   });
   return {count, downgraded};
 }
+/* clears one or more kinds of data across a date range in one action,
+   instead of going day-by-day with 還原這一天. Each kind is independently
+   selectable so e.g. "just wipe 查哨 and 督伙 for October" is a single
+   operation instead of clearing everything and redoing the rest. */
+function clearDateRange(from, to, opts){
+  const dates = new Set(dateRangeList(from, to));
+  let cleared = 0;
+  const clearDateKeyed = (obj)=>{ dates.forEach(d=>{ if(obj[d]!==undefined){ delete obj[d]; cleared++; } }); };
+  if(opts.assign) clearDateKeyed(state.assign);
+  if(opts.misc) clearDateKeyed(state.misc);
+  if(opts.unavail) clearDateKeyed(state.unavail);
+  if(opts.dailyShiftOverrides) clearDateKeyed(state.dailyShiftOverrides);
+  if(opts.longTermSuspensions) clearDateKeyed(state.longTermSuspensions);
+  if(opts.dutyChanges) clearDateKeyed(state.dutyChanges);
+  (opts.preplanKeys||[]).forEach(key=>{
+    const store = state.preplan[key];
+    if(!store) return;
+    if(key==='leave'){
+      // keyed by person, not date — trim the range out of each person's
+      // date list (and honorDates) rather than deleting the whole record
+      Object.keys(store).forEach(pid=>{
+        const rec=store[pid];
+        const before=(rec.dates||[]).length;
+        rec.dates=(rec.dates||[]).filter(d=>!dates.has(d));
+        if(rec.honorDates) rec.honorDates=rec.honorDates.filter(d=>!dates.has(d));
+        if(rec.dates.length!==before) cleared++;
+        if(!rec.dates.length) delete store[pid];
+      });
+    } else if(key==='standby'){
+      // keyed by the block's own anchor date — a block counts as "in range"
+      // if its anchor falls inside [from,to], even though the block itself
+      // may run a day or two past the range's edge
+      Object.keys(store).forEach(anchor=>{ if(dates.has(anchor)){ delete store[anchor]; cleared++; } });
+    } else {
+      clearDateKeyed(store);
+    }
+  });
+  return cleared;
+}
+function openClearRangeModal(){
+  const modal=document.createElement('div');
+  modal.className='sheet-modal'; modal.style.zIndex='70';
+  const scheduleItems = [
+    ['assign','衛哨排班'], ['misc','其他勤務'], ['unavail','事故/休假'],
+    ['dailyShiftOverrides','當日班別設定'], ['longTermSuspensions','長期事故暫停狀態'], ['dutyChanges','異動紀錄'],
+  ];
+  const preplanItems = PREPLAN_TYPES.filter(t=>t.mode!=='personCalendar').map(t=>[t.key, t.name]);
+  modal.innerHTML=`
+    <div class="sheet-inner">
+      <div class="section-title"><h2 style="margin:0">清除一段時間的資料</h2><button class="ghost small" id="crClose">關閉</button></div>
+      <div class="hint" style="margin-bottom:8px">選日期範圍，勾選要清除的項目，可以只選其中幾項（例如只清查哨跟督伙的預排）。</div>
+      <div class="row wrap" style="margin-bottom:8px">
+        <div class="grow"><label>從</label><input type="date" id="crFrom" value="${currentDate}"></div>
+        <div class="grow"><label>到</label><input type="date" id="crTo" value="${currentDate}"></div>
+      </div>
+      <div class="hint" style="margin-bottom:4px"><b>排班/其他勤務</b></div>
+      <div class="row wrap" style="margin-bottom:8px">
+        ${scheduleItems.map(([k,label])=>`<label style="display:flex;align-items:center;gap:4px;font-size:12px">
+          <input type="checkbox" class="cr-schedule" value="${k}" style="width:auto"> ${label}
+        </label>`).join('')}
+      </div>
+      <div class="row wrap" style="margin-bottom:4px">
+        <button class="ghost small" id="crSchedAll">全選</button>
+        <button class="ghost small" id="crSchedNone">全部取消</button>
+      </div>
+      <div class="divider"></div>
+      <div class="hint" style="margin-bottom:4px"><b>預排（可個別選）</b></div>
+      <div class="row wrap" style="margin-bottom:8px">
+        ${preplanItems.map(([k,label])=>`<label style="display:flex;align-items:center;gap:4px;font-size:12px">
+          <input type="checkbox" class="cr-preplan" value="${k}" style="width:auto"> ${label}
+        </label>`).join('')}
+      </div>
+      <div class="row wrap" style="margin-bottom:8px">
+        <button class="ghost small" id="crPreplanAll">全選</button>
+        <button class="ghost small" id="crPreplanNone">全部取消</button>
+      </div>
+      <button class="ghost small danger" id="crGo" style="width:100%">清除</button>
+    </div>`;
+  document.body.appendChild(modal);
+  document.getElementById('crClose').onclick=()=>modal.remove();
+  document.getElementById('crSchedAll').onclick=()=>modal.querySelectorAll('.cr-schedule').forEach(cb=>cb.checked=true);
+  document.getElementById('crSchedNone').onclick=()=>modal.querySelectorAll('.cr-schedule').forEach(cb=>cb.checked=false);
+  document.getElementById('crPreplanAll').onclick=()=>modal.querySelectorAll('.cr-preplan').forEach(cb=>cb.checked=true);
+  document.getElementById('crPreplanNone').onclick=()=>modal.querySelectorAll('.cr-preplan').forEach(cb=>cb.checked=false);
+  document.getElementById('crGo').onclick=()=>{
+    const from=document.getElementById('crFrom').value, to=document.getElementById('crTo').value;
+    if(!from||!to||from>to){ showAlert('請確認日期範圍正確'); return; }
+    const opts={preplanKeys:[...modal.querySelectorAll('.cr-preplan:checked')].map(cb=>cb.value)};
+    scheduleItems.forEach(([k])=>{ opts[k]=!!modal.querySelector(`.cr-schedule[value="${k}"]`).checked; });
+    const anySelected = Object.entries(opts).some(([k,v])=>k==='preplanKeys'? v.length : v);
+    if(!anySelected){ showAlert('請至少勾選一項要清除的內容'); return; }
+    const labelParts=[
+      ...scheduleItems.filter(([k])=>opts[k]).map(([,l])=>l),
+      ...opts.preplanKeys.map(k=>'預排-'+(PREPLAN_TYPES.find(t=>t.key===k)||{}).name),
+    ];
+    showConfirm(`確定要清除 ${minguoLabel(from)} ~ ${minguoLabel(to)} 這段期間的：${labelParts.join('、')} 嗎？這個動作可以用左上角復原按鈕還原。`, ()=>{
+      const n=clearDateRange(from, to, opts);
+      saveState();
+      showAlert(`已清除 ${n} 筆資料。`);
+      modal.remove();
+      render();
+    });
+  };
+}
 function openDayResetModal(){
   const date = currentDate;
   const modal=document.createElement('div');
@@ -3428,7 +3538,7 @@ function openShareImportModal(){
         <div class="muted">・休假/事故：${sm.unavailEntries} 筆</div>
         ${sm.overrideDays? `<div class="muted">・當日班別設定：${sm.overrideDays} 天</div>`:''}
         ${sm.note? `<div class="hint" style="margin-top:6px">📝 對方備註：${esc(sm.note)}</div>`:''}
-        ${sm.unknownPeople.length? `<div class="badge-issue">⚠️ 檔案中有 ${sm.unknownPeople.length} 位你名冊上沒有的人員（${sm.unknownPeople.slice(0,5).map(p=>esc(p.name)).join('、')}${sm.unknownPeople.length>5?'…':''}），匯入時會一併加入名冊</div>`:''}
+        ${sm.unknownPeople.length? `<div class="badge-issue">⚠️ 檔案中有 ${sm.unknownPeople.length} 位你名冊上沒有的人員（${sm.unknownPeople.slice(0,5).map(p=>esc(p.name)).join('、')}${sm.unknownPeople.length>5?'…':''}），不會被加入名冊，班表上這些人的名字可能顯示不出來——如果需要正常顯示，請先手動把他們加進人員名冊</div>`:''}
         <div class="hint" style="margin-top:6px">只有上列日期會被覆蓋，其他日期完全不受影響。</div>
         <button class="primary" id="siMerge" style="width:100%;margin-top:8px">確認匯入</button>
       </div>`;
@@ -3437,7 +3547,7 @@ function openShareImportModal(){
         const r=mergeSharePacket(packet,{});
         if(!r.ok){ showAlert('匯入失敗：'+r.reason); return; }
         saveState();
-        showAlert(`已匯入 ${r.dates.length} 天${r.addedPeople? `，並新增 ${r.addedPeople} 位人員`:''}。`);
+        showAlert(`已匯入 ${r.dates.length} 天${r.unknownPeople? `。有 ${r.unknownPeople} 位人員不在名冊裡，名字可能顯示不出來`:''}。`);
         modal.remove(); render();
       });
     };
@@ -3447,9 +3557,9 @@ function mergeSharePacket(packet, opts){
   opts = opts||{};
   const s = summarizeSharePacket(packet);
   if(!s.valid) return {ok:false, reason:s.reason};
-  (packet.personnel||[]).forEach(p=>{
-    if(!state.personnel.some(x=>x.id===p.id)) state.personnel.push(JSON.parse(JSON.stringify(p)));
-  });
+  // 名冊只由你自己登載——分工匯入絕不新增人員，即使封包裡有本地沒有的人。
+  // 那些人在排班/勤務裡仍會用他們的 id 顯示，只是名字對不上（personName 會
+  // 顯示「—」），summarizeSharePacket 已經把這些人算進 unknownPeople 供事先提醒。
   let touched=0;
   s.dates.forEach(d=>{
     const day=packet.days[d]||{};
@@ -3460,7 +3570,7 @@ function mergeSharePacket(packet, opts){
     if(day.longTermSuspensions!==undefined){ state.longTermSuspensions[d]=JSON.parse(JSON.stringify(day.longTermSuspensions)); }
     if(day.dutyChanges!==undefined){ state.dutyChanges[d]=JSON.parse(JSON.stringify(day.dutyChanges)); }
   });
-  return {ok:true, dates:s.dates, touched, addedPeople:s.unknownPeople.length};
+  return {ok:true, dates:s.dates, touched, unknownPeople:s.unknownPeople.length};
 }
 function openExportModal(){
   const dataStr = JSON.stringify(state, null, 2);
