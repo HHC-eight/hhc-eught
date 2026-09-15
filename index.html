@@ -135,7 +135,7 @@ textarea{min-height:50px;resize:vertical;}
   <div class="topbar-main" style="flex-direction:column;align-items:stretch;gap:6px">
     <div class="row wrap" style="gap:4px;align-items:center">
       <button class="ghost small" id="preplanDrawerBtn" title="設定">☰</button>
-      <h1 id="pageTitle" style="margin:0">🌟 衛哨排班系統 <span class="muted" style="font-size:10px;font-weight:400">v93</span></h1>
+      <h1 id="pageTitle" style="margin:0">🌟 衛哨排班系統 <span class="muted" style="font-size:10px;font-weight:400">v94</span></h1>
       <button class="ghost small" id="clearRangeBtn" title="清除一段時間">🧹 清除範圍</button>
       <span style="flex:1"></span>
       <select id="timeStepSelect" style="width:auto">
@@ -1585,12 +1585,15 @@ function autoAssignMiscForDate(date){
   processingOrder.forEach(entry=>{
     if(!entry.roles){
       if(!entry.personIds) entry.personIds=[];
-      const alreadyHasSomeone = entry.personIds.some(id=>id);
-      if(!alreadyHasSomeone && !entry.skipAutoFill){
+      entry.personIds = entry.personIds.filter(Boolean);
+      const presetForSort = presetForEntry(entry);
+      const targetCount = (presetForSort && presetForSort.requiredCount) || 1;
+      if(entry.personIds.length<targetCount && !entry.skipAutoFill){
         const sMin = entry.start? toMin(entry.start) : null;
         const eMinRaw = entry.end? toMin(entry.end) : null;
-        const presetForSort = presetForEntry(entry);
+        const already = new Set(entry.personIds);
         const candidates = state.personnel.filter(p=>
+          !already.has(p.id) &&
           !(sMin!==null && eMinRaw!==null && isPersonUnavailable(p.id, date, sMin, wrapEndMin(sMin, eMinRaw))) &&
           driverQualificationIssues(p, presetForSort).length===0 &&
           !personHasConflictingStandby(p.id, date, presetForSort, entry.id) &&
@@ -1604,7 +1607,8 @@ function autoAssignMiscForDate(date){
             if(sa!==sb) return sa-sb;
             return rankPriorityIndex(a.rank,presetForSort)-rankPriorityIndex(b.rank,presetForSort) || groupIndex(a.group)-groupIndex(b.group);
           });
-          entry.personIds[0]=candidates[0].id;
+          const need = targetCount - entry.personIds.length;
+          candidates.slice(0, need).forEach(c=>entry.personIds.push(c.id));
         }
       }
       return;
@@ -3339,11 +3343,17 @@ function openPersonDayEditor(personId, date, onDone){
    honor-day would actually fall back to a normal 18:00 start because the
    whole block (including front/back buffer) exceeds 5 days. */
 /* groups the ticked dates into consecutive runs and works out, per run,
-   whether it needs someone's approval to keep its length: 榮譽假 over 5
-   days (含前後緩衝), or ANY leave over 6 days (含前後緩衝) — approval is
-   the same single flag either way, checked by exact (start,end) so
-   shrinking or growing an already-approved run always asks again rather
-   than silently inheriting an approval that covered a different length. */
+   whether it needs someone's approval to keep its length. The unit is
+   effective days, not calendar days: the buffer itself never counts
+   (前一天18:00起不多算一天), but starting the buffer at 12:00 instead
+   (榮譽假) adds half a day, since that's an extra 6 hours of time off
+   the normal 18:00 start doesn't give. One unified cap — effective days
+   over 5 needs approval — replaces separate honor/general thresholds,
+   since 12:00-start leave is just "leave that started half a day
+   earlier," not a different category of duration limit. Checked by
+   exact (start,end) so shrinking or growing an already-approved run
+   always asks again rather than silently inheriting an approval that
+   covered a different length. */
 function analyzeLeaveRuns(pickedSet, honorSet, approvedRuns){
   const dates=[...pickedSet].sort();
   const approved = approvedRuns||[];
@@ -3351,11 +3361,12 @@ function analyzeLeaveRuns(pickedSet, honorSet, approvedRuns){
   if(!dates.length) return runs;
   let runStart=dates[0], prev=dates[0];
   const push=(end)=>{
-    const bufferDays=daysBetweenInclusive(prevDateStr(runStart), nextDateStr(end));
+    const actualDays=daysBetweenInclusive(runStart, end); // 實際勾選天數，不含前後緩衝
     const isHonor=honorSet.has(runStart);
-    const needsApproval = bufferDays>6 || (isHonor && bufferDays>5);
+    const effectiveDays = actualDays + (isHonor? 0.5 : 0);
+    const needsApproval = effectiveDays>5;
     const isApproved = approved.some(r=>r.start===runStart && r.end===end);
-    runs.push({start:runStart, end, bufferDays, isHonor, needsApproval, isApproved});
+    runs.push({start:runStart, end, actualDays, effectiveDays, isHonor, needsApproval, isApproved});
   };
   for(let i=1;i<dates.length;i++){
     if(dates[i]===nextDateStr(prev)){ prev=dates[i]; continue; }
@@ -3366,11 +3377,12 @@ function analyzeLeaveRuns(pickedSet, honorSet, approvedRuns){
 }
 function leaveRunWarnings(pickedSet, honorSet, approvedRuns){
   return analyzeLeaveRuns(pickedSet, honorSet, approvedRuns).filter(r=>r.needsApproval).map(r=>{
-    const reasonLabel = r.isHonor? '榮譽假':'休假';
+    const reasonLabel = r.isHonor? '休假（榮譽假）':'休假';
+    const dayLabel = Number.isInteger(r.effectiveDays)? `${r.effectiveDays}天` : `${r.effectiveDays}天（榮譽假12:00起算多算0.5天）`;
     if(r.isApproved){
-      return `✅ ${minguoLabel(r.start)}~${minguoLabel(r.end)}（含前後緩衝共${r.bufferDays}天）已經過同意，${reasonLabel}維持這個天數。`;
+      return `✅ ${minguoLabel(r.start)}~${minguoLabel(r.end)}（${dayLabel}）已經過同意，維持這個天數。`;
     }
-    return `⚠️ ${minguoLabel(r.start)}~${minguoLabel(r.end)}（含前後緩衝共${r.bufferDays}天）超過${r.isHonor&&r.bufferDays<=6?'5天，榮譽假':'6天'}上限，按「確認休假」時需要再確認同意才能保留這個天數。`;
+    return `⚠️ ${minguoLabel(r.start)}~${minguoLabel(r.end)}（${dayLabel}）超過5天上限，按「確認休假」時需要再確認同意才能保留這個天數。`;
   });
 }
 function openLeaveTableEditor(date, onSaved, presetPid){
@@ -3469,7 +3481,7 @@ function openLeaveTableEditor(date, onSaved, presetPid){
             new Set([...((store()[selectedPid]||{}).honorDates||[]).filter(d=>!d.startsWith(ym)), ...honorDates]),
             (store()[selectedPid]||{}).approvedRuns||[]
           ).map(w=>`<div class="${w.startsWith('✅')?'hint':'badge-issue'}">${esc(w)}</div>`).join('')}
-        <div class="hint" style="margin-bottom:8px">「休」＝一般休假（前一天18:00起）；「12休」＝榮譽假（前一天12:00起）；「留守」＝留守表已排他這天留守，跟這裡無關聯除非你也點成休假。榮譽假整段（含前後緩衝）超過5天、或一般休假超過6天，需要經過同意才能保留，按「確認休假」時會再問一次。</div>
+        <div class="hint" style="margin-bottom:8px">「休」＝一般休假（前一天18:00起）；「12休」＝榮譽假（前一天12:00起，比一般假多算0.5天）；「留守」＝留守表已排他這天留守，跟這裡無關聯除非你也點成休假。休假（含榮譽假的0.5天）超過5天，需要經過同意才能保留，按「確認休假」時會再問一次。</div>
         <div class="row wrap" style="margin-bottom:8px">
           <button class="ghost grow" id="ltClearMonth">清空本月</button>
           <button class="primary grow" id="ltSave">確認休假</button>
@@ -3588,7 +3600,7 @@ function openLeaveTableEditor(date, onSaved, presetPid){
         if(unapproved.length){
           // 超過天數上限（榮譽假5天或一般假6天，含前後緩衝）一律要同意才能保留，
           // 不同意就不儲存，逼你要嘛縮短天數要嘛真的走同意流程
-          const lines = unapproved.map(r=>`${minguoLabel(r.start)}~${minguoLabel(r.end)}（含前後緩衝共${r.bufferDays}天，${r.isHonor?'榮譽假':'一般休假'}）`);
+          const lines = unapproved.map(r=>`${minguoLabel(r.start)}~${minguoLabel(r.end)}（${r.effectiveDays}天${r.isHonor?'，含榮譽假0.5天':''}）`);
           showConfirm(`以下這幾段休假超過天數上限，需要同意才能保留：\n${lines.join('\n')}\n\n確定已經過同意，要保留這個天數嗎？不同意的話請先縮短天數再儲存。`, ()=>{
             const newlyApproved = unapproved.map(r=>({start:r.start, end:r.end}));
             doSave([...curApproved, ...newlyApproved]);
@@ -4860,8 +4872,9 @@ function renderLeaveGroupSummary(date){
    person — extracted so both the 新增人員休假 form and the 編輯休假 modal
    (which can split one block into several) share the exact same logic */
 function createLeaveSegment(personId, s, e, honorRequested, approved){
-  const bufferDays=daysBetweenInclusive(prevDateStr(s), nextDateStr(e));
-  const honorApplies = honorRequested && (bufferDays<=5 || approved);
+  const actualDays=daysBetweenInclusive(s, e); // 實際休假天數，不含前後緩衝
+  const effectiveDays = actualDays + (honorRequested? 0.5 : 0);
+  const honorApplies = honorRequested && (effectiveDays<=5 || approved);
   const firstRoster=prevDateStr(s);
   const lastRoster=nextDateStr(e);
   const firstStart = honorApplies? '12:00':'18:00';
@@ -6117,7 +6130,8 @@ function dayProgressSummary(date){
       miscFilled += m.personIds.filter((pid,i)=>pid || (m.lockedSlots&&m.lockedSlots[i])).length;
     } else {
       const n=(m.personIds||[]).filter(Boolean).length;
-      miscTotal += Math.max(1,n);
+      const preset=presetForEntry(m);
+      miscTotal += Math.max((preset&&preset.requiredCount)||1, n);
       miscFilled += n;
     }
   });
@@ -6737,25 +6751,45 @@ function splitDiffLine(line){
    generated version, and appends ⚠️ to every line whose value changed or
    is brand new — this is a manual, per-export tool (you paste the old
    version each time) rather than something the app remembers on its own,
-   since not every generated draft actually gets published. */
+   since not every generated draft actually gets published.
+   Time-slot labels like "22-24" repeat across every sentry category
+   (安全士官/橋哨/安管中心 all have their own 22-24 line), so the label
+   alone isn't a safe key — comparing by label only made entries from
+   different categories collide and overwrite each other in the lookup,
+   causing both false ⚠️s on unchanged lines and real changes going
+   undetected. Every header-only line (a category name, a date banner)
+   becomes the current "section", and section+label together form the
+   actual key, so same-named slots in different sections never collide. */
 function diffScheduleText(oldText, newText){
-  const oldMap = new Map();
-  oldText.split(/\r?\n/).forEach(l=>{
-    if(!l.trim()) return;
-    const [k,v] = splitDiffLine(l.trim());
-    oldMap.set(k, v);
-  });
-  const newKeys = new Set();
-  const outLines = newText.split(/\r?\n/).map(l=>{
+  const buildMap=(text)=>{
+    const map=new Map();
+    let section='';
+    text.split(/\r?\n/).forEach(l=>{
+      if(!l.trim()) return;
+      const [k,v]=splitDiffLine(l.trim());
+      if(!v){ section=l.trim(); return; }
+      map.set(section+'\u0000'+k, v);
+    });
+    return map;
+  };
+  const oldMap=buildMap(oldText);
+  const newKeys=new Set();
+  let section='';
+  const outLines=newText.split(/\r?\n/).map(l=>{
     if(!l.trim()) return l;
-    const [k,v] = splitDiffLine(l.trim());
-    newKeys.add(k);
-    if(!v) return l; // header-only line, nothing to compare
-    if(!oldMap.has(k) || oldMap.get(k)!==v) return `${l} ⚠️`;
+    const [k,v]=splitDiffLine(l.trim());
+    if(!v){ section=l.trim(); return l; } // header-only line, nothing to compare, but updates section context
+    const fullKey=section+'\u0000'+k;
+    newKeys.add(fullKey);
+    if(!oldMap.has(fullKey) || oldMap.get(fullKey)!==v) return `${l}⚠️`;
     return l;
   });
   const removed=[];
-  oldMap.forEach((v,k)=>{ if(v && !newKeys.has(k)) removed.push(`${k}${v}`); });
+  oldMap.forEach((v,fullKey)=>{
+    if(!v || newKeys.has(fullKey)) return;
+    const k=fullKey.split('\u0000')[1];
+    removed.push(`${k}${v}`);
+  });
   return {text: outLines.join('\n'), removed};
 }
 function openDiffImportModal(newText){
@@ -6886,7 +6920,10 @@ function wireScheduleCardsDrag(){
 }
 function renderMiscDutyCard(role, entries, preset, dragIdx){
   const miscFilled = entries.reduce((n,m)=>n+(m.roles? m.personIds.filter((pid,i)=>pid||(m.lockedSlots&&m.lockedSlots[i])).length : (m.personIds||[]).filter(Boolean).length),0);
-  const miscTotal = entries.reduce((n,m)=>n+(m.roles? m.roles.length : Math.max(1,(m.personIds||[]).filter(Boolean).length)),0);
+  // freeform entries' target is the preset's 需求人數 (default 1) — previously
+  // this used however many were already filled as its own "total", so the
+  // progress readout could never show a shortfall for a freeform item
+  const miscTotal = entries.reduce((n,m)=>n+(m.roles? m.roles.length : Math.max(preset&&preset.requiredCount||1,(m.personIds||[]).filter(Boolean).length)),0);
   const miscShort = miscFilled<miscTotal;
   const title = `<span data-drag-handle style="cursor:grab;padding-right:6px;color:var(--dim)">⠿</span>🗂 ${esc(role)}<span class="${miscShort?'warn':'muted'}" style="margin-left:6px">已排 ${miscFilled}/${miscTotal}${miscShort?' ⚠️':''}</span>`;
   const extraButtons = preset? `<label style="display:flex;align-items:center;gap:3px;font-size:11px"><input type="checkbox" class="card-exclude-cb" data-exclude-kind="misc" data-exclude-id="${esc(role)}" style="width:auto" ${preset.excludeFromExport?'checked':''}>不匯出</label><button class="ghost small" data-edit-misc-preset="${esc(role)}">設定</button><button class="ghost small" data-clear-misc-preset="${esc(role)}">清除</button><button class="ghost small danger" data-del-misc-preset="${esc(role)}">刪除此項目</button>` : '';
@@ -7591,6 +7628,10 @@ function openMiscPresetModal(editIndex){
       <div class="row wrap" style="margin-bottom:8px">
         <div class="grow"><label>補休至(選填，下勤後自動排除其他勤務至此時間)</label>${timeSelectHTML('mpRest', existing?existing.restUntil:'', {allowEmpty:true})}</div>
       </div>
+      ${(!existing || !existing.roles)? `
+      <div class="row wrap" style="margin-bottom:8px">
+        <div class="grow"><label>需求人數（選填，預設1人；自動排班會依這個數字補到滿）</label><input type="number" id="mpRequiredCount" min="1" value="${existing&&existing.requiredCount?existing.requiredCount:1}" style="width:100%"></div>
+      </div>` : ''}
       <div class="row wrap" style="margin-bottom:8px">
         <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text)">
           <input type="checkbox" id="mpFixed" style="width:auto" ${existing&&existing.fixed?'checked':''}> 固定項目（每天一定會有，例如消防車、救護車；勾選後自動排班時會自動建立當天項目並補人，會列在最上面）
@@ -7741,6 +7782,8 @@ function openMiscPresetModal(editIndex){
     const isAllDayAway=document.getElementById('mpAllDayAway').checked;
     const standbyMode=document.querySelector('input[name="mpStandbyMode"]:checked').value;
     const restUntil=getTimeSelectValue('mpRest');
+    const requiredCountEl=document.getElementById('mpRequiredCount');
+    const requiredCount=requiredCountEl? Math.max(1, parseInt(requiredCountEl.value,10)||1) : 1;
     const requiredLicenses=[...document.querySelectorAll('.mp-req-license:checked')].map(cb=>cb.value);
     const requiredMedCert=document.getElementById('mpReqMedCert').checked;
     const requiredSkills=[...document.querySelectorAll('.mp-req-skill:checked')].map(cb=>cb.value);
@@ -7754,6 +7797,7 @@ function openMiscPresetModal(editIndex){
     if(editing){
       existing.role=role; existing.times=timesDraft.map(t=>({...t})); existing.fixed=fixed; existing.isSentry=isSentry; existing.isAllDayAway=isAllDayAway; existing.standbyMode=standbyMode; existing.restUntil=restUntil;
       existing.requiredLicenses=requiredLicenses; existing.requiredMedCert=requiredMedCert; existing.requiredSkills=requiredSkills;
+      if(!existing.roles) existing.requiredCount=requiredCount;
       if((existing.roles||[]).includes('車長')){
         existing.chiefRequiredSkills=chiefRequiredSkills;
         existing.chiefRequiredLicenses=chiefRequiredLicenses;
@@ -7762,7 +7806,7 @@ function openMiscPresetModal(editIndex){
       existing.rankPriority=rankPriority;
       delete existing.start; delete existing.end;
     } else {
-      state.miscPresets.push({role,times:timesDraft.map(t=>({...t})),roles:null,fixed,isSentry,isAllDayAway,standbyMode,restUntil,requiredLicenses,requiredMedCert,requiredSkills,rankPriority,sortOrder:nextSortOrder(),excludeFromExport:false});
+      state.miscPresets.push({role,times:timesDraft.map(t=>({...t})),roles:null,fixed,isSentry,isAllDayAway,standbyMode,restUntil,requiredCount,requiredLicenses,requiredMedCert,requiredSkills,rankPriority,sortOrder:nextSortOrder(),excludeFromExport:false});
     }
     saveState(); modal.remove(); render();
   };
