@@ -135,7 +135,7 @@ textarea{min-height:50px;resize:vertical;}
   <div class="topbar-main" style="flex-direction:column;align-items:stretch;gap:6px">
     <div class="row wrap" style="gap:4px;align-items:center">
       <button class="ghost small" id="preplanDrawerBtn" title="設定">☰</button>
-      <h1 id="pageTitle" style="margin:0">🌟 衛哨排班系統 <span class="muted" style="font-size:10px;font-weight:400">v95</span></h1>
+      <h1 id="pageTitle" style="margin:0">🌟 衛哨排班系統 <span class="muted" style="font-size:10px;font-weight:400">v99</span></h1>
       <button class="ghost small" id="clearRangeBtn" title="清除一段時間">🧹 清除範圍</button>
       <span style="flex:1"></span>
       <select id="timeStepSelect" style="width:auto">
@@ -1904,15 +1904,34 @@ function runAllPreplanImports(fromDate, toDate){
 }
 /* every conflict (someone double-booked, or booked while on leave/事故)
    across every 其他勤務 entry in the range — used after both a real import
-   and a dry-run check, since either way you want to see what needs fixing */
+   and a dry-run check, since either way you want to see what needs fixing.
+   Returned structured (not pre-joined into strings) so callers can group
+   by date instead of dumping one long flat list when there's a lot. */
 function collectMiscConflicts(fromDate, toDate){
   const clashes=[];
   dateRangeList(fromDate, toDate).forEach(d=>{
     (state.misc[d]||[]).forEach(m=>{
-      miscEntryConflicts(m, d).forEach(c=>clashes.push(`${minguoLabel(d)} ${m.role}：${c}`));
+      miscEntryConflicts(m, d).forEach(c=>clashes.push({date:d, role:m.role, message:c}));
     });
   });
   return clashes;
+}
+/* renders the full conflict list grouped by date, scrollable — no
+   truncation, since "…還有N筆" isn't much use when you actually need to
+   go fix every one of them */
+function conflictListHTML(clashes){
+  if(!clashes.length) return `<div class="hint">目前看起來沒有衝突。</div>`;
+  const byDate={};
+  clashes.forEach(c=>{ if(!byDate[c.date]) byDate[c.date]=[]; byDate[c.date].push(c); });
+  const dates=Object.keys(byDate).sort();
+  return `
+    <div class="badge-issue" style="margin-bottom:6px">⚠️ 共 ${clashes.length} 筆衝突</div>
+    <div style="max-height:50vh;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:8px">
+      ${dates.map(d=>`
+        <div style="font-weight:600;margin:8px 0 2px">${minguoLabel(d)}（${byDate[d].length}筆）</div>
+        ${byDate[d].map(c=>`<div class="muted">・${esc(c.role)}：${esc(c.message)}</div>`).join('')}
+      `).join('')}
+    </div>`;
 }
 function openAllPreplanImportModal(){
   const ym = preplanMonth || monthOf(currentDate);
@@ -1939,7 +1958,7 @@ function openAllPreplanImportModal(){
     document.getElementById('apResult').innerHTML = `
       <div class="card" style="padding:10px">
         <div class="muted" style="margin-bottom:6px">如果現在匯入，會處理 ${touched} 筆。</div>
-        ${clashes.length? `<div class="badge-issue">⚠️ 會有 ${clashes.length} 筆衝突：<br>${clashes.slice(0,15).map(esc).join('<br>')}${clashes.length>15?'<br>…':''}</div>` : `<div class="hint">目前看起來沒有衝突。</div>`}
+        ${conflictListHTML(clashes)}
       </div>`;
   };
   document.getElementById('apImport').onclick=()=>{
@@ -1947,10 +1966,11 @@ function openAllPreplanImportModal(){
       const touched=runAllPreplanImports(fromDate, toDate);
       const clashes=collectMiscConflicts(fromDate, toDate);
       saveState();
-      showAlert(`已處理 ${touched} 筆。` + (clashes.length
-        ? `\n\n⚠️ 有 ${clashes.length} 筆衝突需要處理：\n` + clashes.slice(0,12).join('\n') + (clashes.length>12? `\n…還有 ${clashes.length-12} 筆`:'')
-        : ''));
-      modal.remove();
+      document.getElementById('apResult').innerHTML = `
+        <div class="card" style="padding:10px">
+          <div class="muted" style="margin-bottom:6px">已處理 ${touched} 筆。</div>
+          ${conflictListHTML(clashes)}
+        </div>`;
       render();
     });
   };
@@ -3599,13 +3619,26 @@ function openLeaveTableEditor(date, onSaved, presetPid){
   let ym = monthOf(date);
   let selectedPid = presetPid || null;
   let selectedCat = '休假';
-  let picked = new Set();       // dates ticked in the current month, current category
+  let picked = new Set();       // full-day dates ticked in the current month, current category
   let honorDates = new Set();   // subset of picked that are 榮譽假 (only meaningful if category.honorOption)
+  let partialDates = new Map(); // date -> {start,end} — this day only, not a full day, no buffer even if the category has one
+  /* switching categories used to reload straight from the SAVED store,
+     which silently discarded whatever you'd just tapped for the category
+     you were leaving if you hadn't hit 確認 yet — so the merged calendar
+     never showed a category you were still mid-editing, making it look
+     like merging wasn't happening at all. This keeps an in-memory (not
+     yet persisted) draft per category for the current person, so tapping
+     through several categories in one sitting builds up visibly on the
+     calendar even before you save each one; 確認 still only ever commits
+     the currently-selected category to state.preplan.leave. Resets
+     whenever you switch to a different person, since drafts are scoped
+     to "what you're mid-editing for this person right now". */
+  let sessionDrafts = {}; // catName -> {picked:Set, honorDates:Set, partialDates:Map}
   const modal=document.createElement('div');
   modal.className='fullscreen-modal'; modal.style.zIndex='93';
   const store=()=>state.preplan.leave||{};
   const categoryOf=(name)=>state.leaveCategories.find(c=>c.name===name);
-  const catRec=(pid,cat)=>((store()[pid]||{})[cat])||{dates:[],honorDates:[],approvedRuns:[]};
+  const catRec=(pid,cat)=>((store()[pid]||{})[cat])||{dates:[],honorDates:[],approvedRuns:[],partialTimes:{}};
   /* 休假大表 is the ONLY place 不在營 gets edited now — but a block can also
      come from elsewhere (an older import, a manually-registered incident
      that happens to carry a leaveId) without ever being entered here. If
@@ -3638,11 +3671,36 @@ function openLeaveTableEditor(date, onSaved, presetPid){
       state.preplan.leave[pid][cat]={dates:[...known].sort(), honorDates:[...mergedHonor].sort(), approvedRuns:rec.approvedRuns||[]};
     }
   };
+  const saveDraftForCurrentCat=()=>{
+    if(!selectedPid) return;
+    sessionDrafts[selectedCat] = {picked:new Set(picked), honorDates:new Set(honorDates), partialDates:new Map(partialDates)};
+  };
   const loadPerson=()=>{
+    // full reset — used when switching to a different person, or on first
+    // open, where any in-progress draft belongs to the OLD person and
+    // shouldn't carry over
+    sessionDrafts = {};
     scanForOrphaned(selectedPid, selectedCat);
     const rec=catRec(selectedPid, selectedCat);
     picked = new Set((rec.dates||[]).filter(d=>d.startsWith(ym)));
     honorDates = new Set((rec.honorDates||[]).filter(d=>picked.has(d)));
+    partialDates = new Map(Object.entries(rec.partialTimes||{}).filter(([d])=>d.startsWith(ym)));
+  };
+  const loadCategory=(cat)=>{
+    // switching categories for the SAME person — prefer this session's
+    // unsaved draft for that category if there is one, so taps made
+    // before hitting 確認 aren't silently lost when you switch away
+    scanForOrphaned(selectedPid, cat);
+    if(sessionDrafts[cat]){
+      picked = new Set(sessionDrafts[cat].picked);
+      honorDates = new Set(sessionDrafts[cat].honorDates);
+      partialDates = new Map(sessionDrafts[cat].partialDates);
+      return;
+    }
+    const rec=catRec(selectedPid, cat);
+    picked = new Set((rec.dates||[]).filter(d=>d.startsWith(ym)));
+    honorDates = new Set((rec.honorDates||[]).filter(d=>picked.has(d)));
+    partialDates = new Map(Object.entries(rec.partialTimes||{}).filter(([d])=>d.startsWith(ym)));
   };
   if(selectedPid) loadPerson();
   const draw=()=>{
@@ -3651,39 +3709,63 @@ function openLeaveTableEditor(date, onSaved, presetPid){
     const [y,m]=ym.split('-').map(Number);
     const total=daysInMonth(ym);
     const firstDow=new Date(y,m-1,1).getDay();
-    // preview which days would become 前/後緩衝 if this gets imported as-is,
-    // so you can see it landed correctly before actually importing —
-    // computed from consecutive runs in `picked`
-    const bufferPreview={}; // date -> 'front'|'back'
-    if(category && category.buffer){
-      const sorted=[...picked].sort();
-      let runStart=sorted[0], prev=sorted[0];
-      const flush=(end)=>{
-        bufferPreview[prevDateStr(runStart)]='front';
-        bufferPreview[nextDateStr(end)]='back';
+    // every category's picked/honor/partial data for this person this month
+    // — the currently-selected one from live local state, everything else
+    // from this session's draft if there is one, else the persisted record.
+    // Buffer preview is computed for EVERY category that has one, not just
+    // the selected category, so switching categories never makes an
+    // already-ticked category's buffer preview disappear from view.
+    const categoryDataFor = (catName)=>{
+      if(catName===selectedCat) return {picked, honorDates, partialDates};
+      if(sessionDrafts[catName]) return sessionDrafts[catName];
+      const rec=catRec(selectedPid, catName);
+      return {
+        picked: new Set((rec.dates||[]).filter(d=>d.startsWith(ym))),
+        honorDates: new Set((rec.honorDates||[]).filter(d=>d.startsWith(ym))),
+        partialDates: new Map(Object.entries(rec.partialTimes||{}).filter(([d])=>d.startsWith(ym))),
       };
+    };
+    const bufferPreviewFor = (cat, pickedSet)=>{
+      const preview={};
+      if(!cat || !cat.buffer || !pickedSet.size) return preview;
+      const sorted=[...pickedSet].sort();
+      let runStart=sorted[0], prev=sorted[0];
+      const flush=(end)=>{ preview[prevDateStr(runStart)]='front'; preview[nextDateStr(end)]='back'; };
       for(let i=1;i<sorted.length;i++){
         if(sorted[i]===nextDateStr(prev)){ prev=sorted[i]; continue; }
         flush(prev); runStart=sorted[i]; prev=sorted[i];
       }
-      if(sorted.length) flush(prev);
-    }
+      flush(prev);
+      return preview;
+    };
+    const allCatInfo = person? state.leaveCategories.map(c=>{
+      const data=categoryDataFor(c.name);
+      return {cat:c, data, buf:bufferPreviewFor(c, data.picked)};
+    }) : [];
     const cells=[];
     for(let i=0;i<firstDow;i++) cells.push('<div class="cal-cell empty"></div>');
     for(let d=1;d<=total;d++){
       const ds=`${ym}-${String(d).padStart(2,'0')}`;
-      const on = picked.has(ds);
-      const isHonor = on && honorDates.has(ds);
       const hol = isHolidayDate(ds);
       const sb = person? standbyStatusFor(person.id, ds) : null;
-      const bufKind = bufferPreview[ds];
+      // one fragment per category that has anything on this day — every
+      // one gets shown, none summarized away behind a "+N"
+      const fragments=[];
+      allCatInfo.forEach(({cat, data, buf})=>{
+        if(data.partialDates.has(ds)){
+          const pt=data.partialDates.get(ds);
+          fragments.push({text:`${cat.name.slice(0,1)}${pt.start}-${pt.end}`, cls:'leave-partial-marked'});
+        } else if(data.picked.has(ds)){
+          const isHonor=data.honorDates.has(ds);
+          fragments.push({text: isHonor? '12'+cat.name.slice(0,1) : cat.name.slice(0,2), cls:'has'});
+        } else if(buf[ds]){
+          fragments.push({text:`${cat.name.slice(0,1)}緩衝${buf[ds]==='front'?'前':'後'}`, cls:'leave-partial-marked'});
+        }
+      });
       let mark, cls;
-      if(on){
-        mark = isHonor? '12'+selectedCat.slice(0,1) : selectedCat.slice(0,2);
-        cls = 'has';
-      } else if(bufKind){
-        mark = bufKind==='front'? `緩衝${isHonor?'12':'18'}-24` : '緩衝00-07:30';
-        cls = 'leave-partial-marked';
+      if(fragments.length){
+        mark = fragments.map(f=>f.text).join('・');
+        cls = fragments.some(f=>f.cls==='has')? 'has' : 'leave-partial-marked';
       } else if(sb==='staying'){
         mark = '留守';
         cls = 'standby-marked';
@@ -3699,15 +3781,12 @@ function openLeaveTableEditor(date, onSaved, presetPid){
     const otherCats=state.leaveCategories.filter(c=>!c.prominent);
     modal.innerHTML=`
       <div class="section-title"><h2 style="margin:0">🏖️ 休假大表</h2><button class="ghost small" id="ltClose">關閉</button></div>
-      <div class="hint" style="margin-bottom:8px">先選人、選類型，再點月曆登記那個類型的日子。有緩衝的類型（例如休假）點一天等於前後多算半天到一天，畫面上會用虛線框預覽緩衝落在哪一天；沒有緩衝的類型（例如受訓）就是單純整天登記。</div>
-      <div class="row wrap" style="margin-bottom:6px">
-        <div class="grow"><label>類型</label>
-          <select id="ltCatSelect">
-            ${prominentCats.map(c=>`<option value="${esc(c.name)}" ${c.name===selectedCat?'selected':''}>${esc(c.name)}</option>`).join('')}
-            ${otherCats.length? `<option disabled>──其他──</option>` + otherCats.map(c=>`<option value="${esc(c.name)}" ${c.name===selectedCat?'selected':''}>${esc(c.name)}</option>`).join('') : ''}
-          </select>
-        </div>
-        <button class="ghost small" id="ltNewCat" style="align-self:flex-end">＋新增類型</button>
+      <div class="hint" style="margin-bottom:8px">先選人、選類型，再點月曆登記那個類型的日子——月曆會同時顯示這個人這個月所有類型的記錄，但點擊只會動到目前選中的類型。有緩衝的類型（例如休假）點一天等於前後多算半天到一天，畫面上會用虛線框預覽緩衝落在哪一天；沒有緩衝的類型（例如受訓）就是單純整天登記。</div>
+      <div class="hint" style="margin-bottom:4px">類型（點哪個就切換到那個類型繼續操作）</div>
+      <div class="row wrap" style="gap:6px;margin-bottom:8px">
+        ${prominentCats.map(c=>`<button class="${c.name===selectedCat?'primary':'ghost'} small lt-cat-btn" data-lt-cat="${esc(c.name)}">${esc(c.name)}</button>`).join('')}
+        ${otherCats.length? otherCats.map(c=>`<button class="${c.name===selectedCat?'primary':'ghost'} small lt-cat-btn" data-lt-cat="${esc(c.name)}" style="opacity:.75">${esc(c.name)}</button>`).join('') : ''}
+        <button class="ghost small" id="ltNewCat">＋新增類型</button>
       </div>
       <div class="row wrap" style="margin-bottom:6px">
         <div class="grow"><label>搜尋姓名</label><input type="text" id="ltSearch" placeholder="輸入姓名關鍵字"></div>
@@ -3715,17 +3794,23 @@ function openLeaveTableEditor(date, onSaved, presetPid){
       <div id="ltPeople" style="max-height:22vh;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:8px;margin-bottom:8px">
         ${state.personnel.slice().sort((a,b)=>groupIndex(a.group)-groupIndex(b.group)||rankIndex(a.rank)-rankIndex(b.rank))
           .map(p=>{
-            const cnt=(catRec(p.id,selectedCat).dates||[]).filter(d=>d.startsWith(ym)).length;
+            const catCounts = state.leaveCategories.map(c=>{
+              const rec=catRec(p.id, c.name);
+              const cnt=(rec.dates||[]).filter(d=>d.startsWith(ym)).length + Object.keys(rec.partialTimes||{}).filter(d=>d.startsWith(ym)).length;
+              return {name:c.name, cnt};
+            }).filter(x=>x.cnt>0);
+            const totalCnt = catCounts.reduce((s,x)=>s+x.cnt,0);
+            const summary = catCounts.length? ` <span class="ok">${catCounts.map(x=>`${x.name.slice(0,1)}${x.cnt}`).join('・')}（共${totalCnt}天）</span>` : '';
             return `<label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0">
               <input type="radio" name="ltp" class="lt-person" value="${p.id}" style="width:auto" ${p.id===selectedPid?'checked':''}>
-              ${esc(p.name)}（${p.group||'未分組'}·${p.rank}）${cnt? ` <span class="ok">本月${cnt}天</span>`:''}
+              ${esc(p.name)}（${p.group||'未分組'}·${p.rank}）${summary}
             </label>`;
           }).join('')}
       </div>
       ${person? `
         <div class="row" style="gap:6px;align-items:center;margin-bottom:6px">
           <button class="ghost small" id="ltPrev">◀</button>
-          <span class="grow" style="text-align:center;font-weight:600">${esc(person.name)}・${esc(selectedCat)}　民國${y-1911}年${m}月<br><span class="hint">本月已點 ${picked.size} 天・累計 ${allDates.length} 天</span></span>
+          <span class="grow" style="text-align:center;font-weight:600">${esc(person.name)}・${esc(selectedCat)}　民國${y-1911}年${m}月<br><span class="hint">本類型本月整天 ${picked.size} 天${partialDates.size?`・部分時段 ${partialDates.size} 天`:''}・累計 ${allDates.length} 天</span></span>
           <button class="ghost small" id="ltNext">▶</button>
         </div>
         <div class="cal-grid" style="margin-bottom:6px">
@@ -3739,14 +3824,29 @@ function openLeaveTableEditor(date, onSaved, presetPid){
             category
           ).map(w=>`<div class="${w.startsWith('✅')?'hint':'badge-issue'}">${esc(w)}</div>`).join('')}
         <div class="hint" style="margin-bottom:8px">
-          ${category&&category.buffer? `這個類型有前後緩衝：點一天＝整天登記（前一天18:00起）${category.honorOption?'；再點一次＝榮譽假（前一天12:00起，比一般多算0.5天，第三下取消）':'，再點一次取消'}。虛線框是緩衝預覽。` : `這個類型沒有前後緩衝，點一天就是那天整天不可排，再點一次取消。`}
+          ${category&&category.buffer? `這個類型有前後緩衝：點一天＝整天登記（前一天18:00起）${category.honorOption?'；再點一次＝榮譽假（前一天12:00起，比一般多算0.5天）；再點一次取消。':'；再點一次取消。'}虛線框是緩衝預覽。` : `這個類型沒有前後緩衝，點一天就是那天整天不可排，再點一次取消。`}
           ${category&&category.fiveDayRule? ' 超過5天（含緩衝的有效天數）需要同意才能保留。' : ''}
-          「留守」＝留守表已排他這天留守，跟這裡無關聯除非你也點成這個類型。
+          「留守」＝留守表已排他這天留守，跟這裡無關聯除非你也點成這個類型。虛線框的部分時段格子點一下會直接刪除。
         </div>
         <div class="row wrap" style="margin-bottom:8px">
           <button class="ghost grow" id="ltClearMonth">清空本月（此類型）</button>
           <button class="primary grow" id="ltSave">確認</button>
         </div>
+        <div class="divider"></div>
+        <div class="hint" style="margin-bottom:4px">不到一天的部分時段（用輸入的方式新增；已新增的可以直接點月曆上的格子刪除，或用下面的刪除按鈕）</div>
+        <div class="row wrap" style="margin-bottom:6px">
+          <div class="grow"><label>日期</label><input type="date" id="ltPartialDate" value="${ym}-01" min="${ym}-01" max="${ym}-${String(daysInMonth(ym)).padStart(2,'0')}"></div>
+        </div>
+        <div class="row wrap" style="margin-bottom:6px">
+          <div class="grow"><label>開始</label>${timeSelectHTML('ltPartialStart','08:00')}</div>
+          <div class="grow"><label>結束</label>${timeSelectHTML('ltPartialEnd','12:00')}</div>
+        </div>
+        <button class="ghost" id="ltAddPartial" style="width:100%;margin-bottom:8px">＋新增部分時段</button>
+        ${partialDates.size? [...partialDates.entries()].sort().map(([d,t])=>`
+          <div class="list-item">
+            <span class="grow">${minguoLabel(d)}：${t.start}-${t.end}</span>
+            <button class="ghost small danger" data-lt-del-partial="${d}">刪除</button>
+          </div>`).join('') : ''}
       ` : `<div class="empty">請先選擇一位人員</div>`}
       <div class="divider"></div>
       <button class="primary" id="ltImport" style="width:100%">📥 匯入本月到實際班表（全部類型）</button>
@@ -3774,7 +3874,9 @@ function openLeaveTableEditor(date, onSaved, presetPid){
     modal.querySelector('#ltCheckpoint').onclick=()=>openCheckpointModal('leave', '休假大表',
       ()=>state.preplan.leave||{},
       (data)=>{ state.preplan.leave=data; loadPerson(); draw(); });
-    modal.querySelector('#ltCatSelect').onchange=(e)=>{ selectedCat=e.target.value; loadPerson(); draw(); };
+    modal.querySelectorAll('.lt-cat-btn').forEach(b=>{
+      b.onclick=()=>{ saveDraftForCurrentCat(); selectedCat=b.dataset.ltCat; loadCategory(selectedCat); draw(); };
+    });
     modal.querySelector('#ltNewCat').onclick=()=>{
       openNewLeaveCategoryModal(()=>{ draw(); });
     };
@@ -3832,39 +3934,61 @@ function openLeaveTableEditor(date, onSaved, presetPid){
         render(); draw();
       });
     };
+    modal.querySelectorAll('[data-lt-del-partial]').forEach(b=>{
+      b.onclick=()=>{ partialDates.delete(b.dataset.ltDelPartial); draw(); };
+    });
+    if(modal.querySelector('#ltAddPartial')){
+      modal.querySelector('#ltAddPartial').onclick=()=>{
+        const d=document.getElementById('ltPartialDate').value;
+        if(!d || !d.startsWith(ym)){ showAlert('請選擇這個月份內的日期'); return; }
+        if(picked.has(d)){ showAlert('這天已經是整天登記，請先在月曆上點掉那天再新增部分時段。'); return; }
+        const start=getTimeSelectValue('ltPartialStart'), end=getTimeSelectValue('ltPartialEnd');
+        partialDates.set(d, {start,end});
+        draw();
+      };
+    }
     if(person){
       modal.querySelectorAll('[data-lt-date]').forEach(c=>{
         c.onclick=()=>{
           const ds=c.dataset.ltDate;
-          if(!picked.has(ds)){
-            picked.add(ds);
-          } else if(category && category.honorOption && !honorDates.has(ds)){
+          if(partialDates.has(ds)){
+            // 虛線框的部分時段格子：點一下直接刪除
+            partialDates.delete(ds);
+          } else if(picked.has(ds) && category && category.honorOption && !honorDates.has(ds)){
+            // 整天 → 榮譽假（只有有榮譽假選項的類型，例如休假）
             honorDates.add(ds);
-          } else {
+          } else if(picked.has(ds)){
+            // 整天（或榮譽假）格子：再點一下直接刪除
             picked.delete(ds); honorDates.delete(ds);
+          } else {
+            // 空白格子：點一下＝整天登記
+            picked.add(ds);
           }
           draw();
         };
       });
       modal.querySelector('#ltPrev').onclick=()=>{ ym=shiftMonth(ym,-1); preplanMonth=ym; loadPerson(); draw(); };
       modal.querySelector('#ltNext').onclick=()=>{ ym=shiftMonth(ym,1); preplanMonth=ym; loadPerson(); draw(); };
-      modal.querySelector('#ltClearMonth').onclick=()=>{ picked=new Set(); honorDates=new Set(); draw(); };
+      modal.querySelector('#ltClearMonth').onclick=()=>{ picked=new Set(); honorDates=new Set(); partialDates=new Map(); draw(); };
       modal.querySelector('#ltSave').onclick=()=>{
         const rec=catRec(selectedPid,selectedCat);
         const curDates=(rec.dates||[]).filter(d=>!d.startsWith(ym));
         const curHonor=(rec.honorDates||[]).filter(d=>!d.startsWith(ym));
         const curApproved=rec.approvedRuns||[];
+        const curPartial=Object.fromEntries(Object.entries(rec.partialTimes||{}).filter(([d])=>!d.startsWith(ym)));
         const mergedDates=[...curDates, ...picked].sort();
         const mergedHonor=[...curHonor, ...honorDates].sort();
+        const mergedPartial={...curPartial, ...Object.fromEntries(partialDates)};
         const runs = analyzeLeaveRuns(new Set(mergedDates), new Set(mergedHonor), curApproved, category);
         const unapproved = runs.filter(r=>r.needsApproval && !r.isApproved);
         const doSave=(approvedRuns)=>{
           if(!state.preplan.leave) state.preplan.leave={};
           if(!state.preplan.leave[selectedPid]) state.preplan.leave[selectedPid]={};
-          if(mergedDates.length) state.preplan.leave[selectedPid][selectedCat]={dates:mergedDates, honorDates:mergedHonor, approvedRuns};
+          if(mergedDates.length || Object.keys(mergedPartial).length) state.preplan.leave[selectedPid][selectedCat]={dates:mergedDates, honorDates:mergedHonor, approvedRuns, partialTimes:mergedPartial};
           else delete state.preplan.leave[selectedPid][selectedCat];
+          delete sessionDrafts[selectedCat]; // now persisted — the draft shadow is no longer needed
           saveState();
-          showAlert(`已儲存 ${person.name} 的${selectedCat}（本月 ${picked.size} 天${category&&category.honorOption?`，其中榮譽假 ${honorDates.size} 天`:''}）。`);
+          showAlert(`已儲存 ${person.name} 的${selectedCat}（本月整天 ${picked.size} 天${category&&category.honorOption?`，其中榮譽假 ${honorDates.size} 天`:''}${partialDates.size?`，部分時段 ${partialDates.size} 天`:''}）。`);
           draw(); if(onSaved) onSaved();
         };
         if(unapproved.length){
@@ -4064,34 +4188,47 @@ function importLeaveTable(monthPrefix){
       const category = state.leaveCategories.find(c=>c.name===catName);
       if(!category) return; // this category was deleted since it was saved — skip rather than crash
       const dates=(rec.dates||[]).filter(d=>!monthPrefix || d.startsWith(monthPrefix)).sort();
-      if(!dates.length) return;
+      const partialEntries=Object.entries(rec.partialTimes||{}).filter(([d])=>!monthPrefix || d.startsWith(monthPrefix));
+      if(!dates.length && !partialEntries.length) return;
       const honorSet=new Set(rec.honorDates||[]);
       const approvedRuns=rec.approvedRuns||[];
       // drop this person's existing generated blocks for THIS category (only
       // this one — a person can have several categories' blocks touching
       // overlapping dates, e.g. 休假 ending the same week 受訓 starts) that
-      // fall in range, before regenerating them fresh
+      // fall in range, before regenerating them fresh — this covers both
+      // full-day runs and any previously-imported partial-time entries
       const relevantReasons = category.honorOption? [category.name,'榮譽假'] : [category.name];
       const staleLeaveIds=new Set();
-      dates.forEach(d=>{
+      [...dates, ...partialEntries.map(([d])=>d)].forEach(d=>{
         (state.unavail[d]||[]).forEach(u=>{
           if(u.personId===pid && u.leaveId && relevantReasons.includes(u.reason)) staleLeaveIds.add(u.leaveId);
         });
       });
       staleLeaveIds.forEach(lid=>deleteLeaveById(lid));
-      // group consecutive days
-      let runStart=dates[0], prev=dates[0];
-      const flush=(end)=>{
-        const isApproved = approvedRuns.some(r=>r.start===runStart && r.end===end);
-        const r=createLeaveSegment(pid, runStart, end, category, honorSet.has(runStart), isApproved);
-        count++;
-        if(r.honorDowngraded) downgraded.push({personId:pid, name:person?person.name:pid, start:runStart, end});
-      };
-      for(let i=1;i<dates.length;i++){
-        if(dates[i]===nextDateStr(prev)){ prev=dates[i]; continue; }
-        flush(prev); runStart=dates[i]; prev=dates[i];
+      // group consecutive full-day dates into buffered/plain runs
+      if(dates.length){
+        let runStart=dates[0], prev=dates[0];
+        const flush=(end)=>{
+          const isApproved = approvedRuns.some(r=>r.start===runStart && r.end===end);
+          const r=createLeaveSegment(pid, runStart, end, category, honorSet.has(runStart), isApproved);
+          count++;
+          if(r.honorDowngraded) downgraded.push({personId:pid, name:person?person.name:pid, start:runStart, end});
+        };
+        for(let i=1;i<dates.length;i++){
+          if(dates[i]===nextDateStr(prev)){ prev=dates[i]; continue; }
+          flush(prev); runStart=dates[i]; prev=dates[i];
+        }
+        flush(prev);
       }
-      flush(prev);
+      // each partial-time day is its own independent entry — never merged
+      // into a run, never buffered, regardless of the category's buffer
+      // setting, since "just this window" is exactly what it says
+      partialEntries.forEach(([d,{start,end}])=>{
+        if(!state.unavail[d]) state.unavail[d]=[];
+        state.unavail[d].push({id:uid(), personId:pid, allDay:false, start, end, reason:category.name,
+          leaveId:uid(), leaveStart:d, leaveEnd:d, inCamp:false});
+        count++;
+      });
     });
   });
   return {count, downgraded};
