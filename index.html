@@ -135,7 +135,7 @@ textarea{min-height:50px;resize:vertical;}
   <div class="topbar-main" style="flex-direction:column;align-items:stretch;gap:6px">
     <div class="row wrap" style="gap:4px;align-items:center">
       <button class="ghost small" id="preplanDrawerBtn" title="設定">☰</button>
-      <h1 id="pageTitle" style="margin:0">🌟 衛哨排班系統 <span class="muted" style="font-size:10px;font-weight:400">v99</span></h1>
+      <h1 id="pageTitle" style="margin:0">🌟 衛哨排班系統 <span class="muted" style="font-size:10px;font-weight:400">v100</span></h1>
       <button class="ghost small" id="clearRangeBtn" title="清除一段時間">🧹 清除範圍</button>
       <span style="flex:1"></span>
       <select id="timeStepSelect" style="width:auto">
@@ -4649,6 +4649,13 @@ function renderPeople(){
         </div>
       </div>
       <div class="row wrap" style="margin-bottom:8px">
+        <div style="width:100px"><label>性別（選填）</label>
+          <select id="npGender">
+            <option value="">（不填）</option>
+            <option value="男">男</option>
+            <option value="女">女</option>
+          </select>
+        </div>
         <div class="grow"><label>手機號碼（選填，個人資料，名冊列表不會顯示，只有點進編輯才看得到）</label><input type="text" id="npPhone" placeholder="例：0912345678"></div>
       </div>
       <div class="row wrap" style="margin-bottom:8px">
@@ -4992,6 +4999,7 @@ function wirePeopleListButtons(){
     const name=document.getElementById('npName').value.trim();
     const group=document.getElementById('npGroup').value;
     const rank=document.getElementById('npRank').value;
+    const gender=document.getElementById('npGender').value;
     const phone=document.getElementById('npPhone').value.trim();
     const license=document.getElementById('npLicense').value;
     const medCert=document.getElementById('npMedCert').value;
@@ -5012,7 +5020,7 @@ function wirePeopleListButtons(){
     const outingRestriction = document.getElementById('npOutingRestriction').value;
     const departureDate = document.getElementById('npDepartureDate').value || undefined;
     if(!name) return;
-    state.personnel.push({id:uid(),name,group,rank,phone,license,medCert,skills,longTerm,note,outingRestriction,departureDate});
+    state.personnel.push({id:uid(),name,group,rank,gender,phone,license,medCert,skills,longTerm,note,outingRestriction,departureDate});
     saveState(); render();
   };
   document.getElementById('importBtn').onclick=()=>document.getElementById('importFile').click();
@@ -5097,6 +5105,12 @@ function openPersonEditor(personId){
       <label>姓名</label><input type="text" id="epName" value="${esc(p.name)}" style="margin-bottom:8px">
       <label>排/組別</label><select id="epGroup" style="margin-bottom:8px">${groupOptionsHTML(p.group)}</select>
       <label>階級</label><select id="epRank" style="margin-bottom:8px">${rankOptionsHTML(p.rank)}</select>
+      <label>性別（選填）</label>
+      <select id="epGender" style="margin-bottom:8px">
+        <option value="" ${!p.gender?'selected':''}>（不填）</option>
+        <option value="男" ${p.gender==='男'?'selected':''}>男</option>
+        <option value="女" ${p.gender==='女'?'selected':''}>女</option>
+      </select>
       <label>手機號碼（選填，個人資料）</label><input type="text" id="epPhone" value="${esc(p.phone||'')}" placeholder="例：0912345678" style="margin-bottom:8px">
       <label>駕照</label>
       <select id="epLicense" style="margin-bottom:8px">
@@ -5200,6 +5214,7 @@ function openPersonEditor(personId){
     p.name=document.getElementById('epName').value.trim()||p.name;
     p.group=document.getElementById('epGroup').value;
     p.rank=document.getElementById('epRank').value;
+    p.gender=document.getElementById('epGender').value;
     p.phone=document.getElementById('epPhone').value.trim();
     p.license=document.getElementById('epLicense').value;
     p.medCert=document.getElementById('epMedCert').value;
@@ -5242,7 +5257,7 @@ function renderPeopleGroups(groups, filterFn){
     return `<h3>${g? esc(g) : '未分組'}（${members.length}）</h3>` + members.map(p=>`
       <div class="list-item">
         <span class="tag rank-${rankCategory(p.rank)}">${p.rank}</span>
-        <span class="grow">${esc(p.name)}${p.license? `<div class="muted">駕照：${esc(p.license)}</div>`:''}${p.medCert? `<div class="muted">救護證照：${esc(p.medCert)}</div>`:''}${(p.skills&&p.skills.length)? `<div class="muted">專長：${p.skills.map(esc).join('、')}</div>`:''}${p.note? `<div class="muted">備考：${esc(p.note)}</div>`:''}${longTermLabel(p)? `<div class="warn">🚫 ${longTermLabel(p)}</div>`:''}${p.outingRestriction==='dayOnly'? `<div class="warn">🚫 僅能外散（不可過夜）</div>`:''}${p.outingRestriction==='none'? `<div class="warn">🚫 完全不可外散宿</div>`:''}</span>
+        <span class="grow">${esc(p.name)}${p.gender? `（${p.gender}）`:''}${p.license? `<div class="muted">駕照：${esc(p.license)}</div>`:''}${p.medCert? `<div class="muted">救護證照：${esc(p.medCert)}</div>`:''}${(p.skills&&p.skills.length)? `<div class="muted">專長：${p.skills.map(esc).join('、')}</div>`:''}${p.note? `<div class="muted">備考：${esc(p.note)}</div>`:''}${longTermLabel(p)? `<div class="warn">🚫 ${longTermLabel(p)}</div>`:''}${p.outingRestriction==='dayOnly'? `<div class="warn">🚫 僅能外散（不可過夜）</div>`:''}${p.outingRestriction==='none'? `<div class="warn">🚫 完全不可外散宿</div>`:''}</span>
         <button class="ghost small" data-edit-person="${p.id}">編輯</button>
         <button class="ghost small danger" data-del-person="${p.id}">刪除</button>
       </div>`).join('');
