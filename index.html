@@ -151,7 +151,7 @@ textarea{min-height:50px;resize:vertical;}
   <div class="topbar-main" style="flex-direction:column;align-items:stretch;gap:6px">
     <div class="row wrap" style="gap:4px;align-items:center">
       <button class="ghost small" id="preplanDrawerBtn" title="預排">☰ 預排</button>
-      <h1 id="pageTitle" style="margin:0">🌟 衛哨排班系統 <span class="muted" style="font-size:10px;font-weight:400">v117</span></h1>
+      <h1 id="pageTitle" style="margin:0">🌟 衛哨排班系統 <span class="muted" style="font-size:10px;font-weight:400">v118</span></h1>
       <button class="ghost small" id="clearRangeBtn" title="清除一段時間">🧹 清除範圍</button>
       <span style="flex:1"></span>
       <button class="ghost small" id="exportBtn">匯出</button>
@@ -621,16 +621,24 @@ function chiefEligible(person, preset, driver){
 /* same as miscEntryConflicts but keeps the offending person's id alongside
    the message, so the UI can offer a one-tap "標為掛名" fix instead of
    just describing the problem */
+/* 「掛名」跟「暫停這次的衝突」是兩種不同語意的例外標記，都是綁在這一筆
+   班表資料本身（不是改這個人的設定），下次這筆資料被重新產生（例如重新
+   匯入）就會消失，要重新確認：
+   - nominalIds：這個人只是掛名，不用真的出勤，不算進人數
+   - confirmedConflictIds：這個人真的會來，只是先跟系統說「這次的衝突我
+     知道，不用一直警告」（例如休假還沒收假但會提早回來接班），人數還是
+     正常算 */
 function miscEntryConflictsDetailed(entry, date){
   const out=[];
   if(!entry.start || !entry.end) return out;
   const s=toMin(entry.start), e=wrapEndMin(s, toMin(entry.end));
   (entry.personIds||[]).filter(Boolean).forEach(pid=>{
     if((entry.nominalIds||[]).includes(pid)) return;
+    if((entry.confirmedConflictIds||[]).includes(pid)) return;
     const p=state.personnel.find(x=>x.id===pid);
     if(!p) return;
     const hard=hardUnavailabilityReasons(pid, date, s, e);
-    if(hard.length) out.push({pid, message:`${p.name}：${hard.join('・')}`});
+    if(hard.length) out.push({pid, message:`${p.name}：${hard.join('・')}`, isHardBlock: true});
     (state.misc[date]||[]).forEach(other=>{
       if(other.id===entry.id || !other.start || !other.end) return;
       if(!(other.personIds||[]).includes(pid)) return;
@@ -1307,18 +1315,15 @@ function personCompRestWindows(personId, date){
   return out;
 }
 
-/* ---------------- long-term suspension (今天暫停長期事故) ---------------- */
-/* a roster-level 長期事故 (mode='allday'/'range') applies every day
-   unconditionally — there was previously no way to say "not today". This
-   lets a specific date opt a specific person OUT of their standing
-   long-term restriction for that one day only, without touching the
-   roster setting itself (which keeps applying on every other day). */
-if(!state.longTermSuspensions) state.longTermSuspensions={};
-function isLongTermSuspended(personId, date){
-  return ((state.longTermSuspensions||{})[date]||[]).includes(personId);
-}
+/* effectiveLongTerm used to also check a separate "suspend today" list
+   (state.longTermSuspensions), but that mechanism never actually had a
+   way to create a suspension through the UI — it was fully dead. The
+   real need it was meant for ("this person is technically blocked but
+   will actually make it to this one shift") is now handled per-entry via
+   confirmedConflictIds (see miscEntryConflictsDetailed), which is tied to
+   the specific schedule entry rather than globally overriding a person's
+   availability for the whole day. */
 function effectiveLongTerm(person, date){
-  if(person && isLongTermSuspended(person.id, date)) return {mode:'off'};
   return personLongTerm(person);
 }
 /* ---------------- availability ---------------- */
@@ -2000,15 +2005,21 @@ function collectMiscConflicts(fromDate, toDate){
   const clashes=[];
   dateRangeList(fromDate, toDate).forEach(d=>{
     (state.misc[d]||[]).forEach(m=>{
-      miscEntryConflicts(m, d).forEach(c=>clashes.push({date:d, role:m.role, message:c}));
+      miscEntryConflictsDetailed(m, d).forEach(c=>clashes.push({date:d, role:m.role, message:c.message, pid:c.pid, isHardBlock:c.isHardBlock, entryId:m.id}));
     });
   });
   return clashes;
 }
 /* renders the full conflict list grouped by date, scrollable — no
    truncation, since "…還有N筆" isn't much use when you actually need to
-   go fix every one of them */
-function conflictListHTML(clashes){
+   go fix every one of them. 硬性衝突（休假/長期事故/單日事故擋著人卻還
+   是被排了）多一個「暫停這次」按鈕——這個人真的會來，只是先跟系統說這次
+   的衝突知道了，寫進那一筆班表資料本身的 confirmedConflictIds，不會動到
+   這個人的休假/長期事故/事故紀錄。showSuspendBtn 只有在這些衝突對應到
+   「真的存在、不會被復原」的班表資料時才該傳true——「全部預排檢查」是
+   唯讀模擬、跑完會復原，那時候按了也沒有東西可以綁，所以只有「全部預排
+   匯入」（資料真的寫進去了）才顯示這個按鈕。 */
+function conflictListHTML(clashes, showSuspendBtn){
   if(!clashes.length) return `<div class="hint">目前看起來沒有衝突。</div>`;
   const byDate={};
   clashes.forEach(c=>{ if(!byDate[c.date]) byDate[c.date]=[]; byDate[c.date].push(c); });
@@ -2018,7 +2029,10 @@ function conflictListHTML(clashes){
     <div style="max-height:50vh;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:8px">
       ${dates.map(d=>`
         <div style="font-weight:600;margin:8px 0 2px">${minguoLabel(d)}（${byDate[d].length}筆）</div>
-        ${byDate[d].map(c=>`<div class="muted">・${esc(c.role)}：${esc(c.message)}</div>`).join('')}
+        ${byDate[d].map(c=>`<div class="row muted" style="align-items:center">
+          <span class="grow">・${esc(c.role)}：${esc(c.message)}</span>
+          ${showSuspendBtn && c.isHardBlock && c.pid && c.entryId? `<button class="ghost small" data-conflict-confirm="1" data-conflict-confirm-date="${d}" data-conflict-confirm-entry="${c.entryId}" data-conflict-confirm-pid="${c.pid}">暫停這次</button>` : ''}
+        </div>`).join('')}
       `).join('')}
     </div>`;
 }
@@ -2047,7 +2061,24 @@ function openAllPreplanImportModal(){
     if(monthOf(fromDate)!==ym || monthOf(toDate)!==ym){ showAlert('範圍要在同一個月內，跨月請分開處理。'); return null; }
     return {fromDate, toDate};
   };
-  document.getElementById('apCheck').onclick=()=>{
+  // 「暫停這次」要綁在真的存在、不會被復原的班表資料上——「檢查」是唯讀
+  // 模擬，跑完會復原，那時候按了也沒有東西可以綁，所以只有「全部預排匯
+  // 入」的結果會顯示這個按鈕；按了之後直接改那一筆班表資料的
+  // confirmedConflictIds，再重新跑一次匯入讓畫面反映最新結果
+  const wireConfirmButtons=(rerun)=>{
+    document.querySelectorAll('[data-conflict-confirm]').forEach(b=>{
+      b.onclick=()=>{
+        const d=b.dataset.conflictConfirmDate, entryId=b.dataset.conflictConfirmEntry, pid=b.dataset.conflictConfirmPid;
+        const m=(state.misc[d]||[]).find(x=>x.id===entryId);
+        if(!m) return;
+        if(!m.confirmedConflictIds) m.confirmedConflictIds=[];
+        if(!m.confirmedConflictIds.includes(pid)) m.confirmedConflictIds.push(pid);
+        saveState();
+        rerun();
+      };
+    });
+  };
+  const runCheck=()=>{
     const range=getRange(); if(!range) return;
     const {fromDate, toDate}=range;
     const snapshotMisc=JSON.stringify(state.misc), snapshotUnavail=JSON.stringify(state.unavail);
@@ -2059,22 +2090,28 @@ function openAllPreplanImportModal(){
     document.getElementById('apResult').innerHTML = `
       <div class="card" style="padding:10px">
         <div class="muted" style="margin-bottom:6px">${minguoLabel(fromDate)}~${minguoLabel(toDate)}：如果現在匯入，會處理 ${touched} 筆。</div>
-        ${conflictListHTML(clashes)}
+        <div class="hint" style="margin-bottom:6px">這是模擬結果，還沒真的寫進班表，「暫停這次」要等實際匯入後才能用。</div>
+        ${conflictListHTML(clashes, false)}
       </div>`;
   };
+  document.getElementById('apCheck').onclick=runCheck;
   document.getElementById('apImport').onclick=()=>{
     const range=getRange(); if(!range) return;
     const {fromDate, toDate}=range;
     showConfirm(`確定要把${minguoLabel(fromDate)}~${minguoLabel(toDate)}這段範圍的9種預排全部匯入實際班表嗎？每種項目會依照各自的規則覆寫對應日期（沒排的日期會清空），不會動到其他項目或範圍外的日期。（休假大表因為資料本身是整月為單位，會處理整個月，不受這裡選的範圍限制）`, ()=>{
-      const touched=runAllPreplanImports(fromDate, toDate);
-      const clashes=collectMiscConflicts(fromDate, toDate);
-      saveState();
-      document.getElementById('apResult').innerHTML = `
-        <div class="card" style="padding:10px">
-          <div class="muted" style="margin-bottom:6px">已處理 ${touched} 筆。</div>
-          ${conflictListHTML(clashes)}
-        </div>`;
-      render();
+      const runImport=()=>{
+        const touched=runAllPreplanImports(fromDate, toDate);
+        const clashes=collectMiscConflicts(fromDate, toDate);
+        saveState();
+        document.getElementById('apResult').innerHTML = `
+          <div class="card" style="padding:10px">
+            <div class="muted" style="margin-bottom:6px">已處理 ${touched} 筆。</div>
+            ${conflictListHTML(clashes, true)}
+          </div>`;
+        wireConfirmButtons(runImport);
+        render();
+      };
+      runImport();
     });
   };
 }
@@ -5029,7 +5066,6 @@ function clearDateRange(from, to, opts){
     });
   }
   if(opts.dailyShiftOverrides) clearDateKeyed(state.dailyShiftOverrides);
-  if(opts.longTermSuspensions) clearDateKeyed(state.longTermSuspensions);
   if(opts.dutyChanges) clearDateKeyed(state.dutyChanges);
   (opts.preplanKeys||[]).forEach(key=>{
     const store = state.preplan[key];
@@ -5085,7 +5121,6 @@ function previewClearRange(from, to, opts){
     if(plainEntries.length) counts['事故登記'] = plainEntries.length;
   }
   if(opts.dailyShiftOverrides) counts['當日班別設定'] = countDateKeyed(state.dailyShiftOverrides);
-  if(opts.longTermSuspensions) counts['長期事故暫停狀態'] = countDateKeyed(state.longTermSuspensions);
   if(opts.dutyChanges) counts['異動紀錄'] = countDateKeyed(state.dutyChanges);
   (opts.preplanKeys||[]).forEach(key=>{
     const store = state.preplan[key]||{};
@@ -5109,7 +5144,7 @@ function openClearRangeModal(){
   modal.className='sheet-modal'; modal.style.zIndex='70';
   const scheduleItems = [
     ['assign','衛哨排班'], ['misc','其他勤務'], ['unavail','事故/休假'],
-    ['dailyShiftOverrides','當日班別設定'], ['longTermSuspensions','長期事故暫停狀態'], ['dutyChanges','異動紀錄'],
+    ['dailyShiftOverrides','當日班別設定'], ['dutyChanges','異動紀錄'],
   ];
   const preplanItems = PREPLAN_TYPES.filter(t=>t.mode!=='personCalendar').map(t=>[t.key, t.name]);
   modal.innerHTML=`
@@ -5361,6 +5396,7 @@ function purgePersonEverywhere(personId){
     (arr||[]).forEach(m=>{
       if(m.personIds) m.personIds = m.personIds.map(id=>id===personId? undefined : id);
       if(m.nominalIds) m.nominalIds = m.nominalIds.filter(id=>id!==personId);
+      if(m.confirmedConflictIds) m.confirmedConflictIds = m.confirmedConflictIds.filter(id=>id!==personId);
     });
   });
   Object.entries(state.preplan||{}).forEach(([key,store])=>{
@@ -5389,10 +5425,6 @@ function purgePersonEverywhere(personId){
         Object.values(byDate).forEach(cfg=>{ if(cfg && cfg.personIds) cfg.personIds=cfg.personIds.filter(id=>id!==personId); });
       });
     });
-  });
-  Object.values(state.longTermSuspensions||{}).forEach(arr=>{
-    const i=(arr||[]).indexOf(personId);
-    if(i>-1) arr.splice(i,1);
   });
 }
 
@@ -6633,6 +6665,12 @@ function outingEligibleList(date, filterFn){
 }
 function personDutySummary(personId, date){
   const parts=[];
+  const person = state.personnel.find(p=>p.id===personId);
+  if(person){
+    const lt = effectiveLongTerm(person, date);
+    if(lt.mode==='allday' && lt.inCamp!==false) parts.push(`長期事故：${lt.reason||'全天不可排'}`);
+    else if(lt.mode==='range' && lt.start && lt.end) parts.push(`長期事故：每天 ${lt.start}-${lt.end} 不可排${lt.reason?`（${lt.reason}）`:''}`);
+  }
   (state.unavail[date]||[]).filter(u=>u.personId===personId && isLeaveBufferEntry(u)).forEach(u=>{
     if(u.end==='24:00') parts.push(`今日${u.start}休假${u.start==='12:00'?'（榮譽假）':''}`);
     else if(u.start==='00:00' && u.end==='07:30') parts.push(`今日${u.end}收假`);
@@ -6728,61 +6766,6 @@ function wireQuickIncidentButtons(){
   document.querySelectorAll('[data-quick-incident]').forEach(b=>{
     b.onclick=()=>openQuickIncidentModal(b.dataset.quickIncident, currentDate);
   });
-}
-let longTermFilterState={search:'',group:'',reason:''}; // for the 長期事故 card
-function longTermFilteredList(){
-  let list = state.personnel.filter(p=>personLongTerm(p).mode!=='off');
-  if(longTermFilterState.search) list = list.filter(p=>p.name.includes(longTermFilterState.search));
-  if(longTermFilterState.group==='__none') list = list.filter(p=>!p.group);
-  else if(longTermFilterState.group) list = list.filter(p=>p.group===longTermFilterState.group);
-  if(longTermFilterState.reason) list = list.filter(p=>personLongTerm(p).reason===longTermFilterState.reason);
-  return list;
-}
-function longTermItemsHTML(){
-  const list = longTermFilteredList();
-  if(!list.length) return `<div class="empty">找不到符合的人員</div>`;
-  return list.map(p=>`<div class="muted">・${esc(p.name)}（${p.group||'未分組'}·${p.rank}）：${longTermLabel(p)}</div>`).join('');
-}
-/* 長期事故清單, living in 統計 rather than a dedicated tab. The reason
-   filter is built from whatever reasons are ACTUALLY in use right now
-   (not a fixed preset list) — with realistically well under 20 people on
-   long-term status at once, the distinct reasons in play are always a
-   short, current list, so this stays accurate without needing upkeep. */
-function renderLongTermCardHTML(){
-  const longTerm = state.personnel.filter(p=>personLongTerm(p).mode!=='off');
-  if(!longTerm.length) return '';
-  const reasons = [...new Set(longTerm.map(p=>personLongTerm(p).reason).filter(Boolean))].sort();
-  return collapsibleCardHTML('longTermStats', `長期事故（自動套用於每一天，免重複登記）（${longTerm.length}人）`, `
-      <div class="row wrap" style="margin-bottom:8px">
-        <div class="grow"><label>搜尋姓名</label><input type="text" id="longTermSearch" placeholder="輸入姓名關鍵字" value="${esc(longTermFilterState.search)}"></div>
-        <div style="width:110px"><label>排組篩選</label>
-          <select id="longTermGroupFilter">
-            <option value="" ${!longTermFilterState.group?'selected':''}>（全部）</option>
-            ${[...new Set(state.personnel.map(p=>p.group).filter(Boolean))].sort((a,b)=>groupIndex(a)-groupIndex(b)).map(g=>`<option value="${esc(g)}" ${longTermFilterState.group===g?'selected':''}>${esc(g)}</option>`).join('')}
-            <option value="__none" ${longTermFilterState.group==='__none'?'selected':''}>未分組</option>
-          </select>
-        </div>
-        <div style="width:110px"><label>原因篩選</label>
-          <select id="longTermReasonFilter">
-            <option value="" ${!longTermFilterState.reason?'selected':''}>（全部）</option>
-            ${reasons.map(r=>`<option value="${esc(r)}" ${longTermFilterState.reason===r?'selected':''}>${esc(r)}</option>`).join('')}
-          </select>
-        </div>
-      </div>
-      <div id="longTermSummary">${personListSummaryHTML(longTermFilteredList(), longTerm)}</div>
-      <div id="longTermItems">${longTermItemsHTML()}</div>
-      <div class="hint">要修改或恢復可排，到抽屜的「人員名冊」點該人「編輯」調整長期事故設定。</div>
-    `);
-}
-function wireLongTermCardEvents(){
-  if(!document.getElementById('longTermSearch')) return;
-  function refreshLongTermItems(){
-    document.getElementById('longTermSummary').innerHTML = personListSummaryHTML(longTermFilteredList(), state.personnel.filter(p=>personLongTerm(p).mode!=='off'));
-    document.getElementById('longTermItems').innerHTML = longTermItemsHTML();
-  }
-  document.getElementById('longTermSearch').oninput=(e)=>{ longTermFilterState.search=e.target.value.trim(); refreshLongTermItems(); };
-  document.getElementById('longTermGroupFilter').onchange=(e)=>{ longTermFilterState.group=e.target.value; refreshLongTermItems(); };
-  document.getElementById('longTermReasonFilter').onchange=(e)=>{ longTermFilterState.reason=e.target.value; refreshLongTermItems(); };
 }
 /* 可外散宿人員, now living in 統計 like everything else here — it's a
    "check current status" card, not something you edit day-to-day. */
@@ -7257,10 +7240,11 @@ function renderStats(){
   const onDutyHTML = onDutyCardHTML();
   const notInCampHTML = notInCampCardHTML();
   const incidentHTML = collapsibleCardHTML('incidentBreakdown', `${minguoLabel(currentDate)} 其他事故/管制分類（點各項展開名單）`, renderIncidentBreakdown(currentDate));
-  const longTermHTML = renderLongTermCardHTML();
   const outingHTML = renderOutingCardHTML();
   // 休假人員已經併進「不在營名單」（勾選休假/榮譽假篩選就能看到同樣的清單），
-  // 不再需要獨立一張卡片重複顯示同一批人
+  // 不再需要獨立一張卡片重複顯示同一批人；長期事故也一樣：真的不在營的人
+  // 一樣併進「不在營名單」，人還在營但被長期事故排除排班的人，改成在「在
+  // 勤人員」自己的欄位直接顯示原因，不需要另外一張獨立的卡片重複列一次
   const cardDefs = [
     {key:'queryForm', html:queryFormHTML},
     {key:'hourly', html:hourlyHTML},
@@ -7268,7 +7252,6 @@ function renderStats(){
     {key:'onDuty', html:onDutyHTML},
     {key:'notInCamp', html:notInCampHTML},
     {key:'incidentBreakdown', html:incidentHTML},
-    {key:'longTermStats', html:longTermHTML},
     {key:'outingStats', html:outingHTML},
   ];
   app.innerHTML = renderCardList('statsCardsContainer', 'stats', cardDefs);
@@ -7287,7 +7270,6 @@ function renderStats(){
   wireNotInCampCardEvents();
   wireOnDutyCardEvents();
   wireQuickIncidentButtons();
-  wireLongTermCardEvents();
   wireOutingCardEvents();
   wireGotoLeaveTableButtons();
   document.getElementById('queryBtn').onclick=()=>{
@@ -7824,10 +7806,9 @@ function renderSchedule(){
         <label style="display:flex;align-items:center;gap:6px;font-size:13px"><input type="checkbox" id="copyMisc" style="width:auto"> 其他勤務項目結構</label>
         <label style="display:flex;align-items:center;gap:6px;font-size:13px"><input type="checkbox" id="copyLeave" style="width:auto"> 休假登記</label>
         <label style="display:flex;align-items:center;gap:6px;font-size:13px"><input type="checkbox" id="copyUnavail" style="width:auto"> 一般事故登記（不含休假）</label>
-        <label style="display:flex;align-items:center;gap:6px;font-size:13px"><input type="checkbox" id="copySuspensions" style="width:auto"> 長期事故暫停狀態</label>
       </div>
       <button class="primary" id="copyDayBtn" style="width:100%">複製</button>
-      <div class="hint">「排班類別班別結構」「其他勤務項目結構」只複製時段/人數/角色等設定本身，不複製當天已排入的人員——因為衛哨規則不允許同一人連續兩天站同一時段，直接複製人員容易違規，複製後仍需手動或自動補空缺重新指派。「休假登記」跟「一般事故登記」分開勾選，可以只複製其中一種（例如假日留守，禮拜日多半跟禮拜六是同一批人休假，但不一定要連出車、體檢這類一般事故也一起複製）；休假會重建成完整的一天份紀錄（含前後6小時緩衝），可以在「目前登記的休假」正常編輯。「長期事故暫停狀態」複製的是「今天暫停長期事故、恢復正常排班」這個名單本身。複製是「同步」而不是單純附加：勾選的項目如果目標日期已經有同一筆（同一人同一項目、同一人同一段休假、或同一人同原因的事故），會先移除舊的再放新的，重複按複製不會越疊越多份；沒勾選、跟這次複製無關的資料完全不受影響。如果複製結果不理想，用左上角的復原（↩️）按鈕還原即可。</div>
+      <div class="hint">「排班類別班別結構」「其他勤務項目結構」只複製時段/人數/角色等設定本身，不複製當天已排入的人員——因為衛哨規則不允許同一人連續兩天站同一時段，直接複製人員容易違規，複製後仍需手動或自動補空缺重新指派。「休假登記」跟「一般事故登記」分開勾選，可以只複製其中一種（例如假日留守，禮拜日多半跟禮拜六是同一批人休假，但不一定要連出車、體檢這類一般事故也一起複製）；休假會重建成完整的一天份紀錄（含前後6小時緩衝），可以在「目前登記的休假」正常編輯。複製是「同步」而不是單純附加：勾選的項目如果目標日期已經有同一筆（同一人同一項目、同一人同一段休假、或同一人同原因的事故），會先移除舊的再放新的，重複按複製不會越疊越多份；沒勾選、跟這次複製無關的資料完全不受影響。如果複製結果不理想，用左上角的復原（↩️）按鈕還原即可。</div>
     `)}
     ${missingDefaults.length? collapsibleCardHTML('missingDefaults', `⚠️ 少了預設類別（${missingDefaults.length}）`, `
       <div class="muted" style="margin-bottom:8px">偵測到以下類別目前不在清單中（可能是被刪除了），可一鍵還原班別設定（該類別過去已排的內容無法救回，只能還原空白班表結構）：</div>
@@ -7932,8 +7913,7 @@ function renderSchedule(){
     const doMisc=document.getElementById('copyMisc').checked;
     const doLeave=document.getElementById('copyLeave').checked;
     const doUnavail=document.getElementById('copyUnavail').checked;
-    const doSuspensions=document.getElementById('copySuspensions').checked;
-    if(!doCat && !doMisc && !doLeave && !doUnavail && !doSuspensions){ showAlert('請至少勾選一項要複製的內容'); return; }
+    if(!doCat && !doMisc && !doLeave && !doUnavail){ showAlert('請至少勾選一項要複製的內容'); return; }
     showConfirm(`確定要把 ${from} 的設定複製到 ${to} 嗎？（複製的項目如果在 ${to} 已經有同一筆，會先移除舊的再放新的，不會越複製越多份；跟這次複製無關的資料不受影響）`, ()=>{
       if(doCat){
         const srcOverride = state.dailyShiftOverrides[from]||{};
@@ -7983,15 +7963,6 @@ function renderSchedule(){
           state.unavail[to] = state.unavail[to].filter(existing=>!(!existing.leaveId && existing.personId===u.personId && existing.reason===u.reason && existing.allDay===u.allDay && existing.start===u.start && existing.end===u.end));
           state.unavail[to].push({id:uid(), personId:u.personId, allDay:u.allDay, start:u.start, end:u.end, reason:u.reason, inCamp:u.inCamp});
         });
-      }
-      if(doSuspensions){
-        const srcSuspensions = state.longTermSuspensions[from]||[];
-        if(srcSuspensions.length){
-          if(!state.longTermSuspensions[to]) state.longTermSuspensions[to]=[];
-          srcSuspensions.forEach(pid=>{
-            if(!state.longTermSuspensions[to].includes(pid)) state.longTermSuspensions[to].push(pid);
-          });
-        }
       }
       saveState();
       showAlert('複製完成。');
@@ -8363,7 +8334,7 @@ function renderMiscDutyCardInner(role, entries, preset, standalone){
         ${m.support? `<div class="hint">🤝 支援：${esc(m.support)}</div>`:''}
         ${m.restUntil? `<div class="hint">😴 補休至 ${esc(m.restUntil)}</div>`:''}
         ${issues.map(i=>`<div class="badge-issue">⚠️ ${esc(i)}</div>`).join('')}
-        ${miscEntryConflictsDetailed(m, currentDate).map(c=>`<div class="badge-issue row" style="align-items:center">⚠️ ${esc(c.message)}<button class="ghost small" style="margin-left:auto" data-mark-nominal="${m.id}" data-mark-nominal-pid="${c.pid}">標為掛名</button></div>`).join('')}
+        ${miscEntryConflictsDetailed(m, currentDate).map(c=>`<div class="badge-issue row" style="align-items:center">⚠️ ${esc(c.message)}${c.isHardBlock? `<button class="ghost small" style="margin-left:auto" data-confirm-conflict="${m.id}" data-confirm-conflict-pid="${c.pid}">暫停這次</button>`:''}<button class="ghost small" style="${c.isHardBlock?'':'margin-left:auto'}" data-mark-nominal="${m.id}" data-mark-nominal-pid="${c.pid}">標為掛名</button></div>`).join('')}
         ${(m.personIds||[]).map((pid,i)=>pid? overrideBadgeHTML(currentDate, pid, {kind:'misc', miscId:m.id, slotIdx:i}):'').join('')}
       </div>`;
   }).join('');
@@ -9597,6 +9568,20 @@ function wireMiscCardEvents(){
       saveState(); render();
     };
   });
+  app.querySelectorAll('[data-confirm-conflict]').forEach(b=>{
+    b.onclick=()=>{
+      // 這個人真的會來，只是先跟系統說「這次的衝突知道了，不用一直警告」
+      // ——跟掛名一樣綁在這一筆班表資料本身，不會改到這個人自己的休假/
+      // 長期事故/事故紀錄，下次這筆資料被重新產生（例如重新匯入）還是會
+      // 重新檢查一次，不會一路沿用下去
+      const m=(state.misc[currentDate]||[]).find(x=>x.id===b.dataset.confirmConflict);
+      if(!m) return;
+      const pid=b.dataset.confirmConflictPid;
+      if(!m.confirmedConflictIds) m.confirmedConflictIds=[];
+      if(!m.confirmedConflictIds.includes(pid)) m.confirmedConflictIds.push(pid);
+      saveState(); render();
+    };
+  });
   app.querySelectorAll('[data-duty-change]').forEach(b=>{
     b.onclick=()=>openDutyChangeModal(b.dataset.dutyChange);
   });
@@ -9762,7 +9747,7 @@ function renderMisc(){
             <button class="ghost small danger" data-del-misc="${m.id}">刪除</button>
           </div>
           ${issues.map(i=>`<div class="badge-issue">⚠️ ${esc(i)}</div>`).join('')}
-          ${miscEntryConflictsDetailed(m, currentDate).map(c=>`<div class="badge-issue row" style="align-items:center">⚠️ ${esc(c.message)}<button class="ghost small" style="margin-left:auto" data-mark-nominal="${m.id}" data-mark-nominal-pid="${c.pid}">標為掛名</button></div>`).join('')}
+          ${miscEntryConflictsDetailed(m, currentDate).map(c=>`<div class="badge-issue row" style="align-items:center">⚠️ ${esc(c.message)}${c.isHardBlock? `<button class="ghost small" style="margin-left:auto" data-confirm-conflict="${m.id}" data-confirm-conflict-pid="${c.pid}">暫停這次</button>`:''}<button class="ghost small" style="${c.isHardBlock?'':'margin-left:auto'}" data-mark-nominal="${m.id}" data-mark-nominal-pid="${c.pid}">標為掛名</button></div>`).join('')}
         </div>`;
       }).join('')}
     `);
