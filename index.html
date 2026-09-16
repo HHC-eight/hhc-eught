@@ -23,7 +23,7 @@
      這裡只是保底估計值，實際高度由 JS 量出來後覆寫（見 syncBannerHeight），
      這樣不管標題區內容怎麼調整、換行與否、字體大小不同，都不會需要再手動
      調整這個數字。 */
-  --banner-h:76px;
+  --banner-h:48px;
 }
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
 html,body{margin:0;padding:0;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"PingFang TC","Noto Sans TC",Segoe UI,sans-serif;}
@@ -35,7 +35,6 @@ h3{font-size:13px;color:var(--dim);font-weight:500;}
 .topbar{position:sticky;top:0;z-index:20;background:var(--bg);border-bottom:1px solid var(--line);}
 .unit-banner{position:fixed;top:0;left:0;right:0;z-index:999;display:flex;flex-direction:column;gap:4px;padding:calc(6px + env(safe-area-inset-top)) 14px 6px;background:linear-gradient(180deg,#1a2117,var(--bg));border-bottom:1px solid rgba(125,154,95,.35);box-shadow:0 2px 8px rgba(0,0,0,.3);}
 .unit-banner-row1{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:8px;}
-.unit-banner-row2{display:flex;align-items:center;justify-content:center;gap:6px;}
 .unit-banner-center{display:flex;align-items:center;justify-content:center;gap:8px;}
 .unit-banner-badge{width:18px;height:18px;border-radius:50%;background:var(--accent2);color:#0d130a;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;flex-shrink:0;}
 .unit-banner-text{font-size:12px;letter-spacing:2.5px;color:var(--accent2);font-weight:600;}
@@ -141,29 +140,27 @@ textarea{min-height:50px;resize:vertical;}
 <div class="unit-banner">
   <div class="unit-banner-row1">
     <span class="row" style="gap:4px;justify-self:start">
-      <button class="ghost small" id="globalDatePrev">◀</button>
-      <button class="ghost small" id="globalDateNext">▶</button>
+      <button class="ghost small" id="undoBtn" title="復原上一步" disabled>↩️</button>
+      <button class="ghost small" id="redoBtn" title="取消復原（重做）" disabled>↪️</button>
     </span>
     <span class="unit-banner-center"><span class="unit-banner-badge">★</span><span class="unit-banner-text">陸軍第八軍團 本部連</span></span>
     <button class="ghost" id="unitRulesBtn" title="我們的規則" style="justify-self:end;padding:2px 6px;font-size:11px">⚙️</button>
-  </div>
-  <div class="unit-banner-row2">
-    <button class="ghost small" id="globalDateLabel"></button>
-    <button class="ghost small" id="globalDateToday">今天</button>
   </div>
 </div>
 <div class="topbar">
   <div class="topbar-main" style="flex-direction:column;align-items:stretch;gap:6px">
     <div class="row wrap" style="gap:4px;align-items:center">
       <button class="ghost small" id="preplanDrawerBtn" title="預排">☰ 預排</button>
-      <h1 id="pageTitle" style="margin:0">🌟 衛哨排班系統 <span class="muted" style="font-size:10px;font-weight:400">v115</span></h1>
+      <h1 id="pageTitle" style="margin:0">🌟 衛哨排班系統 <span class="muted" style="font-size:10px;font-weight:400">v116</span></h1>
       <button class="ghost small" id="clearRangeBtn" title="清除一段時間">🧹 清除範圍</button>
       <span style="flex:1"></span>
       <button class="ghost small" id="exportBtn">匯出</button>
     </div>
     <div class="row wrap" style="gap:4px;align-items:center">
-      <button class="ghost small" id="undoBtn" title="復原上一步" disabled>↩️</button>
-      <button class="ghost small" id="redoBtn" title="取消復原（重做）" disabled>↪️</button>
+      <button class="ghost small" id="globalDatePrev">◀</button>
+      <button class="ghost small" id="globalDateLabel"></button>
+      <button class="ghost small" id="globalDateNext">▶</button>
+      <button class="ghost small" id="globalDateToday">今天</button>
     </div>
   </div>
 </div>
