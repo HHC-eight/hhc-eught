@@ -135,7 +135,7 @@ textarea{min-height:50px;resize:vertical;}
   <div class="topbar-main" style="flex-direction:column;align-items:stretch;gap:6px">
     <div class="row wrap" style="gap:4px;align-items:center">
       <button class="ghost small" id="preplanDrawerBtn" title="設定">☰</button>
-      <h1 id="pageTitle" style="margin:0">🌟 衛哨排班系統 <span class="muted" style="font-size:10px;font-weight:400">v106</span></h1>
+      <h1 id="pageTitle" style="margin:0">🌟 衛哨排班系統 <span class="muted" style="font-size:10px;font-weight:400">v107</span></h1>
       <button class="ghost small" id="clearRangeBtn" title="清除一段時間">🧹 清除範圍</button>
       <span style="flex:1"></span>
       <select id="timeStepSelect" style="width:auto">
@@ -2083,16 +2083,25 @@ function openPreplanDrawer(){
       <div id="drawerList">
       ${orderedPreplanTypes().map((t,i)=>{
         const store=state.preplan[t.key]||{};
-        /* count only days that actually hold something — an entry can exist
-           but be empty (e.g. everything cleared out of it), and counting
-           bare keys made "清空本月" look like it hadn't worked */
+        const ym = preplanMonth || monthOf(currentDate);
+        /* count only days that actually hold something, and only for the
+           month currently being viewed — this used to be an all-time total,
+           so old data from months you'd already finished planning made the
+           number look wrong relative to what you'd actually ticked this
+           month. 留守 needs its own count: one entry there represents a
+           whole span (its own start/end date), not a single day, so
+           counting keys the same way as the other types badly undercounts
+           a multi-day block — and that span only partially overlapping the
+           viewed month still needs just the overlapping days counted. */
         const planned = t.key==='leave'
-          ? Object.values(store).filter(byCat=>Object.values(byCat||{}).some(r=>(r.dates||[]).length)).length
-          : Object.keys(store).filter(d=>preplanCellMark(t, store[d])).length;
+          ? Object.values(store).filter(byCat=>Object.values(byCat||{}).some(r=>(r.dates||[]).some(d=>d.startsWith(ym)))).length
+          : t.key==='standby'
+          ? Object.values(store).filter(plan=>plan && preplanCellMark(t, plan)).reduce((sum,plan)=>sum+dateRangeList(plan.startDate, plan.endDate).filter(d=>d.startsWith(ym)).length, 0)
+          : Object.keys(store).filter(d=>d.startsWith(ym) && preplanCellMark(t, store[d])).length;
         return `<div class="drawer-item" data-pp-idx="${i}" data-preplan-open="${t.key}">
           <span data-pp-handle style="cursor:grab;color:var(--dim);padding-right:2px;touch-action:none">⠿</span>
           <span style="font-size:18px">${t.icon}</span>
-          <span class="grow">${t.name}<br><span class="hint">${planned? (t.key==='leave'? `已排 ${planned} 人`:`已預排 ${planned} 天`):'尚未預排'}</span></span>
+          <span class="grow">${t.name}<br><span class="hint">${planned? (t.key==='leave'? `本月已排 ${planned} 人`:`本月已預排 ${planned} 天`):'本月尚未預排'}</span></span>
           <span style="color:var(--dim)">›</span>
         </div>`;
       }).join('')}
@@ -4023,6 +4032,31 @@ function openLeaveTableEditor(date, onSaved, presetPid){
     if(!selectedPid) return;
     sessionDrafts[selectedCat] = {picked:new Set(picked), honorDates:new Set(honorDates), partialDates:new Map(partialDates)};
   };
+  /* 有沒有還沒按「確認」存進去的變更——包含目前正在編輯的這個類型（picked/
+     honorDates/partialDates 都是本地變數，不會自動存檔），也包含本次
+     session切換過但還沒存的其他類型草稿（sessionDrafts）。用來在關閉前
+     提醒，避免點一點就以為存了、結果一離開全部消失。 */
+  const hasUnsavedChanges=()=>{
+    if(!selectedPid) return false;
+    const catsToCheck = new Set([selectedCat, ...Object.keys(sessionDrafts)]);
+    for(const cat of catsToCheck){
+      const live = cat===selectedCat? {picked, honorDates, partialDates} : sessionDrafts[cat];
+      if(!live) continue;
+      const rec = catRec(selectedPid, cat);
+      const recDates=new Set((rec.dates||[]).filter(d=>d.startsWith(ym)));
+      const recHonor=new Set((rec.honorDates||[]).filter(d=>d.startsWith(ym)));
+      const recPartial=new Map(Object.entries(rec.partialTimes||{}).filter(([d])=>d.startsWith(ym)));
+      const setsDiffer=(a,b)=> a.size!==b.size || [...a].some(x=>!b.has(x));
+      if(setsDiffer(live.picked, recDates)) return true;
+      if(setsDiffer(live.honorDates, recHonor)) return true;
+      if(live.partialDates.size!==recPartial.size) return true;
+      for(const [d,t] of live.partialDates){
+        const rt=recPartial.get(d);
+        if(!rt || rt.start!==t.start || rt.end!==t.end) return true;
+      }
+    }
+    return false;
+  };
   const loadPerson=()=>{
     // full reset — used when switching to a different person, or on first
     // open, where any in-progress draft belongs to the OLD person and
@@ -4218,7 +4252,13 @@ function openLeaveTableEditor(date, onSaved, presetPid){
             <button class="ghost small danger" data-lt-del-block="${b.leaveId}">刪除整段</button>
           </div>`).join('') : `<div class="empty">目前沒有已生效的記錄</div>`);
       })()}`;
-    modal.querySelector('#ltClose').onclick=()=>modal.remove();
+    modal.querySelector('#ltClose').onclick=()=>{
+      if(hasUnsavedChanges()){
+        showConfirm('有幾個項目點過還沒按「確認」存檔，關閉的話這些改動會不見。確定要直接關閉嗎？', ()=>modal.remove());
+        return;
+      }
+      modal.remove();
+    };
     modal.querySelector('#ltCheckpoint').onclick=()=>openCheckpointModal('leave', '休假大表',
       ()=>state.preplan.leave||{},
       (data)=>{ state.preplan.leave=data; loadPerson(); draw(); });
@@ -4445,6 +4485,7 @@ function importPreplanForDate(key, date){
                                // future cleanup pass can safely remove sub-duty entries whose
                                // block no longer exists, without touching same-named entries
                                // someone entered by hand
+          fromPreplan:true, // 從留守子項目匯入寫入的，清除範圍時可以選擇排除
           ...(cfg.support? {support:cfg.support}:{})};
         if(isRoleMode) autoSwapDriverChief(newEntry, {requiredLicenses:subCfg.requiredLicenses||[], requiredMedCert:!!subCfg.requiredMedCert,
           chiefRequiredLicenses:subCfg.chiefRequiredLicenses||[], chiefRequiredMedCert:!!subCfg.chiefRequiredMedCert});
@@ -4468,7 +4509,7 @@ function importPreplanForDate(key, date){
     state.misc[date].push({id:uid(), role:roleName,
       start:plan.start||t0.start, end:plan.end||t0.end,
       restUntil:plan.restUntil||(preset&&preset.restUntil)||'', personIds:ids,
-      nominalIds:plan.nominalIds||[], ...mergeSupport(plan.support, plan.note)});
+      nominalIds:plan.nominalIds||[], fromPreplan:true, ...mergeSupport(plan.support, plan.note)});
   } else if(type.mode==='roles'){
     const ids=(plan.personIds||[]).slice(0,type.roles.length);
     const notes=(plan.notes||[]).filter(Boolean).join('、');
@@ -4476,7 +4517,7 @@ function importPreplanForDate(key, date){
     const newEntry={id:uid(), role:roleName,
       start:plan.start||t0.start, end:plan.end||t0.end,
       restUntil:plan.restUntil||(preset&&preset.restUntil)||'', roles:[...type.roles], personIds:ids,
-      nominalIds:plan.nominalIds||[], lockedSlots:type.roles.map(()=>false), ...mergeSupport(plan.support, notes)};
+      nominalIds:plan.nominalIds||[], lockedSlots:type.roles.map(()=>false), fromPreplan:true, ...mergeSupport(plan.support, notes)};
     autoSwapDriverChief(newEntry);
     state.misc[date].push(newEntry);
   } else if(type.mode==='dayNight'){
@@ -4489,14 +4530,14 @@ function importPreplanForDate(key, date){
       state.misc[date].push({id:uid(), role:roleName,
         start:plan.dayStart||dayT.start, end:plan.dayEnd||dayT.end,
         restUntil:plan.dayRestUntil||'', personIds:dayIds, nominalIds:plan.dayNominalIds||[],
-        shiftLabel:'日班', ...mergeSupport(plan.support, plan.dayNote)});
+        shiftLabel:'日班', fromPreplan:true, ...mergeSupport(plan.support, plan.dayNote)});
       wrote=true;
     }
     if(nightIds.length || plan.nightNote){
       state.misc[date].push({id:uid(), role:roleName,
         start:plan.nightStart||nightT.start, end:plan.nightEnd||nightT.end,
         restUntil:plan.nightRestUntil||(preset&&preset.restUntil)||'', personIds:nightIds, nominalIds:plan.nightNominalIds||[],
-        shiftLabel:'夜班', ...mergeSupport(plan.support, plan.nightNote)});
+        shiftLabel:'夜班', fromPreplan:true, ...mergeSupport(plan.support, plan.nightNote)});
       wrote=true;
     }
     return wrote;
@@ -4510,7 +4551,7 @@ function importPreplanForDate(key, date){
       if(!ids.length && !plan.support && !cfg.note) return;
       state.misc[date].push({id:uid(), role:roleName, start:st, end:en,
         restUntil:cfg.restUntil||'', personIds:ids, nominalIds:cfg.nominalIds||[],
-        ...mergeSupport(plan.support, cfg.note)});
+        fromPreplan:true, ...mergeSupport(plan.support, cfg.note)});
       wrote=true;
     });
     return wrote;
@@ -4615,7 +4656,23 @@ function clearDateRange(from, to, opts){
   let cleared = 0;
   const clearDateKeyed = (obj)=>{ dates.forEach(d=>{ if(obj[d]!==undefined){ delete obj[d]; cleared++; } }); };
   if(opts.assign) clearDateKeyed(state.assign);
-  if(opts.misc) clearDateKeyed(state.misc);
+  if(opts.misc){
+    if(opts.excludeFromPreplan){
+      // keep entries that came from a 預排 import, only clear the rest —
+      // a preplan-derived entry stays exactly as current as the last time
+      // you imported it, so wiping it here would just mean re-importing to
+      // get it back, with no benefit over leaving it alone
+      dates.forEach(d=>{
+        if(state.misc[d]===undefined) return;
+        const before=state.misc[d].length;
+        state.misc[d]=state.misc[d].filter(m=>m.fromPreplan);
+        cleared += before-state.misc[d].length;
+        if(!state.misc[d].length) delete state.misc[d];
+      });
+    } else {
+      clearDateKeyed(state.misc);
+    }
+  }
   if(opts.unavail){
     // leave blocks are deleted whole (via deleteLeaveById) even when only
     // part of the block falls inside the range, so a block never ends up
@@ -4683,7 +4740,17 @@ function previewClearRange(from, to, opts){
   const counts = {};
   const countDateKeyed = (obj)=>dates.filter(d=>obj[d]!==undefined).length;
   if(opts.assign) counts['衛哨排班'] = countDateKeyed(state.assign);
-  if(opts.misc) counts['其他勤務'] = countDateKeyed(state.misc);
+  if(opts.misc){
+    if(opts.excludeFromPreplan){
+      let n=0;
+      dates.forEach(d=>{ (state.misc[d]||[]).forEach(m=>{ if(!m.fromPreplan) n++; }); });
+      counts['其他勤務（不含預排匯入的部分）'] = n;
+    } else {
+      let n=0;
+      dates.forEach(d=>{ n += (state.misc[d]||[]).length; });
+      counts['其他勤務'] = n;
+    }
+  }
   if(opts.unavail){
     const {blocks, plainEntries} = leaveBlocksInRange(from, to);
     if(blocks.length) counts['不在營紀錄（整段）'] = blocks.length;
@@ -4732,6 +4799,9 @@ function openClearRangeModal(){
         </label>`).join('')}
       </div>
       <div class="hint" style="margin-bottom:8px">清「衛哨排班」或「其他勤務」時，記得順便勾「異動紀錄」——不然裡面可能留著指向已經被清掉的班次的舊紀錄。</div>
+      <label style="display:flex;align-items:center;gap:6px;font-size:13px;margin-bottom:8px">
+        <input type="checkbox" id="crExcludeFromPreplan" style="width:auto"> 其他勤務排除從預排匯入的部分（只清手動輸入/自動排班補的，保留預排匯入寫入的）
+      </label>
       <div class="row wrap" style="margin-bottom:4px">
         <button class="ghost small" id="crSchedAll">全選</button>
         <button class="ghost small" id="crSchedNone">全部取消</button>
@@ -4761,7 +4831,8 @@ function openClearRangeModal(){
     if(!from||!to||from>to){ showAlert('請確認日期範圍正確'); return; }
     const opts={preplanKeys:[...modal.querySelectorAll('.cr-preplan:checked')].map(cb=>cb.value)};
     scheduleItems.forEach(([k])=>{ opts[k]=!!modal.querySelector(`.cr-schedule[value="${k}"]`).checked; });
-    const anySelected = Object.entries(opts).some(([k,v])=>k==='preplanKeys'? v.length : v);
+    opts.excludeFromPreplan = document.getElementById('crExcludeFromPreplan').checked;
+    const anySelected = Object.entries(opts).some(([k,v])=>k==='preplanKeys'? v.length : (k==='excludeFromPreplan'? false : v));
     if(!anySelected){ showAlert('請至少勾選一項要清除的內容'); return; }
     // preview first — never delete anything before you've seen real counts
     const counts = previewClearRange(from, to, opts);
@@ -4785,16 +4856,27 @@ function openClearRangeModal(){
         modal.remove();
         render();
       };
-      if(opts.unavail){
-        // 休假/事故牽動範圍較廣，多一層確認：具體列出會被清掉的休假是誰、哪段
-        const {blocks, plainEntries} = leaveBlocksInRange(from, to);
-        const lines = [
-          ...blocks.map(b=>`${b.personName}：${minguoLabel(b.start)}~${minguoLabel(b.end)}（整段休假）`),
-          ...plainEntries.map(p=>`${p.personName}：${minguoLabel(p.date)}${p.reason? '（'+p.reason+'）':''}`),
-        ];
-        showConfirm(`即將清除以下休假/事故紀錄，確定嗎？\n${lines.slice(0,10).join('\n')}${lines.length>10? `\n…還有 ${lines.length-10} 筆`:''}`, proceed);
+      const afterPreplanCheck=()=>{
+        if(opts.unavail){
+          // 休假/事故牽動範圍較廣，多一層確認：具體列出會被清掉的休假是誰、哪段
+          const {blocks, plainEntries} = leaveBlocksInRange(from, to);
+          const lines = [
+            ...blocks.map(b=>`${b.personName}：${minguoLabel(b.start)}~${minguoLabel(b.end)}（整段休假）`),
+            ...plainEntries.map(p=>`${p.personName}：${minguoLabel(p.date)}${p.reason? '（'+p.reason+'）':''}`),
+          ];
+          showConfirm(`即將清除以下休假/事故紀錄，確定嗎？\n${lines.slice(0,10).join('\n')}${lines.length>10? `\n…還有 ${lines.length-10} 筆`:''}`, proceed);
+        } else {
+          showConfirm(`確定要清除 ${minguoLabel(from)} ~ ${minguoLabel(to)} 這段期間的資料嗎？這個動作可以用左上角復原按鈕還原。`, proceed);
+        }
+      };
+      if(opts.preplanKeys.length){
+        // 預排是你先前規劃好、可能還沒匯入或已經匯入好幾次的排班依據，清掉
+        // 之後要重新排，跟清除「當下已經排定的班表」性質不同，多一段獨立
+        // 的確認，列出具體是哪幾種預排會被清掉
+        const preplanNames = opts.preplanKeys.map(k=>(PREPLAN_TYPES.find(t=>t.key===k)||{}).name || k);
+        showConfirm(`⚠️ 這次清除包含預排資料：${preplanNames.join('、')}。這些是先前規劃好的排班依據，清掉之後要重新排（不只是清掉已經匯入的班表而已）。確定要連同預排一起清除嗎？`, afterPreplanCheck);
       } else {
-        showConfirm(`確定要清除 ${minguoLabel(from)} ~ ${minguoLabel(to)} 這段期間的資料嗎？這個動作可以用左上角復原按鈕還原。`, proceed);
+        afterPreplanCheck();
       }
     };
   };
