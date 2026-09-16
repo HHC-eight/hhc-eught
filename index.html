@@ -135,7 +135,7 @@ textarea{min-height:50px;resize:vertical;}
   <div class="topbar-main" style="flex-direction:column;align-items:stretch;gap:6px">
     <div class="row wrap" style="gap:4px;align-items:center">
       <button class="ghost small" id="preplanDrawerBtn" title="設定">☰</button>
-      <h1 id="pageTitle" style="margin:0">🌟 衛哨排班系統 <span class="muted" style="font-size:10px;font-weight:400">v100</span></h1>
+      <h1 id="pageTitle" style="margin:0">🌟 衛哨排班系統 <span class="muted" style="font-size:10px;font-weight:400">v106</span></h1>
       <button class="ghost small" id="clearRangeBtn" title="清除一段時間">🧹 清除範圍</button>
       <span style="flex:1"></span>
       <select id="timeStepSelect" style="width:auto">
@@ -939,7 +939,32 @@ if(state.preplan && state.preplan.leave){
     }
   });
 }
-/* user-draggable order of the preplan drawer entries */
+/* 查哨的平日/假日雙序列輪值——兩條獨立序列，各自只在自己的時段類型出現時
+   才往前走一格，遇到另一類時段就跳過不影響自己。用一組「錨點」校準：在
+   某個已知的日期+時段，指定該序列當時輪到第幾個單位；之後不管排到多久
+   以後，都是從錨點一路數格子數過去。錨點可以在現實中輪值被打斷、跟系統
+   算出來的脫節時手動重設。 */
+if(!state.patrolSequence) state.patrolSequence = {
+  weekdayUnits: ['軍官連','地支部','憲兵連','本部連'],
+  holidayUnits: ['地支部','憲兵連','本部連'],
+  anchorWeekday: {date:'2026-09-10', slotIdx:2, unitIndex:0}, // 00-02＝軍官連
+  anchorHoliday: {date:'2026-09-11', slotIdx:1, unitIndex:2}, // 22-24＝本部連
+};
+/* 每個階級這個月平均該排幾班查哨——只當作挑人時的公平性參考分數（排得比
+   平均少的人優先），不是硬性上限，人力緊繃時還是會排到已經排比較多的人。
+   沒有特別設定的階級，預設值是1。 */
+if(!state.patrolRankTargets) state.patrolRankTargets = {};
+/* 查哨五個時段各自的補休預設值——原本寫死在程式碼裡（夜間到0800、12-14
+   完全沒有），改成可以直接在畫面上調整，之後要因任務需求改補休時間不用
+   再改程式碼。key是 PREPLAN_TYPES.patrol.slots 的 index
+   （0=12-14,1=22-24,2=00-02,3=02-04,4=04-06）。 */
+if(!state.patrolRestDefaults) state.patrolRestDefaults = {0:'15:30', 1:'08:00', 2:'08:00', 3:'08:00', 4:'08:00'};
+/* 查哨自動排的候選名單範圍——independent of觸發自動排的當下，先設定好、
+   隨時可以調整，不用每次按自動排才臨時選一次。null代表沒有限制（全部人
+   員都算候選人），是陣列的話就是白名單。 */
+if(state.patrolCandidateIds===undefined) state.patrolCandidateIds = null;
+
+
 if(!state.preplanOrder) state.preplanOrder = PREPLAN_TYPES.map(t=>t.key);
 /* last-used times / rest-until values per preplan type, so recurring duties
    don't have to be re-typed every single day — the editor opens pre-filled
@@ -1808,7 +1833,7 @@ function openDatePickerModal(){
     modal.remove(); render();
   };
 }
-function openHolidayDateModal(){
+function openHolidayDateModal(onDone){
   const [y,m,d] = currentDate.split('-').map(Number);
   const minguoYear = y-1911;
   const modal=document.createElement('div');
@@ -1849,6 +1874,7 @@ function openHolidayDateModal(){
     if(!state.holidayDates.includes(dateStr)) state.holidayDates.push(dateStr);
     saveState();
     modal.remove(); render();
+    if(onDone) onDone();
   };
 }
 refreshGlobalDate();
@@ -1975,6 +2001,65 @@ function openAllPreplanImportModal(){
     });
   };
 }
+/* 假日設定——例假日（每週固定星期）＋國定假日（個別日期）。原本放在統計
+   分頁的可外散宿卡片裡，跟排班（查哨序列）、外散宿資格都會用到，搬到抽屜
+   當獨立設定比較好找，不用每次都要先切去統計分頁。 */
+function openHolidaySettingsModal(){
+  const modal=document.createElement('div');
+  modal.className='sheet-modal'; modal.style.zIndex='94';
+  const draw=()=>{
+    modal.innerHTML=`
+      <div class="sheet-inner">
+        <div class="section-title"><h2 style="margin:0">🗓️ 假日設定</h2><button class="ghost small" id="hsClose">關閉</button></div>
+        <div class="hint" style="margin-bottom:8px">這裡的假日設定會同時影響外散宿資格判斷跟查哨的平日/假日序列，兩邊共用同一份設定。</div>
+        <h3>例假日（每週固定休假日，複選）</h3>
+        <div class="row wrap" style="gap:10px;margin-bottom:8px">
+          ${['日','一','二','三','四','五','六'].map((d,i)=>`
+            <label style="display:flex;align-items:center;gap:6px;font-size:13px">
+              <input type="checkbox" class="hs-weekday-cb" value="${i}" style="width:auto" ${(state.holidayWeekdays||[]).includes(i)?'checked':''}> 週${d}
+            </label>`).join('')}
+        </div>
+        <div class="divider"></div>
+        <div class="section-title"><h3 style="margin:0">國定假日（個別日期，民國）（${(state.holidayDates||[]).length}筆）</h3></div>
+        <div class="row wrap" style="margin-bottom:6px;margin-top:6px">
+          ${(state.holidayDates||[]).length? state.holidayDates.slice().sort().map(d=>`
+            <span class="pill-btn">${minguoLabel(d)} <span data-hs-del-holiday="${d}" style="color:var(--danger);margin-left:3px;cursor:pointer">✕</span></span>`).join('') : `<span class="muted" style="font-size:12px">尚未新增</span>`}
+        </div>
+        <button class="ghost small" id="hsAddHolidayBtn" style="margin-bottom:8px">＋新增國定假日</button>
+        <button class="ghost small" id="hsAddCommonHolidaysBtn" style="margin-bottom:8px">＋一鍵加入常見國定假日（固定日期）</button>
+        <div class="hint">會加入元旦、228、勞動節、國慶日等固定日期假日；農曆假日（春節、清明、端午、中秋）日期每年不同，請自行用上面「新增國定假日」個別新增。</div>
+      </div>`;
+    document.getElementById('hsClose').onclick=()=>modal.remove();
+    modal.querySelectorAll('.hs-weekday-cb').forEach(cb=>{
+      cb.onchange=()=>{
+        state.holidayWeekdays=[...modal.querySelectorAll('.hs-weekday-cb:checked')].map(x=>Number(x.value));
+        saveState(); draw();
+      };
+    });
+    modal.querySelectorAll('[data-hs-del-holiday]').forEach(x=>{
+      x.onclick=()=>{
+        state.holidayDates=(state.holidayDates||[]).filter(d=>d!==x.dataset.hsDelHoliday);
+        saveState(); draw();
+      };
+    });
+    document.getElementById('hsAddHolidayBtn').onclick=()=>{ openHolidayDateModal(()=>draw()); };
+    document.getElementById('hsAddCommonHolidaysBtn').onclick=()=>{
+      const y = Number(currentDate.slice(0,4));
+      let added=0;
+      [y-1,y,y+1].forEach(yy=>{
+        COMMON_HOLIDAYS_FIXED.forEach(h=>{
+          const p=n=>String(n).padStart(2,'0');
+          const dateStr=`${yy}-${p(h.m)}-${p(h.d)}`;
+          if(!state.holidayDates.includes(dateStr)){ state.holidayDates.push(dateStr); added++; }
+        });
+      });
+      showAlert(added? `已加入 ${added} 個固定日期假日（含前後一年）。`:'固定日期假日已經都加過了。');
+      saveState(); draw();
+    };
+  };
+  document.body.appendChild(modal);
+  draw();
+}
 function openPreplanDrawer(){
   const backdrop=document.createElement('div');
   backdrop.className='drawer-backdrop';
@@ -1987,6 +2072,11 @@ function openPreplanDrawer(){
       <div class="drawer-item" data-open-roster="1">
         <span style="font-size:18px">👤</span>
         <span class="grow">人員名冊<br><span class="hint">共 ${state.personnel.length} 人</span></span>
+        <span style="color:var(--dim)">›</span>
+      </div>
+      <div class="drawer-item" data-open-holidays="1">
+        <span style="font-size:18px">🗓️</span>
+        <span class="grow">假日設定<br><span class="hint">例假日星期＋國定假日（共${(state.holidayDates||[]).length}筆個別日期）</span></span>
         <span style="color:var(--dim)">›</span>
       </div>
       <div class="divider"></div>
@@ -2011,6 +2101,7 @@ function openPreplanDrawer(){
       <button class="ghost" id="drawerAllPreplan" style="width:100%">🔍 全部預排檢查／匯入</button>`;
     document.getElementById('drawerClose').onclick=close;
     drawer.querySelector('[data-open-roster]').onclick=()=>{ close(); currentTab='people'; render(); };
+    drawer.querySelector('[data-open-holidays]').onclick=()=>{ close(); openHolidaySettingsModal(); };
     document.getElementById('drawerAllPreplan').onclick=()=>{ close(); openAllPreplanImportModal(); };
     drawer.querySelectorAll('[data-preplan-open]').forEach(b=>{
       b.onclick=(e)=>{
@@ -2345,6 +2436,214 @@ function openPreplanTextImportModal(key, ym, onDone){
    (or using the generic 複製到其他日期, which still means picking one day
    first). Only offered for 值星 since that's the one where a single
    person covers a multi-day stretch with the same hours throughout. */
+/* 唯讀預覽這個月查哨每個時段依序列該輪到哪個單位——只到單位層級，還沒指定
+   到實際人員（指定人員是下一批要做的事），先讓你確認序列本身算得對不對。 */
+function openPatrolSequenceViewModal(ym){
+  const modal=document.createElement('div');
+  modal.className='sheet-modal'; modal.style.zIndex='94';
+  const draw=()=>{
+    const [y,m]=ym.split('-').map(Number);
+    const total=daysInMonth(ym);
+    const fromDate=`${ym}-01`, toDate=`${ym}-${String(total).padStart(2,'0')}`;
+    const seq=computePatrolSequence(fromDate, toDate);
+    const slotLabels={0:'12-14',1:'22-24',2:'00-02',3:'02-04',4:'04-06'};
+    let rows='';
+    for(let d=1; d<=total; d++){
+      const ds=`${ym}-${String(d).padStart(2,'0')}`;
+      const hol=isHolidayDate(ds);
+      const isManualDate=(state.holidayDates||[]).includes(ds);
+      const daySlots=seq[ds]||{};
+      rows += `<div style="padding:4px 0;border-bottom:1px solid var(--line)">
+        <div class="row" style="align-items:center">
+          <span class="grow" style="font-weight:600;${hol?'color:var(--danger)':''}">${minguoLabel(ds)}${hol?'（假）':''}</span>
+          <button class="ghost small" data-psv-toggle-holiday="${ds}">${isManualDate? '取消假日':(hol?'（依星期自動）':'設為假日')}</button>
+        </div>
+        <span class="muted" style="font-size:12px">${PATROL_CHRONO_ORDER.map(idx=>`${slotLabels[idx]} ${esc(daySlots[idx]||'—')}`).join('　')}</span>
+      </div>`;
+    }
+    modal.innerHTML=`
+      <div class="sheet-inner">
+      <div class="section-title"><h2 style="margin:0">民國${y-1911}年${m}月　查哨單位序列</h2><button class="ghost small" id="psvClose">關閉</button></div>
+      <div class="hint" style="margin-bottom:8px">依平日/假日雙序列算出來的結果，只到「哪個單位」這一層，還沒指定實際人員。紅字是假日。如果某天實際上要額外算假日（或不該算假日），直接在那天旁邊按按鈕增減，會直接更新到假日設定（跟外散宿共用的同一份國定假日清單）。「（依星期自動）」代表這天是依每週固定的例假日星期算出來的，不是個別日期設定，沒辦法用這個按鈕取消，要調整請去抽屜的「🗓️假日設定」改「例假日星期」。</div>
+      <div style="max-height:60vh;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:8px">${rows}</div>
+      </div>
+    `;
+    document.getElementById('psvClose').onclick=()=>modal.remove();
+    modal.querySelectorAll('[data-psv-toggle-holiday]').forEach(b=>{
+      b.onclick=()=>{
+        const ds=b.dataset.psvToggleHoliday;
+        if(!state.holidayDates) state.holidayDates=[];
+        if(state.holidayDates.includes(ds)){
+          state.holidayDates=state.holidayDates.filter(d=>d!==ds);
+        } else if(!isHolidayDate(ds)){
+          state.holidayDates.push(ds);
+        } else {
+          return; // 依星期自動算出來的假日,這個按鈕不處理
+        }
+        saveState();
+        draw();
+      };
+    });
+  };
+  document.body.appendChild(modal);
+  draw();
+}
+/* 查哨候選名單範圍的邏輯查詢——null代表沒有限制（全部人員都算候選人）。 */
+function patrolCandidateIdSet(){
+  return state.patrolCandidateIds? new Set(state.patrolCandidateIds) : null;
+}
+/* 設定查哨自動排的候選名單範圍——獨立於觸發自動排的當下，隨時可以調整、
+   存起來，之後按自動排就直接套用目前存的範圍，不用每次重選一次。 */
+function openPatrolRangeModal(onDone){
+  const modal=document.createElement('div');
+  modal.className='sheet-modal'; modal.style.zIndex='95';
+  const groups=[...new Set(state.personnel.map(p=>p.group).filter(Boolean))].sort((a,b)=>groupIndex(a)-groupIndex(b));
+  const currentSet = patrolCandidateIdSet();
+  const isChecked = (pid)=> currentSet? currentSet.has(pid) : true;
+  modal.innerHTML=`
+    <div class="sheet-inner">
+      <div class="section-title"><h2 style="margin:0">查哨候選名單範圍</h2><button class="ghost small" id="prClose">關閉</button></div>
+      <div class="hint" style="margin-bottom:8px">設定好之後會存起來，之後按「自動排」直接套用這裡設定的範圍，不用每次重選。預設全部人員都可以當候選人，可以取消勾選排/組整批排除，或展開下面名單個別調整。只影響「自動排」，不會影響手動選人。</div>
+      <div class="row wrap" style="gap:10px;margin-bottom:8px">
+        ${groups.map(g=>{
+          const groupPeople=state.personnel.filter(p=>(p.group||'__none')===g);
+          const allChecked=groupPeople.every(p=>isChecked(p.id));
+          return `<label style="display:flex;align-items:center;gap:4px;font-size:13px">
+          <input type="checkbox" class="pr-group-cb" value="${esc(g)}" style="width:auto" ${allChecked?'checked':''}>${esc(g)}
+        </label>`;}).join('')}
+        <label style="display:flex;align-items:center;gap:4px;font-size:13px">
+          <input type="checkbox" class="pr-group-cb" value="__none" style="width:auto" ${state.personnel.filter(p=>!p.group).every(p=>isChecked(p.id))?'checked':''}>未分組
+        </label>
+      </div>
+      <div class="section-title"><h3 style="margin:0">個別調整（展開後可以取消單一個人）</h3><button class="ghost small" id="prToggleList">▼ 展開</button></div>
+      <div id="prPersonList" style="display:none;max-height:40vh;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:8px;margin-top:6px">
+        ${state.personnel.slice().sort((a,b)=>groupIndex(a.group)-groupIndex(b.group)||rankIndex(a.rank)-rankIndex(b.rank)).map(p=>`
+          <label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0">
+            <input type="checkbox" class="pr-person-cb" value="${p.id}" data-group="${esc(p.group||'__none')}" style="width:auto" ${isChecked(p.id)?'checked':''}>
+            ${esc(p.name)}（${p.group||'未分組'}·${p.rank}）
+          </label>`).join('')}
+      </div>
+      <button class="primary" id="prSave" style="width:100%;margin-top:10px">儲存</button>
+    </div>`;
+  document.body.appendChild(modal);
+  document.getElementById('prClose').onclick=()=>modal.remove();
+  document.getElementById('prToggleList').onclick=(e)=>{
+    const box=document.getElementById('prPersonList');
+    const showing=box.style.display!=='none';
+    box.style.display=showing?'none':'block';
+    e.target.textContent=showing?'▼ 展開':'▲ 收合';
+  };
+  modal.querySelectorAll('.pr-group-cb').forEach(cb=>{
+    cb.onchange=()=>{
+      modal.querySelectorAll(`.pr-person-cb[data-group="${cb.value}"]`).forEach(pcb=>{ pcb.checked=cb.checked; });
+    };
+  });
+  document.getElementById('prSave').onclick=()=>{
+    const checkedIds=[...modal.querySelectorAll('.pr-person-cb:checked')].map(cb=>cb.value);
+    if(!checkedIds.length){ showAlert('至少要選一個人。'); return; }
+    // 全選就存null(代表沒有限制),避免名單增減後這份舊快照卡住新進的人
+    state.patrolCandidateIds = checkedIds.length===state.personnel.length? null : checkedIds;
+    saveState();
+    modal.remove();
+    if(onDone) onDone();
+  };
+}
+function openPatrolRankTargetsModal(onDone){
+  const modal=document.createElement('div');
+  modal.className='sheet-modal'; modal.style.zIndex='95';
+  const ranksInUse=[...new Set(state.personnel.map(p=>p.rank))].sort((a,b)=>rankIndex(a)-rankIndex(b));
+  const slotLabels=['12-14','22-24','00-02','02-04','04-06'];
+  modal.innerHTML=`
+    <div class="sheet-inner">
+      <div class="section-title"><h2 style="margin:0">查哨排班設定</h2><button class="ghost small" id="prtClose">關閉</button></div>
+      <h3>各時段補休預設</h3>
+      <div class="hint" style="margin-bottom:8px">自動排班時，每個時段查完哨後預設補休到幾點——不想補休的時段可以留空。之後任務需求改變，直接在這裡調整，不用改程式碼。</div>
+      <div class="row wrap" style="margin-bottom:8px">
+        ${slotLabels.map((l,i)=>`
+          <div style="width:100px"><label>${l}</label><input type="text" class="prt-rest-input" data-slot="${i}" value="${esc(state.patrolRestDefaults[i]||'')}" placeholder="例：08:00"></div>
+        `).join('')}
+      </div>
+      <div class="divider"></div>
+      <h3>各階級平均排班次數</h3>
+      <div class="hint" style="margin-bottom:8px">設定每個階級這個人這個月「平均」該排幾次查哨，自動排班時會優先選還沒排到平均次數的人，不是硬性上限——人力緊繃時還是會排到已經排比較多的人，只是排序上會排在後面。沒有設定的階級預設是1。</div>
+      ${ranksInUse.map(r=>`
+        <div class="row wrap" style="margin-bottom:8px">
+          <div class="grow"><label>${esc(r)}</label><input type="number" min="0" step="0.5" class="prt-input" data-rank="${esc(r)}" value="${patrolRankTarget(r)}"></div>
+        </div>`).join('')}
+      <button class="primary" id="prtSave" style="width:100%">儲存</button>
+    </div>`;
+  document.body.appendChild(modal);
+  document.getElementById('prtClose').onclick=()=>modal.remove();
+  document.getElementById('prtSave').onclick=()=>{
+    modal.querySelectorAll('.prt-input').forEach(inp=>{
+      const v=parseFloat(inp.value);
+      state.patrolRankTargets[inp.dataset.rank] = isNaN(v)? 1 : v;
+    });
+    modal.querySelectorAll('.prt-rest-input').forEach(inp=>{
+      state.patrolRestDefaults[inp.dataset.slot] = inp.value.trim();
+    });
+    saveState();
+    modal.remove();
+    if(onDone) onDone();
+  };
+}
+function openPatrolAnchorModal(onDone){
+  const cfg=state.patrolSequence;
+  const modal=document.createElement('div');
+  modal.className='sheet-modal'; modal.style.zIndex='95';
+  const slotLabels=['12:00-14:00','22:00-24:00','00:00-02:00','02:00-04:00','04:00-06:00'];
+  modal.innerHTML=`
+    <div class="sheet-inner">
+      <div class="section-title"><h2 style="margin:0">序列錨點設定</h2><button class="ghost small" id="paClose">關閉</button></div>
+      <div class="hint" style="margin-bottom:8px">如果現實中查哨輪值曾經被特殊事件打斷、跟系統算出來的對不上，在這裡指定一個你確定的日期+時段當時輪到誰，之後就會從這個新的基準點重新算。平日、假日序列是分開的，只會重設你選的那一個。</div>
+      <div class="row wrap" style="margin-bottom:8px">
+        <div class="grow"><label>序列</label>
+          <select id="paSeqType">
+            <option value="weekday">平日序列（目前基準：${cfg.anchorWeekday.date} ${slotLabels[cfg.anchorWeekday.slotIdx]} ＝ ${esc(cfg.weekdayUnits[cfg.anchorWeekday.unitIndex])}）</option>
+            <option value="holiday">假日序列（目前基準：${cfg.anchorHoliday.date} ${slotLabels[cfg.anchorHoliday.slotIdx]} ＝ ${esc(cfg.holidayUnits[cfg.anchorHoliday.unitIndex])}）</option>
+          </select>
+        </div>
+      </div>
+      <div class="row wrap" style="margin-bottom:8px">
+        <div class="grow"><label>日期</label><input type="date" id="paDate" value="${todayStr()}"></div>
+        <div class="grow"><label>時段</label>
+          <select id="paSlot">${slotLabels.map((l,i)=>`<option value="${i}">${l}</option>`).join('')}</select>
+        </div>
+      </div>
+      <div class="row wrap" style="margin-bottom:8px">
+        <div class="grow"><label>這個時段實際輪到哪個單位</label><select id="paUnit"></select></div>
+      </div>
+      <div class="hint" style="margin-bottom:8px">選的日期+時段要跟選的序列類型吻合（例如選了平日序列，日期+時段也要是平日的時段，不能是假日期間），系統會依目前的假日設定自動判斷。</div>
+      <button class="primary" id="paSave" style="width:100%">儲存新錨點</button>
+    </div>`;
+  document.body.appendChild(modal);
+  document.getElementById('paClose').onclick=()=>modal.remove();
+  const refreshUnitOptions=()=>{
+    const seqType=document.getElementById('paSeqType').value;
+    const units=seqType==='weekday'? cfg.weekdayUnits : cfg.holidayUnits;
+    document.getElementById('paUnit').innerHTML=units.map((u,i)=>`<option value="${i}">${esc(u)}</option>`).join('');
+  };
+  refreshUnitOptions();
+  document.getElementById('paSeqType').onchange=refreshUnitOptions;
+  document.getElementById('paSave').onclick=()=>{
+    const seqType=document.getElementById('paSeqType').value;
+    const date=document.getElementById('paDate').value;
+    const slotIdx=Number(document.getElementById('paSlot').value);
+    const unitIndex=Number(document.getElementById('paUnit').value);
+    if(!date){ showAlert('請選擇日期'); return; }
+    const isHol=isPatrolHolidaySlot(date, slotIdx);
+    if(seqType==='weekday' && isHol){ showAlert('這個日期+時段依目前的假日設定算是假日時段，不能設成平日序列的錨點，請改選平日時段。'); return; }
+    if(seqType==='holiday' && !isHol){ showAlert('這個日期+時段依目前的假日設定算是平日時段，不能設成假日序列的錨點，請改選假日時段（或假日前一天22-24、假日後一天的00-06）。'); return; }
+    showConfirm('確定要重設這個序列的錨點嗎？重設後這個序列所有日期的計算基準都會改變。', ()=>{
+      if(seqType==='weekday') cfg.anchorWeekday={date, slotIdx, unitIndex};
+      else cfg.anchorHoliday={date, slotIdx, unitIndex};
+      saveState();
+      showAlert('已重設錨點。');
+      modal.remove();
+      if(onDone) onDone();
+    });
+  };
+}
 function openDutyRangeFillModal(onDone){
   const type=PREPLAN_TYPES.find(t=>t.key==='duty');
   const modal=document.createElement('div');
@@ -2439,6 +2738,13 @@ function openPreplanCalendar(key){
       </div>
       <div class="hint" style="margin-bottom:8px">點日期輸入當天內容；已排的日期外框會變色。假日以紅字標示。名字顏色：<span style="color:var(--accent)">一般顏色</span>＝我們單位的人，<span class="cal-mark-outside">橘色斜體</span>＝找不到、可能是別單位支援的人。</div>
       ${key==='duty'? `<button class="ghost" id="calDutyFill" style="width:100%;margin-bottom:6px">📝 直接設定範圍（選人＋起訖日＋起訖時間，一次套用）</button>` : ''}
+      ${key==='patrol'? `
+      <button class="ghost" id="calPatrolSeqView" style="width:100%;margin-bottom:6px">🔁 查看本月單位輪值序列</button>
+      <button class="ghost" id="calPatrolSeqAnchor" style="width:100%;margin-bottom:6px">⚙️ 序列錨點設定</button>
+      <button class="ghost" id="calPatrolRankTargets" style="width:100%;margin-bottom:6px">⚙️ 查哨排班設定（補休、階級平均）</button>
+      <button class="ghost" id="calPatrolRange" style="width:100%;margin-bottom:6px">👥 候選名單範圍${state.patrolCandidateIds? `（目前 ${state.patrolCandidateIds.length} 人）` : '（目前：全部人員）'}</button>
+      <button class="primary" id="calPatrolAutoFill" style="width:100%;margin-bottom:6px">🎯 依規則自動排本月（本部連）</button>
+      ` : ''}
       ${preplanSupportsTextFormat(type)? `
       <button class="ghost" id="calExportText" style="width:100%;margin-bottom:6px">📝 匯出本月文字（給人填空缺）</button>
       <button class="ghost" id="calImportText" style="width:100%;margin-bottom:6px">📝 匯入填好的文字</button>
@@ -2447,6 +2753,22 @@ function openPreplanCalendar(key){
       <button class="ghost" id="calCheckpoint" style="width:100%;margin-bottom:6px">📌 存檔點</button>
       <button class="ghost small danger" id="calClearMonth" style="width:100%">清空本月預排</button>`;
     if(key==='duty') document.getElementById('calDutyFill').onclick=()=>openDutyRangeFillModal(()=>{ draw(); });
+    if(key==='patrol'){
+      document.getElementById('calPatrolSeqView').onclick=()=>openPatrolSequenceViewModal(ym);
+      document.getElementById('calPatrolSeqAnchor').onclick=()=>openPatrolAnchorModal(()=>{ draw(); });
+      document.getElementById('calPatrolRankTargets').onclick=()=>openPatrolRankTargetsModal(()=>{ draw(); });
+      document.getElementById('calPatrolRange').onclick=()=>openPatrolRangeModal(()=>{ draw(); });
+      document.getElementById('calPatrolAutoFill').onclick=()=>{
+        const candSet=patrolCandidateIdSet();
+        const candCount=candSet? candSet.size : state.personnel.length;
+        showConfirm(`確定要依規則自動排這個月本部連負責的查哨嗎？候選範圍共 ${candCount} 人（可以在「候選名單範圍」調整）。本部連的時段會依同性別、至少1士官、階級平均公平、不同排組優先、盡量一士一兵、12-14優先駕照這些規則排人，並依「查哨排班設定」裡各時段的補休預設自動帶入；其他連的時段只會標記是哪個連，不會排人。這個月已經排過的格子會被覆蓋。`, ()=>{
+          const result=autoFillPatrolMonth(ym, candSet);
+          saveState();
+          showAlert(`已排好 ${result.filled} 格（本部連），另外 ${result.skippedOtherUnit} 格是其他連負責，只標記單位。`);
+          draw();
+        });
+      };
+    }
     document.getElementById('calCheckpoint').onclick=()=>openCheckpointModal(key, type.name,
       ()=>state.preplan[key]||{},
       (data)=>{ state.preplan[key]=data; draw(); });
@@ -3208,6 +3530,32 @@ function openPreplanDayEditor(key, date, onSaved){
         if(b) b.style.display=cb.checked?'block':'none';
       };
     });
+    if(key==='patrol'){
+      // 查哨的硬規則(同性別、至少1士官)是「已選的這幾個人之間」互相比較出來
+      // 的，不是單看某個人的資格，所以用即時檢查取代靜態的 reasonsFn：每次
+      // 勾選變動，就重新看這個時段目前勾了誰，有沒有違反硬規則。
+      const isNCO=p=>rankCategory(p.rank)==='士官'||rankCategory(p.rank)==='軍官';
+      type.slots.forEach((_,i)=>{
+        const warnBox=document.createElement('div');
+        warnBox.className='badge-issue'; warnBox.style.display='none'; warnBox.style.marginTop='6px';
+        const listEl=modal.querySelector(`#ppListS${i}`);
+        if(listEl) listEl.parentNode.insertBefore(warnBox, listEl.nextSibling);
+        const refresh=()=>{
+          const ids=[...modal.querySelectorAll(`.pp-slot${i}:checked`)].map(cb=>cb.value);
+          const people=ids.map(id=>state.personnel.find(p=>p.id===id)).filter(Boolean);
+          const msgs=[];
+          if(people.length>=2){
+            const genders=new Set(people.map(p=>p.gender).filter(Boolean));
+            if(genders.size>1) msgs.push('⚠️ 目前選的人性別不同（查哨規則要求同性別配對）');
+          }
+          if(people.length>=1 && !people.some(isNCO)) msgs.push('⚠️ 目前選的人裡沒有士官（查哨規則要求至少1位士官）');
+          if(msgs.length){ warnBox.innerHTML=msgs.join('<br>'); warnBox.style.display='block'; }
+          else warnBox.style.display='none';
+        };
+        modal.querySelectorAll(`.pp-slot${i}`).forEach(cb=>{ cb.addEventListener('change', refresh); });
+        refresh();
+      });
+    }
   }
   const collect=()=>{
     const support=(document.getElementById('ppSupport')||{}).value||'';
@@ -5624,6 +5972,142 @@ function isHolidayDate(date){
   if((state.holidayDates||[]).includes(date)) return true;
   return false;
 }
+/* 查哨五個時段在一天內的實際時間順序，跟 PREPLAN_TYPES.patrol.slots 陣列
+   本身的順序（12-14,22-24,00-02,02-04,04-06）不同——這裡是給序列引擎逐格
+   數數用的，陣列裡的數字是 slots 陣列的 index（0=12-14,1=22-24,2=00-02,
+   3=02-04,4=04-06）。 */
+const PATROL_CHRONO_ORDER = [2,3,4,0,1];
+/* 判斷查哨某個時段算平日還是假日：12-14 只看當天；22-24 看當天或隔天是不是
+   例假日（前一天晚上算假日開始）；00-02/02-04/04-06 看當天或前一天是不是
+   例假日（延伸到假日後一天的04-06為止）。 */
+function isPatrolHolidaySlot(date, slotIdx){
+  if(slotIdx===0) return isHolidayDate(date); // 12-14
+  if(slotIdx===1) return isHolidayDate(date) || isHolidayDate(nextDateStr(date)); // 22-24
+  return isHolidayDate(date) || isHolidayDate(prevDateStr(date)); // 00-02,02-04,04-06
+}
+/* 算出查哨從 fromDate 到 toDate 每個時段該輪到哪個單位。平日跟假日是兩條
+   完全獨立的序列，各自只在自己的時段類型出現時往前走一格——所以沒辦法用
+   單純的公式算，因為要知道兩個日期之間實際出現過幾次平日格子、幾次假日
+   格子，這跟真實的假日設定（例假日、國定假日）有關，只能逐格數過去。
+   從兩個錨點裡較早的那個開始數，數到 toDate 為止，回傳範圍內
+   {日期:{時段index:單位名稱}} 的對照表。 */
+function computePatrolSequence(fromDate, toDate){
+  const cfg = state.patrolSequence;
+  const startDate = cfg.anchorWeekday.date < cfg.anchorHoliday.date? cfg.anchorWeekday.date : cfg.anchorHoliday.date;
+  const result = {};
+  let weekdayPtr = null, holidayPtr = null;
+  let d = startDate;
+  let guard = 0;
+  while(d <= toDate && guard < 100000){
+    guard++;
+    PATROL_CHRONO_ORDER.forEach(slotIdx=>{
+      const isHol = isPatrolHolidaySlot(d, slotIdx);
+      if(isHol){
+        if(d===cfg.anchorHoliday.date && slotIdx===cfg.anchorHoliday.slotIdx) holidayPtr = cfg.anchorHoliday.unitIndex;
+        else if(holidayPtr!==null) holidayPtr = (holidayPtr+1) % cfg.holidayUnits.length;
+        if(d>=fromDate && holidayPtr!==null){
+          if(!result[d]) result[d]={};
+          result[d][slotIdx] = cfg.holidayUnits[holidayPtr];
+        }
+      } else {
+        if(d===cfg.anchorWeekday.date && slotIdx===cfg.anchorWeekday.slotIdx) weekdayPtr = cfg.anchorWeekday.unitIndex;
+        else if(weekdayPtr!==null) weekdayPtr = (weekdayPtr+1) % cfg.weekdayUnits.length;
+        if(d>=fromDate && weekdayPtr!==null){
+          if(!result[d]) result[d]={};
+          result[d][slotIdx] = cfg.weekdayUnits[weekdayPtr];
+        }
+      }
+    });
+    d = nextDateStr(d);
+  }
+  return result;
+}
+function patrolRankTarget(rank){
+  const cat = rankCategory(rank);
+  return state.patrolRankTargets[rank] !== undefined ? state.patrolRankTargets[rank] : 1;
+}
+/* 查哨2人一組的配對演算法。硬規則（不滿足就不算候選配對）：同性別、至少1位
+   士官。軟性優先順序（硬規則都滿足後，依序比較，前面的分不出高下才看下一
+   條）：①階級平均公平（用 monthCounts 算出「這個月已經排的次數 - 這個階級
+   的平均目標」，兩人相加，數字越小＝越該排他們）②不同排組優先③盡量湊成
+   一士一兵（不是兩個都士官）④12-14時段的兵優先有駕照。
+   candidates 已經是排除掉不可用的人之後的池子；monthCounts 是
+   {personId: 這個月已排次數} 的累計表，由呼叫端在整月自動排的過程中逐格
+   更新，讓排班越排越往「還沒排到的人」傾斜。 */
+function selectPatrolPair(candidates, monthCounts, slotIdx){
+  const isNCO = p=>rankCategory(p.rank)==='士官'||rankCategory(p.rank)==='軍官';
+  const pairs=[];
+  for(let i=0;i<candidates.length;i++){
+    for(let j=i+1;j<candidates.length;j++){
+      const a=candidates[i], b=candidates[j];
+      if(a.gender && b.gender && a.gender!==b.gender) continue; // 硬規則：同性別(沒填性別的人不擋,視為兩邊都可配)
+      if(!isNCO(a) && !isNCO(b)) continue; // 硬規則：至少1位士官
+      const fairnessSum = (monthCounts[a.id]||0)-patrolRankTarget(a.rank) + (monthCounts[b.id]||0)-patrolRankTarget(b.rank);
+      const differentGroup = (a.group||'')!==(b.group||'') ? 1 : 0;
+      const oneEachRank = (isNCO(a)!==isNCO(b)) ? 1 : 0; // 一士一兵=1，兩個都士官=0（兩個都兵已經被硬規則擋掉）
+      const licenseBonus = slotIdx===0 ? [a,b].filter(p=>!isNCO(p) && p.license).length : 0; // 12-14時段,兵有駕照加分
+      pairs.push({a, b, fairnessSum, differentGroup, oneEachRank, licenseBonus});
+    }
+  }
+  if(!pairs.length) return candidates.slice(0,1); // 湊不出合法配對,至少排一個人好過完全空著
+  pairs.sort((x,y)=>
+    x.fairnessSum - y.fairnessSum ||
+    y.differentGroup - x.differentGroup ||
+    y.oneEachRank - x.oneEachRank ||
+    y.licenseBonus - x.licenseBonus
+  );
+  const best=pairs[0];
+  return [best.a, best.b];
+}
+/* 幫整個月的查哨，依序列排出的單位，逐格配對人員——只有輪到本部連的時段
+   才會真的選人（因為名冊只有本部連的人），其他連的時段只記錄是哪個連，
+   讓月曆看得到但不硬塞人。逐格更新 monthCounts，讓排到後面的格子會傾向
+   排還沒排過班的人。每個時段的補休時間讀 state.patrolRestDefaults（可在
+   「查哨排班設定」畫面調整，不用改程式碼），跟現有的補休擋班機制直接
+   串接，查完哨這段時間不會再被排其他班。
+   allowedIds：選填，限制候選人範圍（例如只想從某幾個排/組挑人時）；不傳
+   或傳空值就是全部人員都可以當候選人。 */
+function autoFillPatrolMonth(ym, allowedIds){
+  const total=daysInMonth(ym);
+  const fromDate=`${ym}-01`, toDate=`${ym}-${String(total).padStart(2,'0')}`;
+  const seq=computePatrolSequence(fromDate, toDate);
+  if(!state.preplan.patrol) state.preplan.patrol={};
+  const pool = (allowedIds && allowedIds.size)? state.personnel.filter(p=>allowedIds.has(p.id)) : state.personnel;
+  const monthCounts={};
+  // 這個月已經排定的既有次數也算進去,讓新排的部分接續現有的公平性,不是每次重算都從0開始
+  Object.entries(state.preplan.patrol).forEach(([d,plan])=>{
+    if(!d.startsWith(ym) || !plan.slots) return;
+    Object.values(plan.slots).forEach(cfg=>{ (cfg.personIds||[]).forEach(pid=>{ if(pid) monthCounts[pid]=(monthCounts[pid]||0)+1; }); });
+  });
+  let filled=0, skippedOtherUnit=0;
+  for(let d=1; d<=total; d++){
+    const ds=`${ym}-${String(d).padStart(2,'0')}`;
+    const daySlots=seq[ds];
+    if(!daySlots) continue;
+    if(!state.preplan.patrol[ds]) state.preplan.patrol[ds]={slots:{}};
+    PATROL_CHRONO_ORDER.forEach(slotIdx=>{
+      const unit=daySlots[slotIdx];
+      if(!unit) return;
+      const restUntil = state.patrolRestDefaults[slotIdx] || '';
+      if(unit!=='本部連'){
+        state.preplan.patrol[ds].slots[slotIdx] = {personIds:[], note:unit};
+        skippedOtherUnit++;
+        return;
+      }
+      const label=PREPLAN_TYPES.find(t=>t.key==='patrol').slots[slotIdx];
+      const [st,en]=label.split('-');
+      const sMin=toMin(st), eMin=wrapEndMin(sMin, toMin(en));
+      const already=new Set();
+      Object.values(state.preplan.patrol[ds].slots).forEach(cfg=>{ (cfg&&cfg.personIds||[]).forEach(pid=>already.add(pid)); });
+      const candidates = pool.filter(p=>!already.has(p.id) && !isPersonUnavailable(p.id, ds, sMin, eMin));
+      const picked = selectPatrolPair(candidates, monthCounts, slotIdx);
+      state.preplan.patrol[ds].slots[slotIdx] = {personIds:picked.map(p=>p.id), restUntil};
+      picked.forEach(p=>{ monthCounts[p.id]=(monthCounts[p.id]||0)+1; });
+      filled++;
+    });
+  }
+  return {filled, skippedOtherUnit};
+}
 function outingBlackoutForDate(date){
   if(isHolidayDate(date)) return true;
   if(isHolidayDate(nextDateStr(date))) return true;
@@ -5874,23 +6358,7 @@ function renderOutingCardHTML(){
           </label>`).join('')}
       </div>
       <div class="divider"></div>
-      <h3>例假日（每週固定休假日，複選）</h3>
-      <div class="row wrap" style="gap:10px;margin-bottom:8px">
-        ${['日','一','二','三','四','五','六'].map((d,i)=>`
-          <label style="display:flex;align-items:center;gap:6px;font-size:13px">
-            <input type="checkbox" class="outing-weekday-cb" value="${i}" style="width:auto" ${(state.holidayWeekdays||[]).includes(i)?'checked':''}> 週${d}
-          </label>`).join('')}
-      </div>
-      <div class="section-title"><h3 style="margin:0">國定假日（個別日期，民國）（${(state.holidayDates||[]).length}筆）</h3><button class="ghost small" data-collapse-toggle="holidayDatesList">${isExpanded('holidayDatesList')?'▲ 收合':'▼ 展開'}</button></div>
-      <div style="display:${isExpanded('holidayDatesList')?'block':'none'};margin-top:6px">
-      <div class="row wrap" style="margin-bottom:6px">
-        ${(state.holidayDates||[]).length? state.holidayDates.slice().sort().map(d=>`
-          <span class="pill-btn">${minguoLabel(d)} <span data-del-holiday="${d}" style="color:var(--danger);margin-left:3px;cursor:pointer">✕</span></span>`).join('') : `<span class="muted" style="font-size:12px">尚未新增</span>`}
-      </div>
-      <button class="ghost small" id="addHolidayBtn" style="margin-bottom:8px">＋新增國定假日</button>
-      <button class="ghost small" id="addCommonHolidaysBtn" style="margin-bottom:8px">＋一鍵加入常見國定假日（固定日期）</button>
-      <div class="hint" style="margin-bottom:8px">會加入元旦、228、勞動節、國慶日等固定日期假日；農曆假日（春節、清明、端午、中秋）日期每年不同，請自行用上面「新增國定假日」個別新增。</div>
-      </div>
+      <div class="hint" style="margin-bottom:8px">例假日星期跟國定假日個別日期已經搬到抽屜的「🗓️假日設定」，跟查哨序列共用同一份設定。</div>
       <div class="divider"></div>
       <div class="row wrap" style="margin-bottom:8px">
         <div class="grow"><label>搜尋姓名</label><input type="text" id="outingSearch" placeholder="輸入姓名關鍵字" value="${esc(outingFilterState.search)}"></div>
@@ -5924,32 +6392,6 @@ function wireOutingCardEvents(){
       saveState(); render();
     };
   });
-  document.querySelectorAll('.outing-weekday-cb').forEach(cb=>{
-    cb.onchange=()=>{
-      state.holidayWeekdays=[...document.querySelectorAll('.outing-weekday-cb:checked')].map(x=>Number(x.value));
-      saveState(); render();
-    };
-  });
-  document.querySelectorAll('[data-del-holiday]').forEach(x=>{
-    x.onclick=()=>{
-      state.holidayDates=(state.holidayDates||[]).filter(d=>d!==x.dataset.delHoliday);
-      saveState(); render();
-    };
-  });
-  document.getElementById('addHolidayBtn').onclick=()=>{ openHolidayDateModal(); };
-  document.getElementById('addCommonHolidaysBtn').onclick=()=>{
-    const y = Number(currentDate.slice(0,4));
-    let added=0;
-    [y-1,y,y+1].forEach(yy=>{
-      COMMON_HOLIDAYS_FIXED.forEach(h=>{
-        const p=n=>String(n).padStart(2,'0');
-        const dateStr=`${yy}-${p(h.m)}-${p(h.d)}`;
-        if(!state.holidayDates.includes(dateStr)){ state.holidayDates.push(dateStr); added++; }
-      });
-    });
-    showAlert(added? `已加入 ${added} 個固定日期假日（含前後一年）。`:'固定日期假日已經都加過了。');
-    saveState(); render();
-  };
   function refreshOutingList(){
     document.getElementById('outingSummary').innerHTML = personListSummaryHTML(outingEligibleList(currentDate, outingFilterFn), outingEligibleList(currentDate));
     document.getElementById('outingListArea').innerHTML = renderOutingList(currentDate);
