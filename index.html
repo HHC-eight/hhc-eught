@@ -151,7 +151,7 @@ textarea{min-height:50px;resize:vertical;}
   <div class="topbar-main" style="flex-direction:column;align-items:stretch;gap:6px">
     <div class="row wrap" style="gap:4px;align-items:center">
       <button class="ghost small" id="preplanDrawerBtn" title="預排">☰ 預排</button>
-      <h1 id="pageTitle" style="margin:0">🌟 衛哨排班系統 <span class="muted" style="font-size:10px;font-weight:400">v116</span></h1>
+      <h1 id="pageTitle" style="margin:0">🌟 衛哨排班系統 <span class="muted" style="font-size:10px;font-weight:400">v117</span></h1>
       <button class="ghost small" id="clearRangeBtn" title="清除一段時間">🧹 清除範圍</button>
       <span style="flex:1"></span>
       <button class="ghost small" id="exportBtn">匯出</button>
@@ -925,7 +925,7 @@ const PREPLAN_TYPES = [
    standby people are on from 14:00 the day BEFORE the holiday block until
    07:30 the day AFTER; everyone else goes on leave from 16:00 the day
    before, returning at the same 07:30. */
-const STANDBY_DEFAULTS = {startTime:'14:00', leaveStartTime:'16:00', endTime:'07:30'};
+const STANDBY_DEFAULTS_FALLBACK = {startTime:'14:00', leaveStartTime:'16:00', endTime:'07:30'};
 /* which 常用項目 count as "留守日子勤務" and can be filled in from the
    留守 page — user-configurable so adding a new one needs no code change */
 if(!state.standbySubRoles) state.standbySubRoles = ['日督','夜督','話務','伙房'];
@@ -1030,6 +1030,10 @@ if(!state.unitRules.leaveBuffer) state.unitRules.leaveBuffer = {
   strictStart: '08:00',  // 嚴格（取消緩衝後）：完全沒有前一天緩衝，當天這個時間才開始
   backEnd: '07:30',       // 所有層級共用：最後一天隔天這個時間結束
 };
+/* 留守的預設時間——原本寫死在程式碼裡（STANDBY_DEFAULTS 常數），新增留守
+   區塊時如果沒有另外指定，就是套用這裡的值；改到這裡管理，以後要調整不
+   用改程式碼。 */
+if(!state.unitRules.standbyDefaults) state.unitRules.standbyDefaults = {...STANDBY_DEFAULTS_FALLBACK};
 
 
 if(!state.preplanOrder) state.preplanOrder = PREPLAN_TYPES.map(t=>t.key);
@@ -2101,6 +2105,11 @@ function openUnitRulesModal(){
         <span class="grow">排班時間間隔<br><span class="hint">目前：${state.timeStepMinutes}分</span></span>
         <span style="color:var(--dim)">›</span>
       </div>
+      <div class="drawer-item" data-ur-section="standbyDefaults">
+        <span style="font-size:18px">🏠</span>
+        <span class="grow">留守預設時間<br><span class="hint">新增留守區塊時預設套用的時間</span></span>
+        <span style="color:var(--dim)">›</span>
+      </div>
       <div class="drawer-item" data-ur-section="holidays">
         <span style="font-size:18px">🗓️</span>
         <span class="grow">假日設定<br><span class="hint">例假日星期＋國定假日，共${(state.holidayDates||[]).length}筆個別日期</span></span>
@@ -2111,6 +2120,36 @@ function openUnitRulesModal(){
     modal.querySelectorAll('[data-ur-section]').forEach(b=>{
       b.onclick=()=>{ section=b.dataset.urSection; draw(); };
     });
+  };
+  const drawStandbyDefaults=()=>{
+    const sd=state.unitRules.standbyDefaults;
+    modal.innerHTML=`
+      <div class="section-title"><button class="ghost small" id="urBack">← 返回</button><h2 style="margin:0">留守預設時間</h2></div>
+      <div class="hint" style="margin-bottom:8px">新增一個留守區塊時，如果沒有另外指定，就是套用這裡的預設值。已經建立好的留守區塊不會被這裡的調整回溯影響，只影響之後新增的。</div>
+      <div class="row wrap" style="margin-bottom:8px">
+        <div class="grow"><label>留守人員開始時間</label><input type="text" id="urSbStart" value="${esc(sd.startTime)}" placeholder="14:00"></div>
+      </div>
+      <div class="row wrap" style="margin-bottom:8px">
+        <div class="grow"><label>其他人休假開始時間</label><input type="text" id="urSbLeaveStart" value="${esc(sd.leaveStartTime)}" placeholder="16:00"></div>
+      </div>
+      <div class="row wrap" style="margin-bottom:8px">
+        <div class="grow"><label>結束（回營）時間</label><input type="text" id="urSbEnd" value="${esc(sd.endTime)}" placeholder="07:30"></div>
+      </div>
+      <button class="primary" id="urSaveStandby" style="width:100%">儲存</button>`;
+    document.getElementById('urBack').onclick=()=>{ section=null; draw(); };
+    document.getElementById('urSaveStandby').onclick=()=>{
+      const startTime=document.getElementById('urSbStart').value.trim();
+      const leaveStartTime=document.getElementById('urSbLeaveStart').value.trim();
+      const endTime=document.getElementById('urSbEnd').value.trim();
+      const timeRe=/^([01]\d|2[0-3]):[0-5]\d$/;
+      if(![startTime,leaveStartTime,endTime].every(t=>timeRe.test(t))){
+        showAlert('時間格式要是 HH:MM（例如 14:00），請檢查每一格。');
+        return;
+      }
+      state.unitRules.standbyDefaults={startTime,leaveStartTime,endTime};
+      saveState();
+      showAlert('已儲存。只影響之後新增的留守區塊，已經建立好的不會被回溯改動。');
+    };
   };
   const drawLeaveBuffer=()=>{
     const buf=state.unitRules.leaveBuffer;
@@ -2166,6 +2205,7 @@ function openUnitRulesModal(){
   const draw=()=>{
     if(section==='leaveBuffer') drawLeaveBuffer();
     else if(section==='timeStep') drawTimeStep();
+    else if(section==='standbyDefaults') drawStandbyDefaults();
     else if(section==='holidays'){ section=null; openHolidaySettingsModal(); draw(); }
     else drawMain();
   };
@@ -3047,9 +3087,9 @@ function openStandbyEditor(date, onSaved){
   let plan = {
     startDate: existing.startDate || date,
     endDate: existing.endDate || date,
-    startTime: existing.startTime || STANDBY_DEFAULTS.startTime,
-    leaveStartTime: existing.leaveStartTime || STANDBY_DEFAULTS.leaveStartTime,
-    endTime: existing.endTime || STANDBY_DEFAULTS.endTime,
+    startTime: existing.startTime || state.unitRules.standbyDefaults.startTime,
+    leaveStartTime: existing.leaveStartTime || state.unitRules.standbyDefaults.leaveStartTime,
+    endTime: existing.endTime || state.unitRules.standbyDefaults.endTime,
     personIds: [...(existing.personIds||[])],
     overrides: {...(existing.overrides||{})},   // personId -> {start?, end?}
     subDuties: JSON.parse(JSON.stringify(existing.subDuties||{})), // role -> {date -> {personIds, start, end}}
@@ -4718,8 +4758,8 @@ function importPreplanForDate(key, date){
     });
     state.personnel.forEach(p=>{
       if(keep.has(p.id)) return;
-      const startT = plan.leaveStartTime||STANDBY_DEFAULTS.leaveStartTime;
-      const endT = plan.endTime||STANDBY_DEFAULTS.endTime;
+      const startT = plan.leaveStartTime||state.unitRules.standbyDefaults.leaveStartTime;
+      const endT = plan.endTime||state.unitRules.standbyDefaults.endTime;
       if(!state.unavail[dayBefore]) state.unavail[dayBefore]=[];
       state.unavail[dayBefore].push({id:uid(),personId:p.id,allDay:false,start:startT,end:'24:00',reason:TAG});
       blockDates.forEach(d=>{
@@ -4739,7 +4779,7 @@ function importPreplanForDate(key, date){
       }
       if(ov.start){
         if(!state.unavail[dayBefore]) state.unavail[dayBefore]=[];
-        state.unavail[dayBefore].push({id:uid(),personId:pid,allDay:false,start:plan.startTime||STANDBY_DEFAULTS.startTime,end:ov.start,reason:'留守較晚到營'});
+        state.unavail[dayBefore].push({id:uid(),personId:pid,allDay:false,start:plan.startTime||state.unitRules.standbyDefaults.startTime,end:ov.start,reason:'留守較晚到營'});
       }
     });
     // sub-duties become ordinary 其他勤務 entries on their own dates —
@@ -6342,9 +6382,17 @@ function openQuickIncidentModal(personId, date, onDone){
   };
 }
 function isLeaveReason(reason){ return !!reason && reason.includes('假'); }
+/* 判斷這筆記錄是不是休假的「緩衝」（前一天傍晚/隔天清晨那種墊檔記錄），
+   不是使用者實際要休的那幾天——改用「我們的規則」目前設定的時間動態判
+   斷，不寫死，這樣以後調整緩衝時間，這裡不用跟著改程式碼、也不會抓錯。
+   注意：嚴格層的第一天本身（從 strictStart 開始，不是整天）算「使用者
+   實際要休的那天」，不是緩衝，所以這裡不比對 strictStart。 */
 function isLeaveBufferEntry(u){
   if(u.allDay) return false;
-  return (u.start==='18:00' && u.end==='24:00') || (u.start==='12:00' && u.end==='24:00') || (u.start==='00:00' && u.end==='07:30');
+  const buf = state.unitRules.leaveBuffer;
+  if(u.end==='24:00' && (u.start===buf.honorStart || u.start===buf.normalStart)) return true; // 前緩衝
+  if(u.start==='00:00' && u.end===buf.backEnd) return true; // 後緩衝
+  return false;
 }
 function onDutyList(date){
   const dayEntries = state.unavail[date]||[];
