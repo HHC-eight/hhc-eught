@@ -151,7 +151,7 @@ textarea{min-height:50px;resize:vertical;}
   <div class="topbar-main" style="flex-direction:column;align-items:stretch;gap:6px">
     <div class="row wrap" style="gap:4px;align-items:center">
       <button class="ghost small" id="preplanDrawerBtn" title="預排">☰ 預排</button>
-      <h1 id="pageTitle" style="margin:0">🌟 衛哨排班系統 <span class="muted" style="font-size:10px;font-weight:400">v127</span></h1>
+      <h1 id="pageTitle" style="margin:0">🌟 衛哨排班系統 <span class="muted" style="font-size:10px;font-weight:400">v129</span></h1>
       <button class="ghost small" id="clearRangeBtn" title="清除一段時間">🧹 清除範圍</button>
       <span style="flex:1"></span>
       <button class="ghost small" id="exportBtn">匯出</button>
@@ -476,28 +476,6 @@ const MISC_PRESETS=[
 /* a preset may carry multiple time slots under one name (e.g. 查哨 at five
    different times a day) — always read them through this so both the old
    single start/end shape and the newer times[] shape work the same way */
-/* looks back through every past 其他勤務 entry (any date) for the most
-   recent one with this exact role name, so a hand-typed ad-hoc task that
-   recurs — "G027電梯維修" today, the same thing again next week — can
-   auto-fill from what was used last time instead of retyping everything.
-   Only matches entries that AREN'T already a saved 常用項目, since those
-   already have their own one-tap flow. */
-function recentMiscEntryByRole(role, excludeDate){
-  if(!role) return null;
-  let best=null, bestDate=null;
-  Object.entries(state.misc).forEach(([d,arr])=>{
-    if(d===excludeDate) return;
-    (arr||[]).forEach(m=>{
-      if(m.role===role && (!bestDate || d>bestDate)){ best=m; bestDate=d; }
-    });
-  });
-  return best;
-}
-function miscRoleHistoryCount(role){
-  let n=0;
-  Object.values(state.misc).forEach(arr=>{ (arr||[]).forEach(m=>{ if(m.role===role) n++; }); });
-  return n;
-}
 function presetTimes(preset){
   if(preset.times && preset.times.length) return preset.times;
   return [{start:preset.start||'06:00', end:preset.end||'07:00'}];
@@ -3050,10 +3028,14 @@ function openDutyRangeFillModal(onDone){
   const modal=document.createElement('div');
   modal.className='sheet-modal'; modal.style.zIndex='96';
   const pool=preplanEligiblePeople(type);
+  const lastTo = (state.preplanDefaults.duty||{}).lastRangeFillTo;
+  const lastStart = preplanDefault('duty','start','18:00');
+  const lastEnd = preplanDefault('duty','end','22:00');
   modal.innerHTML=`
     <div class="sheet-inner">
       <div class="section-title"><h2 style="margin:0">值星：直接設定範圍</h2><button class="ghost small" id="dfClose">關閉</button></div>
-      <div class="hint" style="margin-bottom:8px">選人、填一段日期範圍跟時間，套用到範圍內的每一天。預設會新增一組（保留這天原本已經有的內容），勾選下面的選項才會取代原本的。</div>
+      <div class="hint" style="margin-bottom:8px">選人、填一段日期範圍跟時間，套用到範圍內的每一天。預設會新增一組（保留這天原本已經有的內容），勾選下面的選項才會取代原本的。如果這是接在前一段之後的下一棒（例如前一段9/17~9/24、這段接著從9/24開始），按「接續上一段」會自動把開始日期抓成上一段結束日的隔天，避免兩段都想用同一天當開始/結束，變成同一天被排兩組、互相重疊。</div>
+      ${lastTo? `<button class="ghost small" id="dfContinue" style="margin-bottom:8px">⏩ 接續上一段（上一段到 ${minguoLabel(lastTo)} 結束，這段從 ${minguoLabel(nextDateStr(lastTo))} 開始）</button>` : ''}
       <div class="row wrap" style="margin-bottom:6px">
         <div class="grow"><label>搜尋姓名</label><input type="text" id="dfSearch" placeholder="輸入姓名關鍵字"></div>
       </div>
@@ -3068,8 +3050,8 @@ function openDutyRangeFillModal(onDone){
         <div class="grow"><label>結束日期</label><input type="date" id="dfTo" value="${currentDate}"></div>
       </div>
       <div class="row wrap" style="margin-bottom:8px">
-        <div class="grow"><label>開始時間</label>${timeSelectHTML('dfStart', '18:00')}</div>
-        <div class="grow"><label>結束時間</label>${timeSelectHTML('dfEnd', '22:00')}</div>
+        <div class="grow"><label>開始時間</label>${timeSelectHTML('dfStart', lastStart)}</div>
+        <div class="grow"><label>結束時間</label>${timeSelectHTML('dfEnd', lastEnd)}</div>
       </div>
       <label style="display:flex;align-items:center;gap:6px;font-size:13px;margin-bottom:8px">
         <input type="checkbox" id="dfReplace" style="width:auto"> 取代這段範圍原本的內容（不保留舊的，只留這次設定的這組）
@@ -3078,6 +3060,10 @@ function openDutyRangeFillModal(onDone){
     </div>`;
   document.body.appendChild(modal);
   document.getElementById('dfClose').onclick=()=>modal.remove();
+  const dfContinueBtn = document.getElementById('dfContinue');
+  if(dfContinueBtn) dfContinueBtn.onclick=()=>{
+    document.getElementById('dfFrom').value = nextDateStr(lastTo);
+  };
   const se=document.getElementById('dfSearch'), le=document.getElementById('dfList');
   se.oninput=()=>{
     const term=se.value.trim();
@@ -3102,6 +3088,11 @@ function openDutyRangeFillModal(onDone){
       const existingGroups = peopleGroupsOf(existing);
       setPreplan('duty', d, {groups:[...existingGroups, newGroup()]});
     });
+    // 記住這段結束在哪一天+用的時間，下一段按「接續上一段」才能自動接上，
+    // 不用手動算「前一段結束日的隔天」是幾號
+    rememberPreplanDefaults('duty', {start, end});
+    if(!state.preplanDefaults.duty) state.preplanDefaults.duty={};
+    state.preplanDefaults.duty.lastRangeFillTo = to;
     saveState();
     showAlert(`已套用到 ${dates.length} 天（${minguoLabel(from)}~${minguoLabel(to)}）${replace?'（取代原本內容）':'（新增一組，保留原本內容）'}。`);
     modal.remove();
@@ -8886,10 +8877,6 @@ function runDailyCheck(){
 }
 
 /* ---- MISC TAB (簡易勤務，如採買/技工/查哨等免時段的項目) ---- */
-let miscSelectedRoles=null;
-let miscFreeformFilterState={search:'',group:''};
-let miscFreeformCheckedIds=new Set();
-let miscEditingId=null;
 let adhocQueryState={time:'10:00',mode:'byRank',officer:0,nco:0,enlisted:0,anyCount:0,skill:'',license:'',needMedCert:false,hasRun:false,results:null};
 function adhocCandidateMatches(p){
   if(adhocQueryState.skill && !(p.skills||[]).includes(adhocQueryState.skill)) return false;
@@ -9007,32 +8994,29 @@ function openAdhocAddModal(personId, defaultStart, defaultEnd){
     saveState(); modal.remove(); render();
   };
 }
-function miscFreeformFilteredList(){
-  let list=[...state.personnel];
-  if(miscFreeformFilterState.group) list = miscFreeformFilterState.group==='__none'? list.filter(p=>!p.group) : list.filter(p=>p.group===miscFreeformFilterState.group);
-  if(miscFreeformFilterState.search) list = list.filter(p=>p.name.includes(miscFreeformFilterState.search));
-  return list;
+/* 把一個項目(可能好幾個時段)材料化成今天的其他勤務——常用項目pill點下去、
+   「新增常用項目」建好範本後自動套用到今天、還有「僅新增一次」都共用這
+   個。人員留空，之後在「當日其他勤務」卡片自己的「編輯」直接指派人，不
+   在這裡挑人。如果這個項目本身分角色(例如採買的駕駛/車長)，roles要傳進
+   來，personIds會照角色數量對應留空；沒有分角色就是單純的一組人。同一
+   天同角色同時段已經有一筆就跳過，不會重複按就一直疊加。回傳實際新增的
+   筆數。 */
+function addMiscEntriesForToday(role, times, extra){
+  if(!state.misc[currentDate]) state.misc[currentDate]=[];
+  let count=0;
+  const roles = extra&&extra.roles;
+  times.forEach(t=>{
+    const already = state.misc[currentDate].some(m=>m.role===role && m.start===t.start && m.end===t.end);
+    if(already) return;
+    state.misc[currentDate].push({id:uid(), role, start:t.start, end:t.end, restUntil:(extra&&extra.restUntil)||'',
+      roles: roles?[...roles]:undefined, personIds: roles? roles.map(()=>undefined):[],
+      requiredLicenses:extra&&extra.requiredLicenses&&extra.requiredLicenses.length?extra.requiredLicenses:undefined,
+      requiredMedCert:extra&&extra.requiredMedCert?true:undefined,
+      requiredSkills:extra&&extra.requiredSkills&&extra.requiredSkills.length?extra.requiredSkills:undefined});
+    count++;
+  });
+  return count;
 }
-function miscPeopleCheckboxesHTML(groupFilter, searchFilter){
-  if(!state.personnel.length) return `<div class="empty">尚無人員</div>`;
-  let list=[...state.personnel];
-  if(groupFilter) list = groupFilter==='__none'? list.filter(p=>!p.group) : list.filter(p=>p.group===groupFilter);
-  if(searchFilter) list = list.filter(p=>p.name.includes(searchFilter));
-  if(!list.length) return `<div class="empty">找不到符合的人員</div>`;
-  const rGroups=[...new Set(list.map(p=>p.group).filter(Boolean))].sort((a,b)=>groupIndex(a)-groupIndex(b));
-  const rList = rGroups.length? rGroups : [''];
-  return rList.map(g=>{
-    const members=list.filter(p=>p.group===g).sort((a,b)=>rankIndex(a.rank)-rankIndex(b.rank));
-    if(!members.length) return '';
-    return `<h3>${g?esc(g):'未分組'}</h3>` + members.map(p=>`
-      <label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0" data-misc-person-row="${p.id}">
-        <input type="checkbox" class="misc-person-cb" value="${p.id}" style="width:auto" ${miscFreeformCheckedIds.has(p.id)?'checked':''}>
-        ${esc(p.name)}（${p.group||'未分組'}·${p.rank}${personBadges(p)}）
-      </label>`).join('');
-  }).join('');
-}
-let miscSelectedPresetRole=null;
-let miscSelectedRestUntil='';
 function openMiscPresetModal(editIndex){
   const editing = typeof editIndex==='number';
   const existing = editing? state.miscPresets[editIndex] : null;
@@ -9043,6 +9027,10 @@ function openMiscPresetModal(editIndex){
     <div class="sheet-inner">
       <div class="section-title"><h2 style="margin:0">${editing? '編輯常用項目' : '新增常用項目'}</h2><button class="ghost small" id="closeMiscPresetModal">關閉</button></div>
       <label>名稱</label><input type="text" id="mpName" value="${esc(existing? existing.role:'')}" placeholder="例：查哨" style="margin-bottom:8px">
+      ${!editing? `
+      <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text);margin-bottom:8px">
+        <input type="checkbox" id="mpOnceOnly" style="width:auto"> 僅新增一次（不建立成常用項目，只加到今天，之後不會再出現在常用項目清單裡）
+      </label>` : ''}
       <label>時段（同一個項目可以有多個時段，例如查哨一天分好幾節）</label>
       <div id="mpTimesList"></div>
       <button class="ghost small" id="mpAddTime" style="margin-bottom:8px">＋新增時段</button>
@@ -9227,7 +9215,20 @@ function openMiscPresetModal(editIndex){
       existing.rankPriority=rankPriority;
       delete existing.start; delete existing.end;
     } else {
-      state.miscPresets.push({role,times:timesDraft.map(t=>({...t})),roles:null,fixed,isSentry,isAllDayAway,standbyMode,restUntil,requiredCount,requiredLicenses,requiredMedCert,requiredSkills,rankPriority,sortOrder:nextSortOrder(),excludeFromExport:false});
+      const onceOnlyEl=document.getElementById('mpOnceOnly');
+      const onceOnly = onceOnlyEl? onceOnlyEl.checked : false;
+      if(onceOnly){
+        // 僅新增一次：不建立常用項目範本，直接把這次輸入的內容當成今天的
+        // 一次性項目，之後不會再出現在常用項目清單、也不會自動出現在其他
+        // 日期——就是原本「新增項目」表單做的事，只是現在跟「新增常用項
+        // 目」共用同一個輸入表單，用這個勾選框來分流
+        addMiscEntriesForToday(role, timesDraft, {restUntil, requiredLicenses, requiredMedCert, requiredSkills});
+      } else {
+        state.miscPresets.push({role,times:timesDraft.map(t=>({...t})),roles:null,fixed,isSentry,isAllDayAway,standbyMode,restUntil,requiredCount,requiredLicenses,requiredMedCert,requiredSkills,rankPriority,sortOrder:nextSortOrder(),excludeFromExport:false});
+        // 新增常用項目之後,直接把今天份也建好,不用另外再點一次才會出現在
+        // 「當日其他勤務」——省掉「建好範本→還要再找地方套用到今天」這一步
+        addMiscEntriesForToday(role, timesDraft, {restUntil});
+      }
     }
     saveState(); modal.remove(); render();
   };
@@ -9682,86 +9683,6 @@ function renderMisc(){
       <div class="divider"></div>
       <button class="ghost small" id="openAddPresetModal">＋新增常用項目</button>
     `);
-  const miscAddFormHTML = collapsibleCardHTML('miscAddForm', miscEditingId? '編輯項目' : '新增項目', `
-      <div class="row wrap" style="margin-bottom:8px">
-        <div class="grow"><label>項目名稱</label><input type="text" id="mRole" list="mRoleHistory" placeholder="例：技工 / 採買 / 查哨" autocomplete="off"></div>
-      </div>
-      <datalist id="mRoleHistory">${[...new Set(Object.values(state.misc).flat().map(m=>m.role))].filter(r=>!state.miscPresets.some(mp=>mp.role===r)).map(r=>`<option value="${esc(r)}">`).join('')}</datalist>
-      <div id="mRoleRecallHint" class="hint" style="display:none;margin-bottom:6px"></div>
-      <div class="row wrap" style="margin-bottom:8px">
-        <div class="grow"><label>開始(選填)</label>${timeSelectHTML('mStart', '', {allowEmpty:true})}</div>
-        <div class="grow"><label>結束(選填)</label>${timeSelectHTML('mEnd', '', {allowEmpty:true})}</div>
-      </div>
-      <div class="hint" id="mNextDayHint" style="margin-bottom:8px;display:none">⏰ 結束時間不晚於開始時間，代表跨到隔天（例：07:00 → 隔天07:00）。</div>
-      <div id="mSaveAsPresetRow" style="display:none;margin-bottom:8px">
-        <label style="display:flex;align-items:center;gap:6px;font-size:13px">
-          <input type="checkbox" id="mSaveAsPreset" style="width:auto"> 這已經是第 <span id="mRecurCount"></span> 次了，存成常用項目以後一鍵帶入
-        </label>
-      </div>
-      ${miscSelectedRoles? `
-        <div class="hint" style="margin-bottom:6px">此項目需分別指定：${miscSelectedRoles.join('、')}</div>
-        ${miscSelectedRoles.map((r,i)=>{
-          const presetForForm = state.miscPresets.find(p=>p.role===miscSelectedPresetRole);
-          const reasonsFn = p=>roleIneligibilityReasons(p, r, presetForForm, null, currentDate, null, null);
-          return `
-          <div class="row wrap" style="margin-bottom:8px">
-            <div class="grow"><label>${esc(r)}</label>
-              ${rolePickerHTML('mRoleSel'+i, '', reasonsFn)}
-            </div>
-            <label style="display:flex;align-items:center;gap:4px;font-size:12px;align-self:flex-end;padding-bottom:8px">
-              <input type="checkbox" class="mp-lock-slot" data-lock-idx="${i}" style="width:auto"> 🔒暫不排
-            </label>
-          </div>`;
-        }).join('')}
-        <button class="ghost small" id="mFreeform" style="margin-bottom:8px">改用自由複選人員</button>
-      ` : `
-        <div class="row wrap" style="margin-bottom:8px">
-          <label style="display:flex;align-items:center;gap:6px;font-size:13px">
-            <input type="checkbox" id="mSkipAutoFill" style="width:auto"> 🔒此項目本次不自動排人（保持空白）
-          </label>
-        </div>
-        <div class="section-title"><h3 style="margin:0">資格要求(選填)</h3><button class="ghost small" id="mReqToggle">▼ 展開</button></div>
-        <div id="mReqSection" style="display:none;margin-bottom:8px">
-          <label>需持有駕照(可複選，不選代表不限)</label>
-          <div style="margin-bottom:8px">
-            ${['小型車','大型車','大客車'].map(l=>`
-              <label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0">
-                <input type="checkbox" class="m-req-license" value="${l}" style="width:auto"> ${l}
-              </label>`).join('')}
-          </div>
-          <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text);margin-bottom:8px">
-            <input type="checkbox" id="mReqMedCert" style="width:auto"> 需具備救護證照(EMT或醫生證書)
-          </label>
-          <label>需具備特殊專長(可複選，不選代表不限)</label>
-          <div style="margin-bottom:8px">
-            ${state.skillOptions.map(s=>`
-              <label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0">
-                <input type="checkbox" class="m-req-skill" value="${esc(s)}" style="width:auto"> ${esc(s)}
-              </label>`).join('')}
-          </div>
-        </div>
-        <div class="row wrap" style="margin-bottom:8px">
-          <div class="grow"><label>搜尋姓名</label><input type="text" id="mSearch" placeholder="輸入姓名關鍵字" value="${esc(miscFreeformFilterState.search)}"></div>
-          <div style="width:120px"><label>排組篩選</label>
-            <select id="mGroupFilter">
-              <option value="" ${!miscFreeformFilterState.group?'selected':''}>（全部）</option>
-              ${[...new Set(state.personnel.map(p=>p.group).filter(Boolean))].sort((a,b)=>groupIndex(a)-groupIndex(b)).map(g=>`<option value="${esc(g)}" ${miscFreeformFilterState.group===g?'selected':''}>${esc(g)}</option>`).join('')}
-              <option value="__none" ${miscFreeformFilterState.group==='__none'?'selected':''}>未分組</option>
-            </select>
-          </div>
-        </div>
-        <div class="row wrap" style="margin-bottom:6px">
-          <button class="ghost small" id="mSelectAll">全選(篩選範圍)</button>
-          <button class="ghost small" id="mClearAll">清空(篩選範圍)</button>
-          <button class="ghost small" id="mClearFilter">清除篩選</button>
-        </div>
-        <div class="hint" style="margin-bottom:4px">人員（可複選，若已填時間會標示 🚫不可排 及原因）</div>
-        <div id="mPeopleSummary">${personListSummaryHTML(miscFreeformFilteredList(), state.personnel)}</div>
-        <div id="mPeopleList" style="max-height:260px;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:8px;margin-bottom:8px">${miscPeopleCheckboxesHTML(miscFreeformFilterState.group||undefined, miscFreeformFilterState.search||undefined)}</div>
-      `}
-      <button class="primary" id="mAdd" style="width:100%">${miscEditingId? '儲存修改':'新增'}</button>
-      ${miscEditingId? `<button class="ghost small" id="mCancelEdit" style="width:100%;margin-top:6px">取消編輯</button>`:''}
-    `);
   const miscTodayHTML = collapsibleCardHTML('miscToday', `${fmtDate(currentDate)} 其他勤務（${list.length}筆・共${new Set(list.flatMap(m=>(m.personIds||[]).filter(Boolean))).size}人）`, `
       ${list.length===0? `<div class="empty">尚未新增</div>` : [...list].sort((a,b)=>{
         const pa=state.miscPresets.find(p=>p.role===a.role), pb=state.miscPresets.find(p=>p.role===b.role);
@@ -9788,165 +9709,28 @@ function renderMisc(){
   const cardDefs = [
     {key:'adhocQuery', html:adhocQueryHTML},
     {key:'miscPresets', html:miscPresetsHTML},
-    {key:'miscAddForm', html:miscAddFormHTML},
     {key:'miscToday', html:miscTodayHTML},
   ];
   app.innerHTML = renderCardList('miscCardsContainer', 'misc', cardDefs) + `
     <div class="hint">此區用於不需6小時規則的項目，如：技工、採買、愛心便當、消防車、救護車、話務、督伙、開關門、健身房簽到等，依你們單位每日需要自行新增，也可以直接點上方常用項目快速帶入。採買/愛心便當/消防車/救護車需分別指定駕駛與車長：消防車駕駛需大型車或大客車駕照，救護車駕駛需小型車/大型車/大客車其中一種且救護車車長與駕駛都需具備EMT-1/EMT-2/EMT-P或醫生證書，其餘車輛駕駛至少需小型車駕照；車長需士官以上且階級不低於駕駛，選單會把符合資格的人排到最上面。話務需至少小型車駕照。</div>
   `;
-  function wireMiscCheckboxes(){
-    document.querySelectorAll('.misc-person-cb').forEach(cb=>{
-      cb.onchange=()=>{
-        if(cb.checked) miscFreeformCheckedIds.add(cb.value);
-        else miscFreeformCheckedIds.delete(cb.value);
-      };
-    });
-  }
-  function refreshPeopleFlags(){
-    const startVal=getTimeSelectValue('mStart'), endVal=getTimeSelectValue('mEnd');
-    const hasTime = !!(startVal && endVal);
-    const s = hasTime? toMin(startVal) : null;
-    const e0 = hasTime? toMin(endVal) : null;
-    const presetForForm = state.miscPresets.find(p=>p.role===miscSelectedPresetRole);
-    if(!miscSelectedRoles){
-      const container = document.getElementById('mPeopleList');
-      if(!container) return;
-      const rows = [...container.querySelectorAll('[data-misc-person-row]')];
-      if(!rows.length) return;
-      const withInfo = rows.map(row=>{
-        const pid = row.dataset.miscPersonRow;
-        const person = state.personnel.find(p=>p.id===pid);
-        const cb = row.querySelector('input');
-        const checked = cb ? cb.checked : miscFreeformCheckedIds.has(pid);
-        const reasons=[];
-        if(person){
-          if(hasTime && isPersonUnavailable(pid, currentDate, s, wrapEndMin(s, e0))){
-            unavailabilityReasonsInRange(pid, currentDate, s, wrapEndMin(s, e0)).forEach(msg=>reasons.push(msg));
-          }
-          if(presetForForm) driverQualificationIssues(person, presetForForm).forEach(m=>reasons.push(m));
-          if(presetForForm && personHasConflictingStandby(pid, currentDate, presetForForm, miscEditingId)) reasons.push('今天已擔任其他全天待命勤務，資格衝突');
-          if(isPersonOnExclusiveStandby(pid, currentDate, miscEditingId)) reasons.push('今天已擔任只能待命的勤務，不能再接其他任務');
-        }
-        return {pid, person, checked, reasons};
-      }).filter(x=>x.person);
-      withInfo.sort((a,b)=>{
-        const ba=a.reasons.length>0?1:0, bb=b.reasons.length>0?1:0;
-        if(ba!==bb) return ba-bb;
-        return rankPriorityIndex(a.person.rank,presetForForm)-rankPriorityIndex(b.person.rank,presetForForm) || groupIndex(a.person.group)-groupIndex(b.person.group);
-      });
-      container.innerHTML = withInfo.map(({pid,person,checked,reasons})=>{
-        const busy = reasons.length>0;
-        return `<label data-misc-person-row="${pid}" style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0;${busy?'color:var(--danger)':''}">
-          <input type="checkbox" class="misc-person-cb" value="${pid}" style="width:auto" ${checked?'checked':''}>
-          ${esc(person.name)}（${person.group||'未分組'}·${person.rank}${personBadges(person)}）${busy? ` 🚫不可排（${[...new Set(reasons)].join('・')}）`:''}
-        </label>`;
-      }).join('');
-      wireMiscCheckboxes();
-      return;
-    }
-    miscSelectedRoles.forEach((r,idx)=>{
-      const listEl = document.getElementById('mRoleSel'+idx+'-list');
-      const hiddenInput = document.getElementById('mRoleSel'+idx);
-      if(!listEl || !hiddenInput) return;
-      const currentVal = hiddenInput.value;
-      let driver=null;
-      if(r==='車長'){
-        const driverIdx=miscSelectedRoles.indexOf('駕駛');
-        if(driverIdx>-1){
-          const driverInput=document.getElementById('mRoleSel'+driverIdx);
-          driver = driverInput? state.personnel.find(p=>p.id===driverInput.value) : null;
-        }
-      }
-      const otherSelectedIds = miscSelectedRoles.map((_,i2)=>{
-        if(i2===idx) return null;
-        const otherInput = document.getElementById('mRoleSel'+i2);
-        return otherInput? otherInput.value : null;
-      }).filter(Boolean);
-      const reasonsFn = p=>roleIneligibilityReasons(p, r, presetForForm, driver, currentDate, s, e0, miscEditingId, otherSelectedIds);
-      const sorted=[...state.personnel].sort((a,b)=>{
-        const ra=reasonsFn(a), rb=reasonsFn(b);
-        const pa=ra.length?1:0, pb=rb.length?1:0;
-        if(pa!==pb) return pa-pb;
-        return groupIndex(a.group)-groupIndex(b.group) || rankIndex(a.rank)-rankIndex(b.rank);
-      });
-      listEl.innerHTML = rolePickerRows('mRoleSel'+idx, sorted, currentVal, reasonsFn);
-    });
-    wireRolePickers(()=>refreshPeopleFlags());
-  }
-  function updateNextDayHint(){
-    const s=getTimeSelectValue('mStart'), e=getTimeSelectValue('mEnd');
-    const hint=document.getElementById('mNextDayHint');
-    hint.style.display = (s && e && e<=s)? 'block':'none';
-    if(s && e && e<=s) hint.textContent = `⏰ 結束時間不晚於開始時間，代表跨到隔天（${s} → 隔天${e}）。`;
-  }
-  ['mStart__h','mStart__m'].forEach(id=>{ const el=document.getElementById(id); if(el) el.onchange=()=>{ refreshPeopleFlags(); updateNextDayHint(); }; });
-  ['mEnd__h','mEnd__m'].forEach(id=>{ const el=document.getElementById(id); if(el) el.onchange=()=>{ refreshPeopleFlags(); updateNextDayHint(); }; });
-  refreshPeopleFlags();
-  updateNextDayHint();
-  if(document.getElementById('mReqToggle')){
-    document.getElementById('mReqToggle').onclick=()=>{
-      const sec=document.getElementById('mReqSection');
-      const expanded = sec.style.display!=='none';
-      sec.style.display = expanded? 'none':'block';
-      document.getElementById('mReqToggle').textContent = expanded? '▼ 展開':'▲ 收合';
-    };
-  }
-  if(document.getElementById('mSearch')){
-    function refreshMiscCheckboxes(){
-      document.getElementById('mPeopleSummary').innerHTML = personListSummaryHTML(miscFreeformFilteredList(), state.personnel);
-      document.getElementById('mPeopleList').innerHTML = miscPeopleCheckboxesHTML(miscFreeformFilterState.group||undefined, miscFreeformFilterState.search||undefined);
-      wireMiscCheckboxes();
-      refreshPeopleFlags();
-    }
-    wireMiscCheckboxes();
-    document.getElementById('mSearch').oninput=(e)=>{ miscFreeformFilterState.search=e.target.value.trim(); refreshMiscCheckboxes(); };
-    document.getElementById('mGroupFilter').onchange=(e)=>{ miscFreeformFilterState.group=e.target.value; refreshMiscCheckboxes(); };
-    document.getElementById('mClearFilter').onclick=()=>{
-      miscFreeformFilterState={search:'',group:''};
-      document.getElementById('mSearch').value='';
-      document.getElementById('mGroupFilter').value='';
-      refreshMiscCheckboxes();
-    };
-    document.getElementById('mSelectAll').onclick=()=>{
-      document.querySelectorAll('.misc-person-cb').forEach(cb=>{ cb.checked=true; miscFreeformCheckedIds.add(cb.value); });
-    };
-    document.getElementById('mClearAll').onclick=()=>{
-      document.querySelectorAll('.misc-person-cb').forEach(cb=>{ cb.checked=false; miscFreeformCheckedIds.delete(cb.value); });
-    };
-  }
-  if(document.getElementById('mFreeform')){
-    document.getElementById('mFreeform').onclick=()=>{ miscSelectedRoles=null; miscSelectedPresetRole=null; miscSelectedRestUntil=''; render(); };
-  }
   app.querySelectorAll('[data-preset]').forEach(b=>{
     b.onclick=(ev)=>{
       if(ev.target.closest('[data-edit-preset]')) return;
       const mp = state.miscPresets[Number(b.dataset.preset)];
       const times = presetTimes(mp);
+      const doAdd=()=>{
+        const n = addMiscEntriesForToday(mp.role, times, {restUntil:mp.restUntil, roles:mp.roles, requiredLicenses:mp.requiredLicenses, requiredMedCert:mp.requiredMedCert, requiredSkills:mp.requiredSkills});
+        collapseState['miscToday']=true;
+        autoAssignMiscForDate(currentDate);
+        saveState(); render();
+        if(n===0) showAlert(`「${mp.role}」今天已經都建過了，沒有新增。`);
+      };
       if(times.length>1){
-        showConfirm(`要一次建立「${mp.role}」的全部 ${times.length} 個時段嗎？（${times.map(t=>t.start+'-'+t.end).join('、')}）`, ()=>{
-          if(!state.misc[currentDate]) state.misc[currentDate]=[];
-          times.forEach(t=>{
-            const already = state.misc[currentDate].some(m=>m.role===mp.role && m.start===t.start && m.end===t.end);
-            if(!already){
-              state.misc[currentDate].push({id:uid(), role:mp.role, start:t.start, end:t.end, restUntil:mp.restUntil||'', roles:mp.roles?[...mp.roles]:undefined, personIds: mp.roles? mp.roles.map(()=>undefined):[]});
-            }
-          });
-          collapseState['miscToday']=true;
-          autoAssignMiscForDate(currentDate);
-          saveState(); render();
-        });
+        showConfirm(`要一次建立「${mp.role}」的全部 ${times.length} 個時段嗎？（${times.map(t=>t.start+'-'+t.end).join('、')}）`, doAdd);
         return;
       }
-      collapseState['miscAddForm']=true;
-      miscSelectedRoles = mp.roles||null;
-      miscSelectedPresetRole = mp.role;
-      miscSelectedRestUntil = mp.restUntil||'';
-      render();
-      document.getElementById('mRole').value=mp.role;
-      setTimeSelectValue('mStart', times[0].start);
-      setTimeSelectValue('mEnd', times[0].end);
-      refreshPeopleFlags();
-      updateNextDayHint();
+      doAdd();
     };
   });
   app.querySelectorAll('[data-edit-preset]').forEach(x=>{
@@ -9984,103 +9768,6 @@ function renderMisc(){
   }
   wireAdhocAddButtons();
   document.getElementById('openAddPresetModal').onclick=()=>openMiscPresetModal();
-  if(document.getElementById('mRole') && !miscEditingId){
-    // typing a name that's shown up before (and isn't already a preset)
-    // auto-fills the time from last time, and offers to save it as a
-    // proper 常用項目 once it's recurred a couple of times
-    document.getElementById('mRole').addEventListener('change', ()=>{
-      const role = document.getElementById('mRole').value.trim();
-      const hint = document.getElementById('mRoleRecallHint');
-      const saveRow = document.getElementById('mSaveAsPresetRow');
-      if(!role || state.miscPresets.some(mp=>mp.role===role)){
-        hint.style.display='none'; saveRow.style.display='none'; return;
-      }
-      const recent = recentMiscEntryByRole(role, currentDate);
-      const count = miscRoleHistoryCount(role);
-      if(recent){
-        if(!getTimeSelectValue('mStart') && !getTimeSelectValue('mEnd') && recent.start && recent.end){
-          setTimeSelectValue('mStart', recent.start);
-          setTimeSelectValue('mEnd', recent.end);
-        }
-        hint.textContent = `📋 帶入上次「${role}」的時段（${recent.start||'?'}-${recent.end||'?'}）`;
-        hint.style.display='block';
-      } else {
-        hint.style.display='none';
-      }
-      if(count>=2){
-        document.getElementById('mRecurCount').textContent = count;
-        saveRow.style.display='block';
-      } else {
-        saveRow.style.display='none';
-      }
-    });
-  }
-  document.getElementById('mAdd').onclick=()=>{
-    const role=document.getElementById('mRole').value.trim();
-    if(!role) return;
-    const start=getTimeSelectValue('mStart'), end=getTimeSelectValue('mEnd');
-    if(!state.misc[currentDate]) state.misc[currentDate]=[];
-    const existing = miscEditingId? state.misc[currentDate].find(m=>m.id===miscEditingId) : null;
-    if(miscSelectedRoles){
-      const personIds=miscSelectedRoles.map((_,i)=>document.getElementById('mRoleSel'+i).value);
-      const lockedSlots=miscSelectedRoles.map((_,i)=>{
-        const cb=document.querySelector(`.mp-lock-slot[data-lock-idx="${i}"]`);
-        return cb? cb.checked : false;
-      });
-      if(existing){
-        existing.role=role; existing.start=start; existing.end=end; existing.restUntil=miscSelectedRestUntil;
-        existing.roles=miscSelectedRoles; existing.personIds=personIds; existing.lockedSlots=lockedSlots;
-        autoSwapDriverChief(existing);
-      } else {
-        const newEntry={id:uid(),role,start,end,restUntil:miscSelectedRestUntil,roles:miscSelectedRoles,personIds,lockedSlots};
-        autoSwapDriverChief(newEntry);
-        state.misc[currentDate].push(newEntry);
-      }
-    } else {
-      const personIds=[...miscFreeformCheckedIds];
-      const skipAutoFill = document.getElementById('mSkipAutoFill') ? document.getElementById('mSkipAutoFill').checked : false;
-      const reqLicenseEls = document.querySelectorAll('.m-req-license:checked');
-      const requiredLicenses = reqLicenseEls.length? [...reqLicenseEls].map(cb=>cb.value) : undefined;
-      const reqMedCertEl = document.getElementById('mReqMedCert');
-      const requiredMedCert = reqMedCertEl && reqMedCertEl.checked ? true : undefined;
-      const reqSkillEls = document.querySelectorAll('.m-req-skill:checked');
-      const requiredSkills = reqSkillEls.length? [...reqSkillEls].map(cb=>cb.value) : undefined;
-      if(existing){
-        existing.role=role; existing.start=start; existing.end=end; existing.restUntil=miscSelectedRestUntil;
-        existing.personIds=personIds; existing.skipAutoFill=skipAutoFill; delete existing.roles;
-        existing.requiredLicenses=requiredLicenses; existing.requiredMedCert=requiredMedCert; existing.requiredSkills=requiredSkills;
-      } else {
-        state.misc[currentDate].push({id:uid(),role,start,end,restUntil:miscSelectedRestUntil,personIds,skipAutoFill,requiredLicenses,requiredMedCert,requiredSkills});
-      }
-      miscFreeformCheckedIds.clear();
-    }
-    const wasNewEntry = !existing;
-    miscSelectedRoles=null;
-    miscSelectedPresetRole=null;
-    miscSelectedRestUntil='';
-    miscEditingId=null;
-    if(wasNewEntry){
-      autoAssignMiscForDate(currentDate);
-    }
-    const saveAsPresetCb = document.getElementById('mSaveAsPreset');
-    if(saveAsPresetCb && saveAsPresetCb.checked && !state.miscPresets.some(mp=>mp.role===role)){
-      state.miscPresets.push({role, times:[{start,end}], roles:miscSelectedRoles||null, standbyMode:'off',
-        requiredLicenses:[], requiredMedCert:false, requiredSkills:[], chiefRequiredSkills:[],
-        chiefRequiredLicenses:[], chiefRequiredMedCert:false, restUntil:miscSelectedRestUntil||'',
-        sortOrder:(state.miscPresets.length?Math.max(...state.miscPresets.map(p=>p.sortOrder||0)):0)+1});
-    }
-    saveState(); render();
-  };
-  if(document.getElementById('mCancelEdit')){
-    document.getElementById('mCancelEdit').onclick=()=>{
-      miscEditingId=null;
-      miscSelectedRoles=null;
-      miscSelectedPresetRole=null;
-      miscSelectedRestUntil='';
-      miscFreeformCheckedIds.clear();
-      render();
-    };
-  }
   wireMiscCardEvents();
   wireCardListDrag('miscCardsContainer', 'misc', cardDefs);
 }
