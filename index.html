@@ -151,7 +151,7 @@ textarea{min-height:50px;resize:vertical;}
   <div class="topbar-main" style="flex-direction:column;align-items:stretch;gap:6px">
     <div class="row wrap" style="gap:4px;align-items:center">
       <button class="ghost small" id="preplanDrawerBtn" title="預排">☰ 預排</button>
-      <h1 id="pageTitle" style="margin:0">🌟 衛哨排班系統 <span class="muted" style="font-size:10px;font-weight:400">v121</span></h1>
+      <h1 id="pageTitle" style="margin:0">🌟 衛哨排班系統 <span class="muted" style="font-size:10px;font-weight:400">v123</span></h1>
       <button class="ghost small" id="clearRangeBtn" title="清除一段時間">🧹 清除範圍</button>
       <span style="flex:1"></span>
       <button class="ghost small" id="exportBtn">匯出</button>
@@ -916,8 +916,7 @@ if(!state.dutyChanges) state.dutyChanges={};
 if(!state.preplan) state.preplan={};
 const PREPLAN_TYPES = [
   {key:'standby',  name:'留守',       icon:'🏠', mode:'standby',  hint:'例假日留守。先設定留守起訖日與名單，再把留守人員分配到當天的子勤務（日督、夜督、話務、伙房等）。'},
-  {key:'leave',    name:'休假大表',   icon:'🏖️', mode:'leaveTable', hint:'選人之後在月曆上點選他要休哪幾天，按確認後整批建立休假（含前後緩衝）。可勾選榮譽假，讓假期從前一天18:00提早到12:00開始。'},
-  {key:'person',   name:'個人月曆',   icon:'👤', mode:'personCalendar', hint:'一次看一個人整個月的所有事情：預排勤務自動帶入，個人事故在這裡補登。'},
+  {key:'leave',    name:'休假暨事故大表', icon:'🏖️', mode:'leaveTable', hint:'選人之後在月曆上點選他要休哪幾天，按確認後整批建立休假（含前後緩衝）。可勾選榮譽假，讓假期從前一天18:00提早到12:00開始。事故也在這裡登記——切到「其他事故」類型，不到一天的部分時段用下面的「新增部分時段」輸入實際時間即可。'},
   {key:'duty',     name:'值星',       icon:'⭐', mode:'people',   presetRole:'值星', editableTime:true,
    hint:'值星人員負責安排勤務，原則上不再自己出勤——被排為值星的日子，系統自動排班會避開他們。'},
   {key:'patrol',   name:'查哨',       icon:'🔦', mode:'fixedSlots', presetRole:'查哨',
@@ -945,7 +944,7 @@ if(!state.standbySubRoles) state.standbySubRoles = ['日督','夜督','話務','
    lives independently. Missing entry = plain single/multi-person mode
    with no special requirements. */
 if(!state.standbySubConfigs) state.standbySubConfigs = {};
-/* 休假大表的類別註冊表 — every "不在營" category (休假/榮譽假 is 休假's
+/* 休假暨事故大表的類別註冊表 — every "不在營" category (休假/榮譽假 is 休假's
    built-in honor sub-option, not a separate category) has two independent
    settings: whether it gets the 18:00/12:00-buffered前後緩衝 treatment
    (only real 休假 normally needs this — real life doesn't start/end
@@ -965,7 +964,7 @@ if(!state.leaveCategories) state.leaveCategories = [
   {name:'其他事故', buffer:false, fiveDayRule:false, builtin:true, prominent:true},
 ];
 /* migrate the old flat single-category shape {dates,honorDates,approvedRuns}
-   (from before 休假大表 supported multiple categories) into the new
+   (from before 休假暨事故大表 supported multiple categories) into the new
    per-category shape {'休假':{dates,honorDates,approvedRuns}} */
 if(state.preplan && state.preplan.leave){
   Object.keys(state.preplan.leave).forEach(pid=>{
@@ -1999,7 +1998,7 @@ document.getElementById('preplanDrawerBtn').addEventListener('click', (e)=>{ fla
 /* ---------------- 預排 UI ---------------- */
 let preplanMonth = null; // 'YYYY-MM' currently shown in the calendar
 /* runs every regular (date-keyed) preplan type's import across a date
-   range, plus 留守 (block-anchor based) and 休假大表 (its own importer) —
+   range, plus 留守 (block-anchor based) and 休假暨事故大表 (its own importer) —
    shared by both the real "全部預排匯入" and the dry-run "全部預排檢查",
    which calls this then throws the result away instead of keeping it. */
 function runAllPreplanImports(fromDate, toDate){
@@ -2012,7 +2011,6 @@ function runAllPreplanImports(fromDate, toDate){
       touched += r.count;
       return;
     }
-    if(type.mode==='personCalendar') return; // not a real data store
     if(type.key==='standby'){
       Object.keys(state.preplan.standby||{}).filter(a=>a>=fromDate && a<=toDate).forEach(anchor=>{
         if(importPreplanForDate('standby', anchor)) touched++;
@@ -2071,7 +2069,7 @@ function openAllPreplanImportModal(){
   modal.innerHTML=`
     <div class="sheet-inner">
       <div class="section-title"><h2 style="margin:0">全部預排</h2><button class="ghost small" id="apClose">關閉</button></div>
-      <div class="hint" style="margin-bottom:8px">把9種預排（留守、休假大表、查哨、督伙、救護車、採買、驗菜、中央監控值班、值星）依序處理。預設檢查整個月，也可以自訂範圍（例如只看下週）；範圍要在同一個月內。</div>
+      <div class="hint" style="margin-bottom:8px">把9種預排（留守、休假暨事故大表、查哨、督伙、救護車、採買、驗菜、中央監控值班、值星）依序處理。預設檢查整個月，也可以自訂範圍（例如只看下週）；範圍要在同一個月內。</div>
       <div class="row wrap" style="margin-bottom:8px">
         <div class="grow"><label>開始日期</label><input type="date" id="apFrom" value="${monthFrom}" min="${monthFrom}" max="${monthTo}"></div>
         <div class="grow"><label>結束日期</label><input type="date" id="apTo" value="${monthTo}" min="${monthFrom}" max="${monthTo}"></div>
@@ -2125,7 +2123,7 @@ function openAllPreplanImportModal(){
   document.getElementById('apImport').onclick=()=>{
     const range=getRange(); if(!range) return;
     const {fromDate, toDate}=range;
-    showConfirm(`確定要把${minguoLabel(fromDate)}~${minguoLabel(toDate)}這段範圍的9種預排全部匯入實際班表嗎？每種項目會依照各自的規則覆寫對應日期（沒排的日期會清空），不會動到其他項目或範圍外的日期。（休假大表因為資料本身是整月為單位，會處理整個月，不受這裡選的範圍限制）`, ()=>{
+    showConfirm(`確定要把${minguoLabel(fromDate)}~${minguoLabel(toDate)}這段範圍的9種預排全部匯入實際班表嗎？每種項目會依照各自的規則覆寫對應日期（沒排的日期會清空），不會動到其他項目或範圍外的日期。（休假暨事故大表因為資料本身是整月為單位，會處理整個月，不受這裡選的範圍限制）`, ()=>{
       const runImport=()=>{
         const touched=runAllPreplanImports(fromDate, toDate);
         const clashes=collectMiscConflicts(fromDate, toDate);
@@ -2174,6 +2172,11 @@ function openUnitRulesModal(){
         <span class="grow">留守預設時間<br><span class="hint">新增留守區塊時預設套用的時間</span></span>
         <span style="color:var(--dim)">›</span>
       </div>
+      <div class="drawer-item" data-ur-section="dutyDayDef">
+        <span style="font-size:18px">📅</span>
+        <span class="grow">勤務日期定義<br><span class="hint">排班畫面選定的日期，實際代表哪一段時間</span></span>
+        <span style="color:var(--dim)">›</span>
+      </div>
       <div class="drawer-item" data-ur-section="holidays">
         <span style="font-size:18px">🗓️</span>
         <span class="grow">假日設定<br><span class="hint">例假日星期＋國定假日，共${(state.holidayDates||[]).length}筆個別日期</span></span>
@@ -2215,11 +2218,18 @@ function openUnitRulesModal(){
       showAlert('已儲存。只影響之後新增的留守區塊，已經建立好的不會被回溯改動。');
     };
   };
+  const drawDutyDayDef=()=>{
+    modal.innerHTML=`
+      <div class="section-title"><button class="ghost small" id="urBack">← 返回</button><h2 style="margin:0">勤務日期定義</h2></div>
+      <div class="hint" style="margin-bottom:8px">排班分頁選定的日期，代表的是勤務「結束日」，不是「開始日」——實際勤務時段是前一天22:00開始，到選定日期22:00結束。例如選民國115年9月17日，實際勤務時段是 9/16（前一天）22:00 到 9/17 22:00。</div>
+      <div class="hint">這是排班六小時規則、班次接續計算的共同基準，目前是寫死在程式碼裡的固定值（22:00），不能在這裡調整；先收在這裡是為了方便查閱，之後如果真的需要改成可調整，再另外處理。</div>`;
+    document.getElementById('urBack').onclick=()=>{ section=null; draw(); };
+  };
   const drawLeaveBuffer=()=>{
     const buf=state.unitRules.leaveBuffer;
     modal.innerHTML=`
       <div class="section-title"><button class="ghost small" id="urBack">← 返回</button><h2 style="margin:0">休假緩衝時間</h2></div>
-      <div class="hint" style="margin-bottom:8px">休假大表點格子時，同一天可以循環切換這兩層（都是「前一天幾點開始休假」），這裡設定各層實際的時間。如果某段假期因為任務/處罰需要更晚才開始休假、或提早收假，用休假大表「已生效的不在營記錄」裡的「調整開始/收假時間」個別處理，不會用到這裡的設定。</div>
+      <div class="hint" style="margin-bottom:8px">休假暨事故大表點格子時，同一天可以循環切換這兩層（都是「前一天幾點開始休假」），這裡設定各層實際的時間。如果某段假期因為任務/處罰需要更晚才開始休假、或提早收假，用休假暨事故大表「已生效的不在營記錄」裡的「調整開始/收假時間」個別處理，不會用到這裡的設定。</div>
       <div class="row wrap" style="margin-bottom:8px">
         <div class="grow"><label>榮譽假（最寬鬆）前一天</label><input type="text" id="urHonorStart" value="${esc(buf.honorStart)}" placeholder="12:00"></div>
       </div>
@@ -2266,6 +2276,7 @@ function openUnitRulesModal(){
     if(section==='leaveBuffer') drawLeaveBuffer();
     else if(section==='timeStep') drawTimeStep();
     else if(section==='standbyDefaults') drawStandbyDefaults();
+    else if(section==='dutyDayDef') drawDutyDayDef();
     else if(section==='holidays'){ section=null; openHolidaySettingsModal(); draw(); }
     else drawMain();
   };
@@ -2520,7 +2531,7 @@ function preplanCellMark(type, plan){
   return '';
 }
 /* which duty types support the fill-in-the-blank text format: only the
-   simple per-day shapes (one line per slot) — 留守 and 休假大表 have
+   simple per-day shapes (one line per slot) — 留守 and 休假暨事故大表 have
    date-range/checkbox structure that doesn't reduce to fill-in-the-blank
    lines cleanly, so they stay JSON-only via the whole-store export. */
 function preplanSupportsTextFormat(type){
@@ -3004,9 +3015,8 @@ function openPreplanCalendar(key){
   const type = PREPLAN_TYPES.find(t=>t.key===key);
   if(!type) return;
   if(!preplanMonth) preplanMonth = monthOf(currentDate);
-  // 休假大表 is person-first, not date-first — it has its own screen
+  // 休假暨事故大表 is person-first, not date-first — it has its own screen
   if(type.mode==='leaveTable') return openLeaveTableEditor(preplanMonth+'-01', ()=>{});
-  if(type.mode==='personCalendar') return openPersonCalendarEditor(preplanMonth+'-01', ()=>{});
   const modal=document.createElement('div');
   modal.className='fullscreen-modal'; modal.style.zIndex='92';
   const draw=()=>{
@@ -3186,7 +3196,7 @@ function openStandbyEditor(date, onSaved){
           return `<div class="list-item" style="flex-direction:column;align-items:stretch">
             <div class="row"><span class="grow">${esc(p.name)}（${p.group||'未分組'}·${p.rank}）</span>
               <button class="ghost small danger" data-sb-remove="${pid}">移除</button></div>
-            ${clash.length? `<div class="badge-issue">⚠️ 休假大表已排他 ${clash.length} 天休假（${clash.map(d=>minguoLabel(d)).join('、')}），跟留守衝突</div>`:''}
+            ${clash.length? `<div class="badge-issue">⚠️ 休假暨事故大表已排他 ${clash.length} 天休假（${clash.map(d=>minguoLabel(d)).join('、')}），跟留守衝突</div>`:''}
             ${(ov.start||ov.end)? `<div class="hint">個別調整：${ov.start? '留守至 '+ov.start : ''}${ov.end? ' ／ 提早於 '+ov.end+' 離營':''}</div>`:''}
             <div class="row"><button class="ghost small" data-sb-override="${pid}">個別調整時間</button></div>
           </div>`;
@@ -3287,7 +3297,7 @@ function openStandbyPeoplePicker(plan, onDone){
         ${sorted.map(p=>{
           /* if this person already has leave booked inside the standby block,
              say so here — otherwise it's easy to put someone on standby who
-             the 休假大表 already sent home */
+             the 休假暨事故大表 already sent home */
           const blockDates=(plan.startDate&&plan.endDate&&plan.startDate<=plan.endDate)? dateRangeList(plan.startDate,plan.endDate):[];
           const leaveDates=((state.preplan.leave||{})[p.id]||{}).dates||[];
           const clash=blockDates.filter(d=>leaveDates.includes(d));
@@ -4029,7 +4039,7 @@ function openPreplanCopyModal(key, fromDate, onDone){
     modal.remove(); if(onDone) onDone();
   };
 }
-/* 休假大表: pick a person, then tick every day they're off — the reverse of
+/* 休假暨事故大表: pick a person, then tick every day they're off — the reverse of
    the per-day editors, matching how leave is actually decided (per person,
    for a stretch of days). Stored per person; import turns each ticked day
    into a proper leave block with buffers. */
@@ -4040,183 +4050,6 @@ function standbyStatusFor(personId, date){
   const owner = preplanOwnerFor('standby', date);
   if(!owner) return null;
   return (owner.plan.personIds||[]).includes(personId)? 'staying' : 'off';
-}
-/* 休假大表: pick a person, then tap the days they're off on a month grid.
-   Consecutive days merge into one leave block on import; 榮譽假 shifts the
-   block's start from 18:00 the previous day to 12:00. */
-/* everything already planned for one person on one date, gathered from the
-   preplans and the live schedule — the personal calendar's read-only half */
-function personDayItems(personId, date){
-  const out=[];
-  PREPLAN_TYPES.forEach(t=>{
-    if(t.mode==='leaveTable' || t.mode==='personCalendar') return;
-    if(t.mode==='standby'){
-      const owner=preplanOwnerFor('standby', date);
-      if(owner && (owner.plan.personIds||[]).includes(personId)){
-        out.push({kind:'preplan', key:'standby', anchor:owner.anchor, label:'🏠 留守'});
-        Object.entries(owner.plan.subDuties||{}).forEach(([role,byDate])=>{
-          const cfg=(byDate||{})[date];
-          if(cfg && (cfg.personIds||[]).includes(personId)){
-            out.push({kind:'preplan', key:'standby', anchor:owner.anchor,
-              label:`🏠 ${role}${cfg.start&&cfg.end? ` (${cfg.start}-${cfg.end})`:''}`});
-          }
-        });
-      }
-      return;
-    }
-    const plan=preplanFor(t.key, date);
-    if(!plan) return;
-    const has=(plan.personIds||[]).includes(personId)
-      || plan.dayPersonId===personId || plan.nightPersonId===personId
-      || Object.values(plan.slots||{}).some(c=>c && c.personId===personId);
-    if(has) out.push({kind:'preplan', key:t.key, anchor:date, label:`${t.icon} ${t.name}`});
-  });
-  // leave from the 休假大表
-  const lv=(state.preplan.leave||{})[personId];
-  if(lv && (lv.dates||[]).includes(date)) out.push({kind:'leave', label:'🏖️ 休假（大表）'});
-  // live schedule
-  orderedCategories().forEach(cat=>{
-    const ca=(state.assign[date]||{})[cat.id]||{};
-    effectiveShifts(cat,date).forEach(s=>{
-      if((ca[s.id]||[]).includes(personId)) out.push({kind:'assign', label:`📋 ${cat.name} ${s.label||s.start+'-'+s.end}`});
-    });
-  });
-  (state.misc[date]||[]).forEach(m=>{
-    if((m.personIds||[]).includes(personId)) out.push({kind:'misc', label:`🗂 ${m.role}${m.start&&m.end? ` (${m.start}-${m.end})`:''}`});
-  });
-  // personal incidents
-  (state.unavail[date]||[]).filter(u=>u.personId===personId).forEach(u=>{
-    out.push({kind:'unavail', id:u.id, leaveId:u.leaveId, allDay:u.allDay, isLeave:isLeaveReason(u.reason),
-      label:`🚫 ${u.allDay?'全天':`${u.start}-${u.end}`}${u.reason? '（'+u.reason+'）':''}`});
-  });
-  return out;
-}
-/* 個人月曆: one person, one month, everything they're on. Planned duties are
-   pulled in automatically (and can be opened for editing); personal
-   incidents are entered right here — this replaces 人員事故登載. */
-function openPersonCalendarEditor(date, onSaved){
-  let ym=monthOf(date);
-  let pid=null;
-  const modal=document.createElement('div');
-  modal.className='fullscreen-modal'; modal.style.zIndex='93';
-  const draw=()=>{
-    const person=pid? state.personnel.find(p=>p.id===pid):null;
-    const [y,m]=ym.split('-').map(Number);
-    const total=daysInMonth(ym);
-    const firstDow=new Date(y,m-1,1).getDay();
-    const cells=[];
-    for(let i=0;i<firstDow;i++) cells.push('<div class="cal-cell empty"></div>');
-    for(let d=1;d<=total;d++){
-      const ds=`${ym}-${String(d).padStart(2,'0')}`;
-      const items=person? personDayItems(person.id, ds):[];
-      // 休假的前後緩衝（例如前一天18:00-24:00那半天）isn't a full day off —
-      // showing it as the same plain "休" as a full day made it impossible
-      // to tell "he's gone all day" from "he's off from tonight" at a
-      // glance, so partial-day leave gets its own mark + colour
-      const fullLeave=items.some(x=>x.kind==='leave'||(x.kind==='unavail'&&x.isLeave&&x.allDay));
-      const partialLeave=!fullLeave && items.some(x=>x.kind==='unavail'&&x.isLeave&&!x.allDay);
-      const partialItem = partialLeave? items.find(x=>x.kind==='unavail'&&x.isLeave&&!x.allDay) : null;
-      const hasIncident=items.some(x=>x.kind==='unavail'&&!x.isLeave);
-      const hasDuty=items.some(x=>['preplan','assign','misc'].includes(x.kind));
-      let mark = fullLeave? '休' : (partialLeave? `休${partialItem.label.match(/(\d{2}):\d{2}-(\d{2}):\d{2}/)? partialItem.label.match(/(\d{2}):\d{2}-(\d{2}):\d{2}/).slice(1).join('-') : ''}` : (hasDuty? String(items.filter(x=>['preplan','assign','misc'].includes(x.kind)).length) : ''));
-      if(hasIncident) mark = (mark? mark+'･':'')+'事';
-      const cls = fullLeave? 'leave-marked' : (partialLeave? 'leave-partial-marked' : (hasIncident? 'incident-marked' : (hasDuty? 'has':'')));
-      cells.push(`<div class="cal-cell ${cls} ${isHolidayDate(ds)?'holiday':''}" data-pc-date="${ds}">
-        <div class="cal-day">${d}</div><div class="cal-mark">${esc(mark)}</div>
-      </div>`);
-    }
-    let monthCount=0;
-    if(person) for(let d=1;d<=total;d++){ if(personDayItems(person.id,`${ym}-${String(d).padStart(2,'0')}`).length) monthCount++; }
-    modal.innerHTML=`
-      <div class="section-title"><h2 style="margin:0">👤 個人月曆</h2><button class="ghost small" id="pcClose">關閉</button></div>
-      <div class="hint" style="margin-bottom:8px">預排好的勤務會自動帶入，個人事故在這裡補登。點日期查看與編輯當天內容。</div>
-      <div class="row wrap" style="margin-bottom:6px">
-        <div class="grow"><label>搜尋姓名</label><input type="text" id="pcSearch" placeholder="輸入姓名關鍵字"></div>
-      </div>
-      <div id="pcPeople" style="max-height:22vh;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:8px;margin-bottom:8px">
-        ${state.personnel.slice().sort((a,b)=>groupIndex(a.group)-groupIndex(b.group)||rankIndex(a.rank)-rankIndex(b.rank))
-          .map(p=>`<label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0">
-            <input type="radio" name="pcp" class="pc-person" value="${p.id}" style="width:auto" ${p.id===pid?'checked':''}>
-            ${esc(p.name)}（${p.group||'未分組'}·${p.rank}${personBadges(p)}）
-          </label>`).join('')}
-      </div>
-      ${person? `
-        <div class="row" style="gap:6px;align-items:center;margin-bottom:6px">
-          <button class="ghost small" id="pcPrev">◀</button>
-          <span class="grow" style="text-align:center;font-weight:600">${esc(person.name)}　民國${y-1911}年${m}月<br><span class="hint">本月有 ${monthCount} 天有安排</span></span>
-          <button class="ghost small" id="pcNext">▶</button>
-        </div>
-        <div class="cal-grid" style="margin-bottom:6px">
-          ${['日','一','二','三','四','五','六'].map(w=>`<div class="cal-head">${w}</div>`).join('')}
-          ${cells.join('')}
-        </div>
-        <div class="hint">數字＝當天勤務筆數；「休」＝整天休假；<span class="leave-partial-marked" style="color:var(--warn,#d9a441);font-style:italic">「休HH-HH」（虛線框）</span>＝只有當天部分時段是休假緩衝（不是整天都休）；「事」＝有個人事故。</div>
-      ` : `<div class="empty">請先選擇一位人員</div>`}`;
-    document.getElementById('pcClose').onclick=()=>modal.remove();
-    const se=document.getElementById('pcSearch'), le=document.getElementById('pcPeople');
-    se.oninput=()=>{ const t=se.value.trim();
-      le.querySelectorAll('label').forEach(l=>{ l.style.display=(!t||l.textContent.includes(t))?'flex':'none'; }); };
-    keepSearchFocusOnPick(le, se);
-    modal.querySelectorAll('.pc-person').forEach(r=>{ r.onchange=()=>{ pid=r.value; draw(); }; });
-    if(person){
-      document.getElementById('pcPrev').onclick=()=>{ ym=shiftMonth(ym,-1); preplanMonth=ym; draw(); };
-      document.getElementById('pcNext').onclick=()=>{ ym=shiftMonth(ym,1); preplanMonth=ym; draw(); };
-      modal.querySelectorAll('[data-pc-date]').forEach(c=>{
-        c.onclick=()=>openPersonDayEditor(person.id, c.dataset.pcDate, draw);
-      });
-    }
-  };
-  document.body.appendChild(modal);
-  draw();
-}
-/* 不在營記錄的其中五種（休假/榮譽假走休假大表，長期事故走人員編輯，都不在
-   這裡處理）：先選一種類型，再直接在月曆上點多天，一次登記完不用一天一天
-   開表單。每一天預設整天不可排，也可以切換成只指定一段時間（例如
-   18:00-24:00），套用到這次選的每一天。 */
-function openPersonDayEditor(personId, date, onDone){
-  const person=state.personnel.find(p=>p.id===personId);
-  const modal=document.createElement('div');
-  modal.className='sheet-modal'; modal.style.zIndex='94';
-  const draw=()=>{
-    const items=personDayItems(personId, date);
-    const duties=items.filter(x=>['preplan','assign','misc'].includes(x.kind));
-    const incidents=items.filter(x=>x.kind==='unavail');
-    const leaveMark=items.filter(x=>x.kind==='leave');
-    modal.innerHTML=`
-      <div class="sheet-inner">
-        <div class="section-title"><h2 style="margin:0">${esc(person.name)}：${minguoLabel(date)}</h2><button class="ghost small" id="pdClose">關閉</button></div>
-        <div class="hint" style="margin-bottom:6px"><b>當天勤務</b>（來自預排與排班）</div>
-        ${duties.length? duties.map((x,i)=>`<div class="row" style="margin-bottom:4px">
-            <span class="muted grow">・${esc(x.label)}</span>
-            ${x.kind==='preplan'? `<button class="ghost small" data-pd-edit="${i}">編輯</button>`:''}
-          </div>`).join('') : `<div class="empty">當天沒有排定勤務</div>`}
-        ${leaveMark.length? `<div class="hint" style="margin-top:6px">${leaveMark.map(x=>esc(x.label)).join('、')}</div>`:''}
-        <div class="divider"></div>
-        <div class="hint" style="margin-bottom:6px"><b>個人事故</b></div>
-        ${incidents.length? incidents.map(x=>`<div class="row" style="margin-bottom:4px">
-            <span class="muted grow">・${esc(x.label)}${x.leaveId? '（休假區間）':''}</span>
-            ${x.leaveId? '' : `<button class="ghost small danger" data-pd-del="${x.id}">刪除</button>`}
-          </div>`).join('') : `<div class="empty">當天沒有個人事故</div>`}
-        <button class="ghost" id="pdAdd" style="width:100%;margin-top:8px">＋ 新增個人事故</button>
-      </div>`;
-    document.getElementById('pdClose').onclick=()=>{ modal.remove(); if(onDone) onDone(); };
-    modal.querySelectorAll('[data-pd-del]').forEach(b=>{
-      b.onclick=()=>{
-        state.unavail[date]=(state.unavail[date]||[]).filter(u=>u.id!==b.dataset.pdDel);
-        saveState(); draw();
-      };
-    });
-    modal.querySelectorAll('[data-pd-edit]').forEach(b=>{
-      b.onclick=()=>{
-        const x=duties[Number(b.dataset.pdEdit)];
-        modal.remove();
-        openPreplanDayEditor(x.key, x.anchor||date, ()=>{ if(onDone) onDone(); });
-      };
-    });
-    document.getElementById('pdAdd').onclick=()=>openQuickIncidentModal(personId, date, ()=>draw());
-  };
-  document.body.appendChild(modal);
-  draw();
 }
 /* groups the ticked dates into consecutive runs and works out, per run,
    whether it needs someone's approval to keep its length. Only categories
@@ -4469,7 +4302,7 @@ function openLeaveTableEditor(date, onSaved, presetPid){
   const store=()=>state.preplan.leave||{};
   const categoryOf=(name)=>state.leaveCategories.find(c=>c.name===name);
   const catRec=(pid,cat)=>((store()[pid]||{})[cat])||{dates:[],honorDates:[],approvedRuns:[],partialTimes:{}};
-  /* 休假大表 is the ONLY place 不在營 gets edited now — but a block can also
+  /* 休假暨事故大表 is the ONLY place 不在營 gets edited now — but a block can also
      come from elsewhere (an older import, a manually-registered incident
      that happens to carry a leaveId) without ever being entered here. If
      that happens the calendar would silently disagree with what's actually
@@ -4639,7 +4472,7 @@ function openLeaveTableEditor(date, onSaved, presetPid){
     const prominentCats=state.leaveCategories.filter(c=>c.prominent);
     const otherCats=state.leaveCategories.filter(c=>!c.prominent);
     modal.innerHTML=`
-      <div class="section-title"><h2 style="margin:0">🏖️ 休假大表</h2><button class="ghost small" id="ltClose">關閉</button></div>
+      <div class="section-title"><h2 style="margin:0">🏖️ 休假暨事故大表</h2><button class="ghost small" id="ltClose">關閉</button></div>
       <div class="hint" style="margin-bottom:8px">先選人、選類型，再點月曆登記那個類型的日子——月曆會同時顯示這個人這個月所有類型的記錄，但點擊只會動到目前選中的類型。有緩衝的類型（例如休假）點一天等於前後多算半天到一天，畫面上會用虛線框預覽緩衝落在哪一天；沒有緩衝的類型（例如受訓）就是單純整天登記。</div>
       <div class="hint" style="margin-bottom:4px">類型（點哪個就切換到那個類型繼續操作）</div>
       <div class="row wrap" style="gap:6px;margin-bottom:8px">
@@ -4763,7 +4596,7 @@ function openLeaveTableEditor(date, onSaved, presetPid){
       }
       modal.remove();
     };
-    modal.querySelector('#ltCheckpoint').onclick=()=>openCheckpointModal('leave', '休假大表',
+    modal.querySelector('#ltCheckpoint').onclick=()=>openCheckpointModal('leave', '休假暨事故大表',
       ()=>state.preplan.leave||{},
       (data)=>{ state.preplan.leave=data; loadPerson(); draw(); });
     modal.querySelector('#ltDelayedStart').onclick=()=>openDelayedStartModal(ym+'-01', ()=>{ if(selectedPid) loadPerson(); draw(); });
@@ -4782,7 +4615,7 @@ function openLeaveTableEditor(date, onSaved, presetPid){
         showConfirm('確定要刪除這整段記錄嗎？', ()=>{
           const leaveId=b.dataset.ltDelBlock;
           // find which person/category/dates this block covers before it's
-          // gone, so 休假大表's planning record can be kept in sync
+          // gone, so 休假暨事故大表's planning record can be kept in sync
           let ownerPid=null, ownerReason=null, blockDates=[];
           Object.entries(state.unavail).forEach(([d,arr])=>{
             (arr||[]).forEach(u=>{ if(u.leaveId===leaveId){ ownerPid=u.personId; ownerReason=u.reason; if(u.allDay) blockDates.push(d); } });
@@ -5070,10 +4903,10 @@ function importPreplanForDate(key, date){
   }
   return true;
 }
-/* 休假大表 import: turn each person's ticked dates into proper leave blocks,
+/* 休假暨事故大表 import: turn each person's ticked dates into proper leave blocks,
    merging consecutive days into one block so buffers land in the right
    places (rather than one buffered block per day). */
-/* imports the 休假大表 into real leave blocks. Consecutive days merge into
+/* imports the 休假暨事故大表 into real leave blocks. Consecutive days merge into
    one block; a block is 榮譽假 if its FIRST day was marked honor (honor is
    a per-day flag on the calendar, not a whole-person setting, since the
    same person might want it for one stretch but not another). Returns the
@@ -5196,7 +5029,7 @@ function clearDateRange(from, to, opts){
     blocks.forEach(b=>{
       deleteLeaveById(b.leaveId);
       cleared++;
-      // keep 休假大表's planning record in sync so it doesn't keep showing
+      // keep 休假暨事故大表's planning record in sync so it doesn't keep showing
       // dates as ticked for a block that no longer exists
       const ownerCat = b.reason==='榮譽假'? '休假' : b.reason;
       const rec = state.preplan.leave && state.preplan.leave[b.personId] && state.preplan.leave[b.personId][ownerCat];
@@ -5294,7 +5127,7 @@ function openClearRangeModal(){
     ['assign','衛哨排班'], ['misc','其他勤務'], ['unavail','事故/休假'],
     ['dailyShiftOverrides','當日班別設定'], ['dutyChanges','異動紀錄'],
   ];
-  const preplanItems = PREPLAN_TYPES.filter(t=>t.mode!=='personCalendar').map(t=>[t.key, t.name]);
+  const preplanItems = PREPLAN_TYPES.map(t=>[t.key, t.name]);
   modal.innerHTML=`
     <div class="sheet-inner">
       <div class="section-title"><h2 style="margin:0">清除一段時間的資料</h2><button class="ghost small" id="crClose">關閉</button></div>
@@ -5309,7 +5142,7 @@ function openClearRangeModal(){
           <input type="checkbox" class="cr-schedule" value="${k}" style="width:auto"> ${label}
         </label>`).join('')}
       </div>
-      <div class="hint" style="margin-bottom:8px">清「衛哨排班」或「其他勤務」時，記得順便勾「異動紀錄」——不然裡面可能留著指向已經被清掉的班次的舊紀錄。</div>
+      <div class="hint" style="margin-bottom:8px">日期範圍預設是今天，改成單日就能取代原本排班分頁裡的「清空排班」。清「衛哨排班」或「其他勤務」時，記得順便勾「異動紀錄」——不然裡面可能留著指向已經被清掉的班次的舊紀錄。只想清某一個類別或項目，也可以直接到該類別/項目卡片自己的「清空排班」「清除」按鈕，不用開這裡。</div>
       <label style="display:flex;align-items:center;gap:6px;font-size:13px;margin-bottom:8px">
         <input type="checkbox" id="crExcludeFromPreplan" style="width:auto"> 其他勤務排除從預排匯入的部分（只清手動輸入/自動排班補的，保留預排匯入寫入的）
       </label>
@@ -5510,7 +5343,7 @@ function personFutureCommitments(personId){
       const byCat = store[personId];
       if(byCat) Object.entries(byCat).forEach(([cat,rec])=>{
         const future=(rec.dates||[]).filter(d=>d>=today);
-        if(future.length) out.push({date:future.sort()[0], label:`休假大表-${cat}`});
+        if(future.length) out.push({date:future.sort()[0], label:`休假暨事故大表-${cat}`});
       });
       return;
     }
@@ -6249,7 +6082,7 @@ function renderLeaveGroupSummary(date){
       const lid = findLeaveIdForPerson(p.id, date);
       return `<div class="row" style="margin-bottom:2px">
         <span class="muted grow">・${esc(p.name)}（${p.rank}）</span>
-        ${lid? `<button class="ghost small" data-goto-leave-table="${p.id}">去休假大表改</button>` : ''}
+        ${lid? `<button class="ghost small" data-goto-leave-table="${p.id}">去休假暨事故大表改</button>` : ''}
       </div>`;
     }).join('');
     return collapsibleCardHTML('leaveGroup-'+g, `${esc(g)}（${members.length}人・${fmtRankBreakdown(bd)}）`, inner);
@@ -6343,7 +6176,14 @@ function personAwayReasonCategory(personId, date){
   const leaveCatNames=state.leaveCategories.map(c=>c.name);
   const away = dayEntries.find(u=>isLeaveReason(u.reason) || u.inCamp===false || leaveCatNames.includes(u.reason));
   if(away && away.reason){
-    if(away.reason.includes('榮譽假')) return '榮譽假';
+    // 「榮譽假」現在只標記在前一天那半天緩衝上（見createLeaveSegment），
+    // 這天本身的整天記錄一律是類別名稱（例如「休假」）——要知道這天是不是
+    // 榮譽假的一部分，得找同一個leaveId的前緩衝記錄，不能只看這天自己的
+    // reason
+    if(away.leaveId){
+      const isHonor = Object.values(state.unavail).some(arr=>(arr||[]).some(u=>u.leaveId===away.leaveId && u.reason==='榮譽假'));
+      if(isHonor) return '榮譽假';
+    }
     if(isLeaveReason(away.reason)) return '休假';
     if(leaveCatNames.includes(away.reason)) return away.reason;
     return '其他事故';
@@ -6367,7 +6207,7 @@ function notInCampItemsHTML(list, date){
       const lid = findLeaveIdForPerson(p.id, date);
       return `<div class="row" style="margin-bottom:4px;align-items:flex-start">
         <span class="muted grow">・${esc(p.name)}（${p.rank}）：${esc(reason)}</span>
-        ${lid? `<button class="ghost small" data-goto-leave-table="${p.id}">去休假大表改</button>` : `<button class="ghost small" data-quick-incident="${p.id}">編輯</button>`}
+        ${lid? `<button class="ghost small" data-goto-leave-table="${p.id}">去休假暨事故大表改</button>` : `<button class="ghost small" data-quick-incident="${p.id}">編輯</button>`}
       </div>`;
     }).join('');
     return collapsibleCardHTML('notInCampGroup-'+g, `${esc(g)}（${members.length}人・${fmtRankBreakdown(bd)}）`, rows);
@@ -6438,8 +6278,8 @@ function wireNotInCampCardEvents(){
    should've had an incident registered, or vice versa), so fixing it needs
    to happen right there instead of bouncing back to 休假/事故. Handles
    everyday 事故 entries only (not 休假 leaveId blocks, which are edited
-   exclusively through 休假大表 now — a person with an active leaveId
-   should be routed there instead via "去休假大表改"). */
+   exclusively through 休假暨事故大表 now — a person with an active leaveId
+   should be routed there instead via "去休假暨事故大表改"). */
 function openQuickIncidentModal(personId, date, onDone){
   const person = state.personnel.find(p=>p.id===personId);
   if(!person) return;
@@ -6837,7 +6677,12 @@ function renderOutingList(date){
   return list.length? list.map(p=>`<div class="muted">・${esc(p.name)}（${p.group||'未分組'}·${p.rank}）</div>`).join('') : `<div class="empty">找不到符合條件的人</div>`;
 }
 function outingEligibleList(date, filterFn){
-  const onLeaveIds = new Set((state.unavail[date]||[]).filter(u=>u.allDay).map(u=>u.personId));
+  // 排除「今天整天休假」跟「今天晚上就要開始休假」的人——只要今天有跟
+  // 休假掛勾的記錄、且不是單純的清晨收假緩衝，就不該再讓他排外散宿（涵蓋
+  // 一般前緩衝，也涵蓋「開始延後」調整過、變成當天某個時間才開始的那種
+  // 記錄）。今天早上才剛收假回來的後緩衝不算——那只佔用清晨那一小段，
+  // 不影響晚上的外散宿資格。
+  const onLeaveIds = new Set((state.unavail[date]||[]).filter(u=>u.leaveId && !isBackBufferEntry(u)).map(u=>u.personId));
   let list = state.personnel.filter(p=>!onLeaveIds.has(p.id) && isEligibleForOuting(p.id, date));
   if(filterFn) list = list.filter(filterFn);
   return list.sort((a,b)=>rankIndex(a.rank)-rankIndex(b.rank) || groupIndex(a.group)-groupIndex(b.group));
@@ -7011,7 +6856,7 @@ function wireOutingCardEvents(){
   document.getElementById('outingGroupFilter').onchange=(e)=>{ outingFilterState.group=e.target.value; refreshOutingList(); };
 }
 /* used by every card that shows someone's active leave with a shortcut
-   into 休假大表 (the only place leave gets edited now) */
+   into 休假暨事故大表 (the only place leave gets edited now) */
 function wireGotoLeaveTableButtons(){
   document.querySelectorAll('[data-goto-leave-table]').forEach(b=>{
     b.onclick=()=>openLeaveTableEditor(currentDate, render, b.dataset.gotoLeaveTable);
@@ -7969,26 +7814,9 @@ function renderSchedule(){
   app.innerHTML = `
     ${dayProgressBarHTML()}
     <div class="card">
-      <div class="hint">此日期代表勤務「結束日」：實際勤務時段是 ${dutyDateRangeLabel(currentDate)}（前一天22:00開始，到選定日期22:00結束）。</div>
-    </div>
-    <div class="card">
       <button class="primary" id="autoAssignBtn2" style="width:100%">🪄 自動補空缺（不覆蓋已排的）</button>
     </div>
     ${dutyChangeCardHTML()}
-    ${collapsibleCardHTML('copyDay', '複製某天的設定到另一天', `
-      <div class="row wrap" style="margin-bottom:8px">
-        <div class="grow"><label>從（來源日期）</label><input type="date" id="copyFromDate" value="${currentDate}"></div>
-        <div class="grow"><label>到（目標日期）</label><input type="date" id="copyToDate" value="${nextDateStr(currentDate)}"></div>
-      </div>
-      <div class="row wrap" style="gap:10px;margin-bottom:8px">
-        <label style="display:flex;align-items:center;gap:6px;font-size:13px"><input type="checkbox" id="copyCatShifts" style="width:auto" checked> 排班類別班別結構</label>
-        <label style="display:flex;align-items:center;gap:6px;font-size:13px"><input type="checkbox" id="copyMisc" style="width:auto"> 其他勤務項目結構</label>
-        <label style="display:flex;align-items:center;gap:6px;font-size:13px"><input type="checkbox" id="copyLeave" style="width:auto"> 休假登記</label>
-        <label style="display:flex;align-items:center;gap:6px;font-size:13px"><input type="checkbox" id="copyUnavail" style="width:auto"> 一般事故登記（不含休假）</label>
-      </div>
-      <button class="primary" id="copyDayBtn" style="width:100%">複製</button>
-      <div class="hint">「排班類別班別結構」「其他勤務項目結構」只複製時段/人數/角色等設定本身，不複製當天已排入的人員——因為衛哨規則不允許同一人連續兩天站同一時段，直接複製人員容易違規，複製後仍需手動或自動補空缺重新指派。「休假登記」跟「一般事故登記」分開勾選，可以只複製其中一種（例如假日留守，禮拜日多半跟禮拜六是同一批人休假，但不一定要連出車、體檢這類一般事故也一起複製）；休假會重建成完整的一天份紀錄（含前後6小時緩衝），可以在「目前登記的休假」正常編輯。複製是「同步」而不是單純附加：勾選的項目如果目標日期已經有同一筆（同一人同一項目、同一人同一段休假、或同一人同原因的事故），會先移除舊的再放新的，重複按複製不會越疊越多份；沒勾選、跟這次複製無關的資料完全不受影響。如果複製結果不理想，用左上角的復原（↩️）按鈕還原即可。</div>
-    `)}
     ${missingDefaults.length? collapsibleCardHTML('missingDefaults', `⚠️ 少了預設類別（${missingDefaults.length}）`, `
       <div class="muted" style="margin-bottom:8px">偵測到以下類別目前不在清單中（可能是被刪除了），可一鍵還原班別設定（該類別過去已排的內容無法救回，只能還原空白班表結構）：</div>
       <div class="row wrap">
@@ -8002,22 +7830,6 @@ function renderSchedule(){
       </div>
       <div class="hint">安全士官／橋哨／指管：前後兩班（衛哨對衛哨）需間隔≥6小時、單日累計上限6小時（系統自動檢查，違反會標紅；此規則不含準備時間，純粹以衛哨排定時間計算）。每班衛哨開始前需空30分鐘準備：若前一段時間還在忙其他勤務（如採買、打飯班），系統會擋下並標紅，避免像「採買到08:00、緊接著08:00-12:00衛哨」這種沒時間準備的排法。橋哨／指管優先排下士，其次其他士兵/士官。打飯班早/午/晚每班2人＝1位帶隊士官（優先下士→中士→上士）＋1位士兵，盡量避免安排軍官；整天固定2人優先排訓練役，沒有訓練役才依二兵→一兵→上兵遞補。下拉選單已依此優先順序排序，越上面越優先。有設定「補休至」的班別（例：22:00-06:00 各節衛哨補休至08:00、06-08衛哨與早餐打飯班補休至08:30、午餐打飯班補休至15:30），下班後系統會自動把該員在補休時段內標示為不可排，也會檢查補休時段有沒有跟已排的其他勤務衝突，可到各類別「編輯」調整補休時間。</div>
       <div class="hint">下拉選單中的 🚫不可排 已同時涵蓋：休假/事故、長期事故、補休、以及當天其他勤務的重複指派。</div>
-    `)}
-    ${collapsibleCardHTML('clearSchedule', '清空排班（選擇要清空的項目）', `
-      <div class="row wrap" style="gap:10px;margin-bottom:8px">
-        ${orderedCategories().map(cat=>`
-          <label style="display:flex;align-items:center;gap:6px;font-size:13px">
-            <input type="checkbox" class="clear-target-cb" value="${cat.id}" style="width:auto"> ${esc(cat.name)}
-          </label>`).join('')}
-        <label style="display:flex;align-items:center;gap:6px;font-size:13px">
-          <input type="checkbox" class="clear-target-cb" value="__misc" style="width:auto"> 其他勤務
-        </label>
-      </div>
-      <div class="row wrap" style="margin-bottom:8px">
-        <button class="ghost small" id="clearTargetSelectAll">全選</button>
-        <button class="ghost small" id="clearTargetClearAll">清空勾選</button>
-      </div>
-      <button class="ghost danger" id="clearSelectedBtn" style="width:100%">🗑️ 清空所選項目</button>
     `)}
     <div id="scheduleCardsContainer">${renderScheduleCards()}</div>
     <div class="card">
@@ -8083,99 +7895,8 @@ function renderSchedule(){
       });
     };
   });
-  document.getElementById('copyDayBtn').onclick=()=>{
-    const from=document.getElementById('copyFromDate').value;
-    const to=document.getElementById('copyToDate').value;
-    if(!from||!to){ showAlert('請選擇來源與目標日期'); return; }
-    if(from===to){ showAlert('來源與目標日期不能相同'); return; }
-    const doCat=document.getElementById('copyCatShifts').checked;
-    const doMisc=document.getElementById('copyMisc').checked;
-    const doLeave=document.getElementById('copyLeave').checked;
-    const doUnavail=document.getElementById('copyUnavail').checked;
-    if(!doCat && !doMisc && !doLeave && !doUnavail){ showAlert('請至少勾選一項要複製的內容'); return; }
-    showConfirm(`確定要把 ${from} 的設定複製到 ${to} 嗎？（複製的項目如果在 ${to} 已經有同一筆，會先移除舊的再放新的，不會越複製越多份；跟這次複製無關的資料不受影響）`, ()=>{
-      if(doCat){
-        const srcOverride = state.dailyShiftOverrides[from]||{};
-        if(Object.keys(srcOverride).length){
-          if(!state.dailyShiftOverrides[to]) state.dailyShiftOverrides[to]={};
-          Object.keys(srcOverride).forEach(catId=>{
-            state.dailyShiftOverrides[to][catId] = srcOverride[catId].map(s=>({...s, id:uid()}));
-          });
-        }
-      }
-      if(doMisc){
-        const srcMisc = state.misc[from]||[];
-        if(!state.misc[to]) state.misc[to]=[];
-        srcMisc.forEach(m=>{
-          // idempotent: drop any existing target entry for the same
-          // role+time before adding the fresh copy, so re-running the
-          // copy converges to one entry instead of piling up duplicates
-          state.misc[to] = state.misc[to].filter(existing=>!(existing.role===m.role && existing.start===m.start && existing.end===m.end));
-          state.misc[to].push({
-            id:uid(), role:m.role, start:m.start, end:m.end, restUntil:m.restUntil||'',
-            roles: m.roles? [...m.roles]:undefined,
-            personIds: m.roles? m.roles.map(()=>undefined) : [],
-            lockedSlots: m.roles? m.roles.map(()=>false) : undefined,
-          });
-        });
-      }
-      if(doLeave){
-        const srcLeave = (state.unavail[from]||[]).filter(u=>!isLeaveBufferEntry(u) && u.leaveId);
-        srcLeave.forEach(u=>{
-          // idempotent: if this person already has a leave block covering
-          // `to`, remove it first so re-copying doesn't stack up several
-          // overlapping leave blocks for the same person/day
-          const existingLid = findLeaveIdForPerson(u.personId, to);
-          if(existingLid) deleteLeaveById(existingLid);
-          // recreate as a proper one-day leave block (fresh leaveId + its
-          // own buffer entries the day before/after `to`), not a flat
-          // orphaned copy — see createLeaveSegment
-          createLeaveSegment(u.personId, to, to, u.reason==='榮譽假');
-        });
-      }
-      if(doUnavail){
-        const srcUnavail = (state.unavail[from]||[]).filter(u=>!isLeaveBufferEntry(u) && !u.leaveId);
-        if(!state.unavail[to]) state.unavail[to]=[];
-        srcUnavail.forEach(u=>{
-          // idempotent: drop any existing target entry for the same
-          // person+reason+time before adding the fresh copy
-          state.unavail[to] = state.unavail[to].filter(existing=>!(!existing.leaveId && existing.personId===u.personId && existing.reason===u.reason && existing.allDay===u.allDay && existing.start===u.start && existing.end===u.end));
-          state.unavail[to].push({id:uid(), personId:u.personId, allDay:u.allDay, start:u.start, end:u.end, reason:u.reason, inCamp:u.inCamp});
-        });
-      }
-      saveState();
-      showAlert('複製完成。');
-      render();
-    });
-  };
   wireScheduleCardsDrag();
   wireMiscCardEvents();
-  document.getElementById('clearTargetSelectAll').onclick=()=>{
-    document.querySelectorAll('.clear-target-cb').forEach(cb=>cb.checked=true);
-  };
-  document.getElementById('clearTargetClearAll').onclick=()=>{
-    document.querySelectorAll('.clear-target-cb').forEach(cb=>cb.checked=false);
-  };
-  document.getElementById('clearSelectedBtn').onclick=()=>{
-    const targets=[...document.querySelectorAll('.clear-target-cb:checked')].map(cb=>cb.value);
-    if(!targets.length){ showAlert('請至少勾選一個要清空的項目'); return; }
-    const catNames = targets.filter(t=>t!=='__misc').map(id=>{
-      const c=state.categories.find(cc=>cc.id===id);
-      return c? c.name : id;
-    });
-    const labelParts = [...catNames, targets.includes('__misc')?'其他勤務':null].filter(Boolean);
-    showConfirm(`確定要清空「${currentDate}」當天的：${labelParts.join('、')} 嗎？（清空的是已指派的人員，項目/班別本身的設定不會被刪除；如果清錯了可以用左上角的復原按鈕還原）`, ()=>{
-      targets.forEach(t=>{
-        if(t==='__misc'){
-          (state.misc[currentDate]||[]).forEach(m=>{
-            m.personIds = m.roles? m.roles.map(()=>undefined) : [];
-          });
-        }
-        else { if(state.assign[currentDate]) delete state.assign[currentDate][t]; }
-      });
-      saveState(); render();
-    });
-  };
   app.querySelectorAll('[data-restore-cat]').forEach(b=>{
     b.onclick=()=>{
       const d=defaults.find(x=>x.id===b.dataset.restoreCat);
