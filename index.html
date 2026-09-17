@@ -151,7 +151,7 @@ textarea{min-height:50px;resize:vertical;}
   <div class="topbar-main" style="flex-direction:column;align-items:stretch;gap:6px">
     <div class="row wrap" style="gap:4px;align-items:center">
       <button class="ghost small" id="preplanDrawerBtn" title="預排">☰ 預排</button>
-      <h1 id="pageTitle" style="margin:0">🌟 衛哨排班系統 <span class="muted" style="font-size:10px;font-weight:400">v120</span></h1>
+      <h1 id="pageTitle" style="margin:0">🌟 衛哨排班系統 <span class="muted" style="font-size:10px;font-weight:400">v121</span></h1>
       <button class="ghost small" id="clearRangeBtn" title="清除一段時間">🧹 清除範圍</button>
       <span style="flex:1"></span>
       <button class="ghost small" id="exportBtn">匯出</button>
@@ -2161,7 +2161,7 @@ function openUnitRulesModal(){
       <div class="hint" style="margin-bottom:10px">這裡收單位自己的規定，跟部隊制式規定不一定一樣，可以隨時調整。點進每一類看內容。</div>
       <div class="drawer-item" data-ur-section="leaveBuffer">
         <span style="font-size:18px">🏖️</span>
-        <span class="grow">休假緩衝三層時間<br><span class="hint">榮譽假/一般/嚴格各自的起算時間</span></span>
+        <span class="grow">休假緩衝時間<br><span class="hint">榮譽假/一般各自的起算時間</span></span>
         <span style="color:var(--dim)">›</span>
       </div>
       <div class="drawer-item" data-ur-section="timeStep">
@@ -2218,16 +2218,13 @@ function openUnitRulesModal(){
   const drawLeaveBuffer=()=>{
     const buf=state.unitRules.leaveBuffer;
     modal.innerHTML=`
-      <div class="section-title"><button class="ghost small" id="urBack">← 返回</button><h2 style="margin:0">休假緩衝三層時間</h2></div>
-      <div class="hint" style="margin-bottom:8px">休假大表點格子時，同一天可以循環切換這三層（都是「前一天幾點開始休假」，嚴格層沒有前一天緩衝、改成當天才開始），這裡設定各層實際的時間。</div>
+      <div class="section-title"><button class="ghost small" id="urBack">← 返回</button><h2 style="margin:0">休假緩衝時間</h2></div>
+      <div class="hint" style="margin-bottom:8px">休假大表點格子時，同一天可以循環切換這兩層（都是「前一天幾點開始休假」），這裡設定各層實際的時間。如果某段假期因為任務/處罰需要更晚才開始休假、或提早收假，用休假大表「已生效的不在營記錄」裡的「調整開始/收假時間」個別處理，不會用到這裡的設定。</div>
       <div class="row wrap" style="margin-bottom:8px">
         <div class="grow"><label>榮譽假（最寬鬆）前一天</label><input type="text" id="urHonorStart" value="${esc(buf.honorStart)}" placeholder="12:00"></div>
       </div>
       <div class="row wrap" style="margin-bottom:8px">
         <div class="grow"><label>一般（預設）前一天</label><input type="text" id="urNormalStart" value="${esc(buf.normalStart)}" placeholder="18:00"></div>
-      </div>
-      <div class="row wrap" style="margin-bottom:8px">
-        <div class="grow"><label>嚴格（沒有前一天緩衝）當天</label><input type="text" id="urStrictStart" value="${esc(buf.strictStart)}" placeholder="08:00"></div>
       </div>
       <div class="row wrap" style="margin-bottom:8px">
         <div class="grow"><label>所有層級共用：最後一天隔天結束於</label><input type="text" id="urBackEnd" value="${esc(buf.backEnd)}" placeholder="07:30"></div>
@@ -2237,14 +2234,13 @@ function openUnitRulesModal(){
     document.getElementById('urSaveBuffer').onclick=()=>{
       const honorStart=document.getElementById('urHonorStart').value.trim();
       const normalStart=document.getElementById('urNormalStart').value.trim();
-      const strictStart=document.getElementById('urStrictStart').value.trim();
       const backEnd=document.getElementById('urBackEnd').value.trim();
       const timeRe=/^([01]\d|2[0-3]):[0-5]\d$/;
-      if(![honorStart,normalStart,strictStart,backEnd].every(t=>timeRe.test(t))){
+      if(![honorStart,normalStart,backEnd].every(t=>timeRe.test(t))){
         showAlert('時間格式要是 HH:MM（例如 08:00），請檢查每一格。');
         return;
       }
-      state.unitRules.leaveBuffer={honorStart,normalStart,strictStart,backEnd};
+      state.unitRules.leaveBuffer={...state.unitRules.leaveBuffer, honorStart,normalStart,backEnd};
       saveState();
       showAlert('已儲存。之後新登記或重新匯入的休假才會套用新時間，已經匯入過的舊資料不會自動改。');
     };
@@ -4306,13 +4302,155 @@ function openNewLeaveCategoryModal(onDone){
     if(onDone) onDone();
   };
 }
+/* 收假提早：選一個日期（某段假期原本該0730收假的那個隔天），列出這天原
+   本有後緩衝的人，勾選一批（或全選）取消他們這天的後緩衝，改成前一天
+   24:00前算收假。跟開始延後共用類似的介面（選日期→搜尋/篩選人員清單→
+   批次勾選），但這裡動作單純很多，沒有時間可輸入，直接刪除即可。 */
+function openEarlyReturnModal(defaultDate, onDone){
+  const modal=document.createElement('div');
+  modal.className='sheet-modal'; modal.style.zIndex='95';
+  let filterState={search:'', group:''};
+  const draw=()=>{
+    const date = document.getElementById('erDate')? document.getElementById('erDate').value : defaultDate;
+    const entries = peopleWithBackBufferOn(date);
+    let list = entries;
+    if(filterState.search) list = list.filter(u=>{ const p=state.personnel.find(x=>x.id===u.personId); return p && p.name.includes(filterState.search); });
+    if(filterState.group==='__none') list = list.filter(u=>{ const p=state.personnel.find(x=>x.id===u.personId); return p && !p.group; });
+    else if(filterState.group) list = list.filter(u=>{ const p=state.personnel.find(x=>x.id===u.personId); return p && p.group===filterState.group; });
+    const groups=[...new Set(state.personnel.map(p=>p.group).filter(Boolean))].sort((a,b)=>groupIndex(a)-groupIndex(b));
+    modal.innerHTML=`
+      <div class="sheet-inner">
+        <div class="section-title"><h2 style="margin:0">↩️ 收假提早</h2><button class="ghost small" id="erClose">關閉</button></div>
+        <div class="hint" style="margin-bottom:8px">選這批人原本該「隔天0730收假」的那一天，勾選要提早收假的人，套用後這些人改成前一天24:00前就算收假（原本的後緩衝記錄會被移除）。</div>
+        <div class="row wrap" style="margin-bottom:8px">
+          <div class="grow"><label>日期（原本的收假日）</label><input type="date" id="erDate" value="${date}"></div>
+        </div>
+        <div class="row wrap" style="margin-bottom:6px">
+          <div class="grow"><label>搜尋姓名</label><input type="text" id="erSearch" placeholder="輸入姓名關鍵字" value="${esc(filterState.search)}"></div>
+          <div style="width:120px"><label>排組篩選</label>
+            <select id="erGroupFilter">
+              <option value="" ${!filterState.group?'selected':''}>（全部）</option>
+              ${groups.map(g=>`<option value="${esc(g)}" ${filterState.group===g?'selected':''}>${esc(g)}</option>`).join('')}
+              <option value="__none" ${filterState.group==='__none'?'selected':''}>未分組</option>
+            </select>
+          </div>
+        </div>
+        <div class="row wrap" style="margin-bottom:6px">
+          <button class="ghost small" id="erSelectAll">全選(顯示中)</button>
+          <button class="ghost small" id="erClearAll">全部取消</button>
+        </div>
+        <div id="erList" style="max-height:40vh;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:8px;margin-bottom:8px">
+          ${entries.length===0? `<div class="empty">這天沒有人原本要收假</div>` : list.length===0? `<div class="empty">找不到符合的人員</div>` : list.map(u=>{
+            const p=state.personnel.find(x=>x.id===u.personId);
+            return `<label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:6px 0;border-bottom:1px solid var(--line)">
+              <input type="checkbox" class="er-entry" value="${u.id}" style="width:auto">
+              ${p? esc(p.name)+'（'+(p.group||'未分組')+'·'+p.rank+'）':'（找不到這個人）'}${u.reason? ` <span class="hint">${esc(u.reason)}</span>`:''}
+            </label>`;
+          }).join('')}
+        </div>
+        <button class="primary" id="erApply" style="width:100%">套用到勾選的人員</button>
+      </div>`;
+    document.getElementById('erClose').onclick=()=>{ modal.remove(); if(onDone) onDone(); };
+    document.getElementById('erDate').onchange=(e)=>{ defaultDate=e.target.value; draw(); };
+    document.getElementById('erSearch').oninput=(e)=>{ filterState.search=e.target.value.trim(); draw(); };
+    document.getElementById('erGroupFilter').onchange=(e)=>{ filterState.group=e.target.value; draw(); };
+    document.getElementById('erSelectAll').onclick=()=>modal.querySelectorAll('.er-entry').forEach(cb=>cb.checked=true);
+    document.getElementById('erClearAll').onclick=()=>modal.querySelectorAll('.er-entry').forEach(cb=>cb.checked=false);
+    document.getElementById('erApply').onclick=()=>{
+      const ids=[...modal.querySelectorAll('.er-entry:checked')].map(cb=>cb.value);
+      if(!ids.length){ showAlert('請至少勾選一位人員'); return; }
+      showConfirm(`確定要取消這 ${ids.length} 位人員在 ${minguoLabel(date)} 的隔天收假緩衝，改成前一天24:00前就算收假嗎？`, ()=>{
+        const n=applyEarlyReturn(date, ids);
+        saveState();
+        showAlert(`已處理 ${n} 筆，這些人改成前一天24:00前算收假。`);
+        draw();
+        if(onDone) onDone();
+      });
+    };
+  };
+  document.body.appendChild(modal);
+  draw();
+}
+/* 開始延後：選一個日期（某段假期的第一天），列出這天前一天原本有前緩衝的
+   人，分批勾選、每批輸入不同的實際開始時間（例如這批08:00、那批10:00），
+   套用後這批人前一天的前緩衝記錄會被拿掉，改成從輸入的時間當天才開始不
+   可排。同一個日期底下可以重複操作好幾次，處理不同批的人。 */
+function openDelayedStartModal(defaultDate, onDone){
+  const modal=document.createElement('div');
+  modal.className='sheet-modal'; modal.style.zIndex='95';
+  let filterState={search:'', group:''};
+  const draw=()=>{
+    const date = document.getElementById('dsDate')? document.getElementById('dsDate').value : defaultDate;
+    const entries = peopleStartingLeaveOn(date);
+    let list = entries;
+    if(filterState.search) list = list.filter(u=>{ const p=state.personnel.find(x=>x.id===u.personId); return p && p.name.includes(filterState.search); });
+    if(filterState.group==='__none') list = list.filter(u=>{ const p=state.personnel.find(x=>x.id===u.personId); return p && !p.group; });
+    else if(filterState.group) list = list.filter(u=>{ const p=state.personnel.find(x=>x.id===u.personId); return p && p.group===filterState.group; });
+    const groups=[...new Set(state.personnel.map(p=>p.group).filter(Boolean))].sort((a,b)=>groupIndex(a)-groupIndex(b));
+    modal.innerHTML=`
+      <div class="sheet-inner">
+        <div class="section-title"><h2 style="margin:0">⏰ 開始延後</h2><button class="ghost small" id="dsClose">關閉</button></div>
+        <div class="hint" style="margin-bottom:8px">選這批人休假「第一天」的日期，勾選要延後開始的人、輸入這批人實際幾點才開始不可排，套用後前一天的緩衝記錄會被拿掉，只影響這段假期的開頭，中間跟收假那端不受影響。同一天可以分好幾批、每批給不同時間，處理完一批可以繼續勾下一批。</div>
+        <div class="row wrap" style="margin-bottom:8px">
+          <div class="grow"><label>日期（休假第一天）</label><input type="date" id="dsDate" value="${date}"></div>
+        </div>
+        <div class="row wrap" style="margin-bottom:6px">
+          <div class="grow"><label>搜尋姓名</label><input type="text" id="dsSearch" placeholder="輸入姓名關鍵字" value="${esc(filterState.search)}"></div>
+          <div style="width:120px"><label>排組篩選</label>
+            <select id="dsGroupFilter">
+              <option value="" ${!filterState.group?'selected':''}>（全部）</option>
+              ${groups.map(g=>`<option value="${esc(g)}" ${filterState.group===g?'selected':''}>${esc(g)}</option>`).join('')}
+              <option value="__none" ${filterState.group==='__none'?'selected':''}>未分組</option>
+            </select>
+          </div>
+        </div>
+        <div class="row wrap" style="margin-bottom:6px">
+          <button class="ghost small" id="dsSelectAll">全選(顯示中)</button>
+          <button class="ghost small" id="dsClearAll">全部取消</button>
+        </div>
+        <div id="dsList" style="max-height:34vh;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:8px;margin-bottom:8px">
+          ${entries.length===0? `<div class="empty">這天沒有人的假期是從這天開始的</div>` : list.length===0? `<div class="empty">找不到符合的人員</div>` : list.map(u=>{
+            const p=state.personnel.find(x=>x.id===u.personId);
+            return `<label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:6px 0;border-bottom:1px solid var(--line)">
+              <input type="checkbox" class="ds-entry" value="${u.id}" style="width:auto">
+              ${p? esc(p.name)+'（'+(p.group||'未分組')+'·'+p.rank+'）':'（找不到這個人）'}${u.reason? ` <span class="hint">${esc(u.reason)}</span>`:''}
+            </label>`;
+          }).join('')}
+        </div>
+        <div class="row wrap" style="margin-bottom:8px">
+          <div class="grow"><label>這批人實際開始時間</label>${timeSelectHTML('dsStartTime', '08:00')}</div>
+        </div>
+        <button class="primary" id="dsApply" style="width:100%">套用到勾選的這批人</button>
+      </div>`;
+    document.getElementById('dsClose').onclick=()=>{ modal.remove(); if(onDone) onDone(); };
+    document.getElementById('dsDate').onchange=(e)=>{ defaultDate=e.target.value; draw(); };
+    document.getElementById('dsSearch').oninput=(e)=>{ filterState.search=e.target.value.trim(); draw(); };
+    document.getElementById('dsGroupFilter').onchange=(e)=>{ filterState.group=e.target.value; draw(); };
+    document.getElementById('dsSelectAll').onclick=()=>modal.querySelectorAll('.ds-entry').forEach(cb=>cb.checked=true);
+    document.getElementById('dsClearAll').onclick=()=>modal.querySelectorAll('.ds-entry').forEach(cb=>cb.checked=false);
+    document.getElementById('dsApply').onclick=()=>{
+      const ids=[...modal.querySelectorAll('.ds-entry:checked')].map(cb=>cb.value);
+      if(!ids.length){ showAlert('請至少勾選一位人員'); return; }
+      const startTime=getTimeSelectValue('dsStartTime');
+      if(!startTime){ showAlert('請選擇開始時間'); return; }
+      showConfirm(`確定要把這 ${ids.length} 位人員在 ${minguoLabel(date)} 的休假開始時間改成當天 ${startTime} 嗎？前一天的緩衝記錄會被拿掉。`, ()=>{
+        const n=applyDelayedStart(date, ids, startTime);
+        saveState();
+        showAlert(`已處理 ${n} 筆，這批人改成 ${minguoLabel(date)} ${startTime} 才開始不可排。同一天如果還有別批人要用不同時間，可以繼續勾選處理。`);
+        draw();
+        if(onDone) onDone();
+      });
+    };
+  };
+  document.body.appendChild(modal);
+  draw();
+}
 function openLeaveTableEditor(date, onSaved, presetPid){
   let ym = monthOf(date);
   let selectedPid = presetPid || null;
   let selectedCat = '休假';
   let picked = new Set();       // full-day dates ticked in the current month, current category
   let honorDates = new Set();   // subset of picked that are 榮譽假（最寬鬆，前一天12:00起）— only meaningful if category.honorOption
-  let strictDates = new Set();  // subset of picked that are 嚴格（沒有前一天緩衝，當天才開始）— any buffered category
   let partialDates = new Map(); // date -> {start,end} — this day only, not a full day, no buffer even if the category has one
   /* switching categories used to reload straight from the SAVED store,
      which silently discarded whatever you'd just tapped for the category
@@ -4360,32 +4498,30 @@ function openLeaveTableEditor(date, onSaved, presetPid){
       if(!state.preplan.leave) state.preplan.leave={};
       if(!state.preplan.leave[pid]) state.preplan.leave[pid]={};
       const mergedHonor=new Set([...(rec.honorDates||[]), ...foundHonor]);
-      state.preplan.leave[pid][cat]={dates:[...known].sort(), honorDates:[...mergedHonor].sort(), strictDates:rec.strictDates||[], approvedRuns:rec.approvedRuns||[], partialTimes:rec.partialTimes||{}};
+      state.preplan.leave[pid][cat]={dates:[...known].sort(), honorDates:[...mergedHonor].sort(), approvedRuns:rec.approvedRuns||[], partialTimes:rec.partialTimes||{}};
     }
   };
   const saveDraftForCurrentCat=()=>{
     if(!selectedPid) return;
-    sessionDrafts[selectedCat] = {picked:new Set(picked), honorDates:new Set(honorDates), strictDates:new Set(strictDates), partialDates:new Map(partialDates)};
+    sessionDrafts[selectedCat] = {picked:new Set(picked), honorDates:new Set(honorDates), partialDates:new Map(partialDates)};
   };
   /* 有沒有還沒按「確認」存進去的變更——包含目前正在編輯的這個類型（picked/
-     honorDates/strictDates/partialDates 都是本地變數，不會自動存檔），也
+     honorDates/partialDates 都是本地變數，不會自動存檔），也
      包含本次session切換過但還沒存的其他類型草稿（sessionDrafts）。用來在
      關閉前提醒，避免點一點就以為存了、結果一離開全部消失。 */
   const hasUnsavedChanges=()=>{
     if(!selectedPid) return false;
     const catsToCheck = new Set([selectedCat, ...Object.keys(sessionDrafts)]);
     for(const cat of catsToCheck){
-      const live = cat===selectedCat? {picked, honorDates, strictDates, partialDates} : sessionDrafts[cat];
+      const live = cat===selectedCat? {picked, honorDates, partialDates} : sessionDrafts[cat];
       if(!live) continue;
       const rec = catRec(selectedPid, cat);
       const recDates=new Set((rec.dates||[]).filter(d=>d.startsWith(ym)));
       const recHonor=new Set((rec.honorDates||[]).filter(d=>d.startsWith(ym)));
-      const recStrict=new Set((rec.strictDates||[]).filter(d=>d.startsWith(ym)));
       const recPartial=new Map(Object.entries(rec.partialTimes||{}).filter(([d])=>d.startsWith(ym)));
       const setsDiffer=(a,b)=> a.size!==b.size || [...a].some(x=>!b.has(x));
       if(setsDiffer(live.picked, recDates)) return true;
       if(setsDiffer(live.honorDates, recHonor)) return true;
-      if(setsDiffer(live.strictDates, recStrict)) return true;
       if(live.partialDates.size!==recPartial.size) return true;
       for(const [d,t] of live.partialDates){
         const rt=recPartial.get(d);
@@ -4403,7 +4539,6 @@ function openLeaveTableEditor(date, onSaved, presetPid){
     const rec=catRec(selectedPid, selectedCat);
     picked = new Set((rec.dates||[]).filter(d=>d.startsWith(ym)));
     honorDates = new Set((rec.honorDates||[]).filter(d=>picked.has(d)));
-    strictDates = new Set((rec.strictDates||[]).filter(d=>picked.has(d)));
     partialDates = new Map(Object.entries(rec.partialTimes||{}).filter(([d])=>d.startsWith(ym)));
   };
   const loadCategory=(cat)=>{
@@ -4414,14 +4549,12 @@ function openLeaveTableEditor(date, onSaved, presetPid){
     if(sessionDrafts[cat]){
       picked = new Set(sessionDrafts[cat].picked);
       honorDates = new Set(sessionDrafts[cat].honorDates);
-      strictDates = new Set(sessionDrafts[cat].strictDates);
       partialDates = new Map(sessionDrafts[cat].partialDates);
       return;
     }
     const rec=catRec(selectedPid, cat);
     picked = new Set((rec.dates||[]).filter(d=>d.startsWith(ym)));
     honorDates = new Set((rec.honorDates||[]).filter(d=>picked.has(d)));
-    strictDates = new Set((rec.strictDates||[]).filter(d=>picked.has(d)));
     partialDates = new Map(Object.entries(rec.partialTimes||{}).filter(([d])=>d.startsWith(ym)));
   };
   if(selectedPid) loadPerson();
@@ -4438,24 +4571,22 @@ function openLeaveTableEditor(date, onSaved, presetPid){
     // the selected category, so switching categories never makes an
     // already-ticked category's buffer preview disappear from view.
     const categoryDataFor = (catName)=>{
-      if(catName===selectedCat) return {picked, honorDates, strictDates, partialDates};
+      if(catName===selectedCat) return {picked, honorDates, partialDates};
       if(sessionDrafts[catName]) return sessionDrafts[catName];
       const rec=catRec(selectedPid, catName);
       return {
         picked: new Set((rec.dates||[]).filter(d=>d.startsWith(ym))),
         honorDates: new Set((rec.honorDates||[]).filter(d=>d.startsWith(ym))),
-        strictDates: new Set((rec.strictDates||[]).filter(d=>d.startsWith(ym))),
         partialDates: new Map(Object.entries(rec.partialTimes||{}).filter(([d])=>d.startsWith(ym))),
       };
     };
-    const bufferPreviewFor = (cat, pickedSet, strictSet)=>{
+    const bufferPreviewFor = (cat, pickedSet)=>{
       const preview={};
       if(!cat || !cat.buffer || !pickedSet.size) return preview;
       const sorted=[...pickedSet].sort();
       let runStart=sorted[0], prev=sorted[0];
       const flush=(end)=>{
-        // 嚴格層完全沒有前一天緩衝——只有後緩衝(隔天)
-        if(!strictSet.has(runStart)) preview[prevDateStr(runStart)]='front';
+        preview[prevDateStr(runStart)]='front';
         preview[nextDateStr(end)]='back';
       };
       for(let i=1;i<sorted.length;i++){
@@ -4467,7 +4598,7 @@ function openLeaveTableEditor(date, onSaved, presetPid){
     };
     const allCatInfo = person? state.leaveCategories.map(c=>{
       const data=categoryDataFor(c.name);
-      return {cat:c, data, buf:bufferPreviewFor(c, data.picked, data.strictDates)};
+      return {cat:c, data, buf:bufferPreviewFor(c, data.picked)};
     }) : [];
     const cells=[];
     for(let i=0;i<firstDow;i++) cells.push('<div class="cal-cell empty"></div>');
@@ -4484,8 +4615,7 @@ function openLeaveTableEditor(date, onSaved, presetPid){
           fragments.push({text:`${cat.name.slice(0,1)}${pt.start}-${pt.end}`, cls:'leave-partial-marked'});
         } else if(data.picked.has(ds)){
           const isHonor=data.honorDates.has(ds);
-          const isStrict=data.strictDates.has(ds);
-          const label = isHonor? '12'+cat.name.slice(0,1) : (isStrict? cat.name.slice(0,1)+'嚴' : cat.name.slice(0,2));
+          const label = isHonor? '12'+cat.name.slice(0,1) : cat.name.slice(0,2);
           fragments.push({text: label, cls:'has'});
         } else if(buf[ds]){
           fragments.push({text:`${cat.name.slice(0,1)}緩衝${buf[ds]==='front'?'前':'後'}`, cls:'leave-partial-marked'});
@@ -4553,7 +4683,7 @@ function openLeaveTableEditor(date, onSaved, presetPid){
             category
           ).map(w=>`<div class="${w.startsWith('✅')?'hint':'badge-issue'}">${esc(w)}</div>`).join('')}
         <div class="hint" style="margin-bottom:8px">
-          ${category&&category.buffer? `這個類型有前後緩衝：點一天＝整天登記（前一天18:00起）${category.honorOption?'；再點一次＝榮譽假（前一天12:00起，比一般多算0.5天）；再點一次＝嚴格（沒有前一天緩衝，當天08:00才開始）；再點一次取消。':'；再點一次＝嚴格（沒有前一天緩衝，當天08:00才開始）；再點一次取消。'}虛線框是緩衝預覽，三層時間都可以在右上角⚙️「我們的規則」調整。` : `這個類型沒有前後緩衝，點一天就是那天整天不可排，再點一次取消。`}
+          ${category&&category.buffer? `這個類型有前後緩衝：點一天＝整天登記（前一天18:00起）${category.honorOption?'；再點一次＝榮譽假（前一天12:00起，比一般多算0.5天）；再點一次取消。':'；再點一次取消。'}虛線框是緩衝預覽，時間可以在右上角⚙️「我們的規則」調整。如果某段假期因為任務/處罰需要更晚才開始休假、或提早收假，用下面「目前已生效的不在營記錄」個別調整那一段。` : `這個類型沒有前後緩衝，點一天就是那天整天不可排，再點一次取消。`}
           ${category&&category.fiveDayRule? ' 超過5天（含緩衝的有效天數）需要同意才能保留。' : ''}
           「留守」＝留守表已排他這天留守，跟這裡無關聯除非你也點成這個類型。虛線框的部分時段格子點一下會直接刪除。
         </div>
@@ -4581,6 +4711,10 @@ function openLeaveTableEditor(date, onSaved, presetPid){
       <button class="primary" id="ltImport" style="width:100%">📥 匯入本月到實際班表（全部類型）</button>
       <button class="ghost" id="ltCheckpoint" style="width:100%;margin-top:6px">📌 存檔點</button>
       <div class="hint">連續的日子會自動合併成一段。重複匯入不會疊加。會處理這個月所有人員、所有類型。</div>
+      <div class="divider"></div>
+      <h3>特殊狀況調整（少數人因任務/處罰需要跟一般緩衝不一樣）</h3>
+      <button class="ghost" id="ltDelayedStart" style="width:100%;margin-bottom:6px">⏰ 開始延後（這天才開始休假的人，改成更晚才不可排）</button>
+      <button class="ghost" id="ltEarlyReturn" style="width:100%">↩️ 收假提早（取消這天的隔天收假緩衝，提早到前一天24:00收假）</button>
       <div class="divider"></div>
       ${(()=>{
         const seen=new Set(); const blocks=[];
@@ -4632,6 +4766,8 @@ function openLeaveTableEditor(date, onSaved, presetPid){
     modal.querySelector('#ltCheckpoint').onclick=()=>openCheckpointModal('leave', '休假大表',
       ()=>state.preplan.leave||{},
       (data)=>{ state.preplan.leave=data; loadPerson(); draw(); });
+    modal.querySelector('#ltDelayedStart').onclick=()=>openDelayedStartModal(ym+'-01', ()=>{ if(selectedPid) loadPerson(); draw(); });
+    modal.querySelector('#ltEarlyReturn').onclick=()=>openEarlyReturnModal(ym+'-01', ()=>{ if(selectedPid) loadPerson(); draw(); });
     modal.querySelectorAll('.lt-cat-btn').forEach(b=>{
       b.onclick=()=>{ saveDraftForCurrentCat(); selectedCat=b.dataset.ltCat; loadCategory(selectedCat); draw(); };
     });
@@ -4657,7 +4793,6 @@ function openLeaveTableEditor(date, onSaved, presetPid){
             const rec=state.preplan.leave[ownerPid][ownerCat];
             rec.dates=(rec.dates||[]).filter(d=>!blockDates.includes(d));
             if(rec.honorDates) rec.honorDates=rec.honorDates.filter(d=>!blockDates.includes(d));
-            if(rec.strictDates) rec.strictDates=rec.strictDates.filter(d=>!blockDates.includes(d));
             if(!rec.dates.length) delete state.preplan.leave[ownerPid][ownerCat];
           }
           saveState();
@@ -4713,23 +4848,14 @@ function openLeaveTableEditor(date, onSaved, presetPid){
           if(partialDates.has(ds)){
             // 虛線框的部分時段格子：點一下直接刪除
             partialDates.delete(ds);
-          } else if(picked.has(ds) && category && category.buffer){
-            // 有緩衝的類型：一般 →（有榮譽假選項的話，先過榮譽假）→ 嚴格 → 取消
-            if(category.honorOption && !honorDates.has(ds) && !strictDates.has(ds)){
-              honorDates.add(ds);
-            } else if(honorDates.has(ds)){
-              honorDates.delete(ds); strictDates.add(ds);
-            } else if(strictDates.has(ds)){
-              picked.delete(ds); strictDates.delete(ds);
-            } else {
-              // 沒有榮譽假選項的緩衝類型：一般 → 嚴格 → 取消
-              strictDates.add(ds);
-            }
+          } else if(picked.has(ds) && category && category.honorOption && !honorDates.has(ds)){
+            // 整天 → 榮譽假（只有有榮譽假選項的類型，例如休假）
+            honorDates.add(ds);
           } else if(picked.has(ds)){
-            // 沒有緩衝的類型：整天格子再點一下直接刪除
-            picked.delete(ds);
+            // 整天（或榮譽假）格子：再點一下直接刪除
+            picked.delete(ds); honorDates.delete(ds);
           } else {
-            // 空白格子：點一下＝整天登記（一般層級）
+            // 空白格子：點一下＝整天登記
             picked.add(ds);
           }
           draw();
@@ -4737,28 +4863,26 @@ function openLeaveTableEditor(date, onSaved, presetPid){
       });
       modal.querySelector('#ltPrev').onclick=()=>{ ym=shiftMonth(ym,-1); preplanMonth=ym; loadPerson(); draw(); };
       modal.querySelector('#ltNext').onclick=()=>{ ym=shiftMonth(ym,1); preplanMonth=ym; loadPerson(); draw(); };
-      modal.querySelector('#ltClearMonth').onclick=()=>{ picked=new Set(); honorDates=new Set(); strictDates=new Set(); partialDates=new Map(); draw(); };
+      modal.querySelector('#ltClearMonth').onclick=()=>{ picked=new Set(); honorDates=new Set(); partialDates=new Map(); draw(); };
       modal.querySelector('#ltSave').onclick=()=>{
         const rec=catRec(selectedPid,selectedCat);
         const curDates=(rec.dates||[]).filter(d=>!d.startsWith(ym));
         const curHonor=(rec.honorDates||[]).filter(d=>!d.startsWith(ym));
-        const curStrict=(rec.strictDates||[]).filter(d=>!d.startsWith(ym));
         const curApproved=rec.approvedRuns||[];
         const curPartial=Object.fromEntries(Object.entries(rec.partialTimes||{}).filter(([d])=>!d.startsWith(ym)));
         const mergedDates=[...curDates, ...picked].sort();
         const mergedHonor=[...curHonor, ...honorDates].sort();
-        const mergedStrict=[...curStrict, ...strictDates].sort();
         const mergedPartial={...curPartial, ...Object.fromEntries(partialDates)};
         const runs = analyzeLeaveRuns(new Set(mergedDates), new Set(mergedHonor), curApproved, category);
         const unapproved = runs.filter(r=>r.needsApproval && !r.isApproved);
         const doSave=(approvedRuns)=>{
           if(!state.preplan.leave) state.preplan.leave={};
           if(!state.preplan.leave[selectedPid]) state.preplan.leave[selectedPid]={};
-          if(mergedDates.length || Object.keys(mergedPartial).length) state.preplan.leave[selectedPid][selectedCat]={dates:mergedDates, honorDates:mergedHonor, strictDates:mergedStrict, approvedRuns, partialTimes:mergedPartial};
+          if(mergedDates.length || Object.keys(mergedPartial).length) state.preplan.leave[selectedPid][selectedCat]={dates:mergedDates, honorDates:mergedHonor, approvedRuns, partialTimes:mergedPartial};
           else delete state.preplan.leave[selectedPid][selectedCat];
           delete sessionDrafts[selectedCat]; // now persisted — the draft shadow is no longer needed
           saveState();
-          showAlert(`已儲存 ${person.name} 的${selectedCat}（本月整天 ${picked.size} 天${category&&category.honorOption?`，其中榮譽假 ${honorDates.size} 天`:''}${strictDates.size?`，嚴格 ${strictDates.size} 天`:''}${partialDates.size?`，部分時段 ${partialDates.size} 天`:''}）。`);
+          showAlert(`已儲存 ${person.name} 的${selectedCat}（本月整天 ${picked.size} 天${category&&category.honorOption?`，其中榮譽假 ${honorDates.size} 天`:''}${partialDates.size?`，部分時段 ${partialDates.size} 天`:''}）。`);
           draw(); if(onSaved) onSaved();
         };
         if(unapproved.length){
@@ -4968,7 +5092,6 @@ function importLeaveTable(monthPrefix){
       const partialEntries=Object.entries(rec.partialTimes||{}).filter(([d])=>!monthPrefix || d.startsWith(monthPrefix));
       if(!dates.length && !partialEntries.length) return;
       const honorSet=new Set(rec.honorDates||[]);
-      const strictSet=new Set(rec.strictDates||[]);
       const approvedRuns=rec.approvedRuns||[];
       // drop this person's existing generated blocks for THIS category (only
       // this one — a person can have several categories' blocks touching
@@ -4988,7 +5111,7 @@ function importLeaveTable(monthPrefix){
         let runStart=dates[0], prev=dates[0];
         const flush=(end)=>{
           const isApproved = approvedRuns.some(r=>r.start===runStart && r.end===end);
-          const tier = strictSet.has(runStart)? 'strict' : (honorSet.has(runStart)? 'honor' : 'normal');
+          const tier = honorSet.has(runStart)? 'honor' : 'normal';
           const r=createLeaveSegment(pid, runStart, end, category, tier, isApproved);
           count++;
           if(r.honorDowngraded) downgraded.push({personId:pid, name:person?person.name:pid, start:runStart, end});
@@ -5081,7 +5204,6 @@ function clearDateRange(from, to, opts){
         const blockDates = dateRangeList(b.start, b.end);
         rec.dates=(rec.dates||[]).filter(d=>!blockDates.includes(d));
         if(rec.honorDates) rec.honorDates=rec.honorDates.filter(d=>!blockDates.includes(d));
-        if(rec.strictDates) rec.strictDates=rec.strictDates.filter(d=>!blockDates.includes(d));
         if(!rec.dates.length) delete state.preplan.leave[b.personId][ownerCat];
       }
     });
@@ -5107,7 +5229,6 @@ function clearDateRange(from, to, opts){
           const before=(rec.dates||[]).length;
           rec.dates=(rec.dates||[]).filter(d=>!dates.has(d));
           if(rec.honorDates) rec.honorDates=rec.honorDates.filter(d=>!dates.has(d));
-          if(rec.strictDates) rec.strictDates=rec.strictDates.filter(d=>!dates.has(d));
           if(rec.dates.length!==before) cleared++;
           if(!rec.dates.length) delete store[pid][cat];
         });
@@ -6139,13 +6260,15 @@ function renderLeaveGroupSummary(date){
    with `buffer` get a front/back buffer around the ticked dates;
    categories without it are just plain allDay entries for each date, no
    extra buffer days. For buffered categories, `tier` picks which of the
-   three buffer levels applies (times come from state.unitRules.leaveBuffer,
+   two buffer levels applies (times come from state.unitRules.leaveBuffer,
    not hardcoded, so the unit can adjust them without a code change):
    'honor' — loosest, front buffer starts the day before at honorStart
    'normal' — default, front buffer starts the day before at normalStart
-   'strict' — no front buffer at all; the first ticked day itself starts
-     partway through (at strictStart) instead of being a full day off
-   All three share the same back-buffer end time the day after. Every entry
+   Both share the same back-buffer end time the day after. A rare case
+   where the front buffer needs cancelling entirely (task/discipline delays
+   the actual start), or the back buffer needs cancelling (early return the
+   night before), is handled separately as a per-block adjustment — see
+   adjustLeaveStart/adjustLeaveEnd — not as a third tier here. Every entry
    (buffered or not) gets the same leaveId so the whole block can still be
    found/deleted as one unit regardless of category or tier. */
 function createLeaveSegment(personId, s, e, category, tier, approved){
@@ -6165,31 +6288,19 @@ function createLeaveSegment(personId, s, e, category, tier, approved){
   const honorApplies = category.honorOption && honorRequested && (effectiveDays<=5 || approved);
   const dates = dateRangeList(s,e);
   const lastRoster=nextDateStr(e);
-  if(tier==='strict'){
-    const reasonLabel = category.name;
-    dates.forEach((d,i)=>{
-      if(!state.unavail[d]) state.unavail[d]=[];
-      if(i===0){
-        state.unavail[d].push({id:uid(),personId,allDay:false,start:buf.strictStart,end:'24:00',reason:reasonLabel,leaveId,leaveStart:s,leaveEnd:e,inCamp:false});
-      } else {
-        state.unavail[d].push({id:uid(),personId,allDay:true,start:'',end:'',reason:reasonLabel,leaveId,leaveStart:s,leaveEnd:e,inCamp:false});
-      }
-    });
-    if(!state.unavail[lastRoster]) state.unavail[lastRoster]=[];
-    state.unavail[lastRoster].push({id:uid(),personId,allDay:false,start:'00:00',end:buf.backEnd,reason:reasonLabel,leaveId,leaveStart:s,leaveEnd:e,inCamp:false});
-    return {honorApplied:false, honorDowngraded:false, tierApplied:'strict', leaveId};
-  }
   const firstRoster=prevDateStr(s);
   const firstStart = honorApplies? buf.honorStart : buf.normalStart;
-  const reasonLabel = honorApplies? '榮譽假':category.name;
+  // 榮譽假只是「前一天多出來的那半天緩衝」被多算，不是整段假期的標籤——
+  // 實際休假的那幾天跟隔天收假緩衝，永遠都是這個類型本身的名稱（例如
+  // 「休假」），不會因為前面選了榮譽假就整段都標成榮譽假
   if(!state.unavail[firstRoster]) state.unavail[firstRoster]=[];
-  state.unavail[firstRoster].push({id:uid(),personId,allDay:false,start:firstStart,end:'24:00',reason:reasonLabel,leaveId,leaveStart:s,leaveEnd:e,inCamp:false});
+  state.unavail[firstRoster].push({id:uid(),personId,allDay:false,start:firstStart,end:'24:00',reason: honorApplies? '榮譽假':category.name,leaveId,leaveStart:s,leaveEnd:e,inCamp:false});
   dates.forEach(d=>{
     if(!state.unavail[d]) state.unavail[d]=[];
-    state.unavail[d].push({id:uid(),personId,allDay:true,start:'',end:'',reason:reasonLabel,leaveId,leaveStart:s,leaveEnd:e,inCamp:false});
+    state.unavail[d].push({id:uid(),personId,allDay:true,start:'',end:'',reason:category.name,leaveId,leaveStart:s,leaveEnd:e,inCamp:false});
   });
   if(!state.unavail[lastRoster]) state.unavail[lastRoster]=[];
-  state.unavail[lastRoster].push({id:uid(),personId,allDay:false,start:'00:00',end:buf.backEnd,reason:reasonLabel,leaveId,leaveStart:s,leaveEnd:e,inCamp:false});
+  state.unavail[lastRoster].push({id:uid(),personId,allDay:false,start:'00:00',end:buf.backEnd,reason:category.name,leaveId,leaveStart:s,leaveEnd:e,inCamp:false});
   // report back whether the requested 榮譽假 actually took effect, so callers
   // (like the leave-table importer) can surface it instead of it silently
   // falling back to a normal-tier start
@@ -6443,15 +6554,56 @@ function openQuickIncidentModal(personId, date, onDone){
 function isLeaveReason(reason){ return !!reason && reason.includes('假'); }
 /* 判斷這筆記錄是不是休假的「緩衝」（前一天傍晚/隔天清晨那種墊檔記錄），
    不是使用者實際要休的那幾天——改用「我們的規則」目前設定的時間動態判
-   斷，不寫死，這樣以後調整緩衝時間，這裡不用跟著改程式碼、也不會抓錯。
-   注意：嚴格層的第一天本身（從 strictStart 開始，不是整天）算「使用者
-   實際要休的那天」，不是緩衝，所以這裡不比對 strictStart。 */
+   斷，不寫死，這樣以後調整緩衝時間，這裡不用跟著改程式碼、也不會抓錯。 */
 function isLeaveBufferEntry(u){
   if(u.allDay) return false;
   const buf = state.unitRules.leaveBuffer;
   if(u.end==='24:00' && (u.start===buf.honorStart || u.start===buf.normalStart)) return true; // 前緩衝
   if(u.start==='00:00' && u.end===buf.backEnd) return true; // 後緩衝
   return false;
+}
+function isBackBufferEntry(u){
+  if(u.allDay || !u.leaveId) return false;
+  return u.start==='00:00' && u.end===state.unitRules.leaveBuffer.backEnd;
+}
+function isFrontBufferEntry(u){
+  if(u.allDay || !u.leaveId) return false;
+  const buf = state.unitRules.leaveBuffer;
+  return u.end==='24:00' && (u.start===buf.honorStart || u.start===buf.normalStart);
+}
+/* 收假提早——某段假期原本該「隔天0730收假」的那個隔天，取消整批人的後緩
+   衝，改成前一天24:00前就算收假。直接把那筆後緩衝記錄刪掉：假期最後一天
+   本身已經是整天登記，刪掉後緩衝之後，系統自然就不會再擋這個人到隔天早
+   上，效果就是「前一天24:00收假」，不用另外造一個新的時間概念。 */
+function peopleWithBackBufferOn(date){
+  return (state.unavail[date]||[]).filter(isBackBufferEntry);
+}
+function applyEarlyReturn(date, entryIds){
+  if(!state.unavail[date]) return 0;
+  const before = state.unavail[date].length;
+  state.unavail[date] = state.unavail[date].filter(u=>!entryIds.includes(u.id));
+  return before - state.unavail[date].length;
+}
+/* 開始延後——少數人因為任務/處罰，某段假期實際上要晚一點才開始休假（不
+   是單位統一的18:00/12:00），時間也不固定，所以是逐次輸入、按這段假期第
+   一天的日期分批處理，同一天可以分好幾批、每批給不同時間。做法：刪掉前
+   一天的前緩衝記錄，把「這段假期的第一天」本身從整天登記改成部分時段，
+   從輸入的時間開始。只影響假期的開頭，中間跟收假那端完全不受影響。 */
+function peopleStartingLeaveOn(date){
+  return (state.unavail[date]||[]).filter(u=>u.allDay && u.leaveId && u.leaveStart===date);
+}
+function applyDelayedStart(date, entryIds, newStartTime){
+  const prevDay = prevDateStr(date);
+  let count=0;
+  (state.unavail[date]||[]).forEach(u=>{
+    if(!entryIds.includes(u.id)) return;
+    if(state.unavail[prevDay]) state.unavail[prevDay] = state.unavail[prevDay].filter(x=>!(x.leaveId===u.leaveId && isFrontBufferEntry(x)));
+    u.allDay = false;
+    u.start = newStartTime;
+    u.end = '24:00';
+    count++;
+  });
+  return count;
 }
 function onDutyList(date){
   const dayEntries = state.unavail[date]||[];
