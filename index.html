@@ -151,7 +151,7 @@ textarea{min-height:50px;resize:vertical;}
   <div class="topbar-main" style="flex-direction:column;align-items:stretch;gap:6px">
     <div class="row wrap" style="gap:4px;align-items:center">
       <button class="ghost small" id="preplanDrawerBtn" title="預排">☰ 預排</button>
-      <h1 id="pageTitle" style="margin:0">🌟 衛哨排班系統 <span class="muted" style="font-size:10px;font-weight:400">v131</span></h1>
+      <h1 id="pageTitle" style="margin:0">🌟 衛哨排班系統 <span class="muted" style="font-size:10px;font-weight:400">v132</span></h1>
       <button class="ghost small" id="clearRangeBtn" title="清除一段時間">🧹 清除範圍</button>
       <span style="flex:1"></span>
       <button class="ghost small" id="exportBtn">匯出</button>
@@ -6305,8 +6305,13 @@ function personAwayReasonCategory(personId, date){
       const isHonor = Object.values(state.unavail).some(arr=>(arr||[]).some(u=>u.leaveId===away.leaveId && u.reason==='榮譽假'));
       if(isHonor) return '榮譽假';
     }
-    if(isLeaveReason(away.reason)) return '休假';
+    // 先比對正式類別名稱（精準比對），不是先看文字裡有沒有「假」字——不然
+    // 「事假」這種名字本身也帶「假」字的正式類別，會在isLeaveReason那關就
+    // 被誤判成「休假」，永遠輪不到後面比對到自己真正的類別名稱。只有完全
+    // 不在正式類別清單裡的舊資料／自由輸入文字，才退回用「有沒有假字」這
+    // 種寬鬆判斷歸到休假。
     if(leaveCatNames.includes(away.reason)) return away.reason;
+    if(isLeaveReason(away.reason)) return '休假';
     return '其他事故';
   }
   const person = state.personnel.find(p=>p.id===personId);
