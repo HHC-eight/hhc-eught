@@ -151,7 +151,7 @@ textarea{min-height:50px;resize:vertical;}
   <div class="topbar-main" style="flex-direction:column;align-items:stretch;gap:6px">
     <div class="row wrap" style="gap:4px;align-items:center">
       <button class="ghost small" id="preplanDrawerBtn" title="預排">☰ 預排</button>
-      <h1 id="pageTitle" style="margin:0">🌟 衛哨排班系統 <span class="muted" style="font-size:10px;font-weight:400">v123</span></h1>
+      <h1 id="pageTitle" style="margin:0">🌟 衛哨排班系統 <span class="muted" style="font-size:10px;font-weight:400">v127</span></h1>
       <button class="ghost small" id="clearRangeBtn" title="清除一段時間">🧹 清除範圍</button>
       <span style="flex:1"></span>
       <button class="ghost small" id="exportBtn">匯出</button>
@@ -585,6 +585,10 @@ function licenseCovers(personLicense, requiredLicense){
   if(pIdx===-1 || rIdx===-1) return personLicense===requiredLicense;
   return pIdx>=rIdx;
 }
+/* 專長名稱本身可能已經帶「專長」兩個字（例如「通信專長」），警告文字直
+   接接"需具備"+名稱+"專長"會變成「需具備通信專長專長」，疊字很怪——這裡
+   統一處理，名稱已經有「專長」結尾就不再多接一次 */
+function skillRequirementLabel(sk){ return `需具備${sk}${sk.endsWith('專長')?'':'專長'}`; }
 function driverQualificationIssues(person, preset){
   if(!preset) return [];
   const issues=[];
@@ -914,7 +918,7 @@ if(!state.dutyChanges) state.dutyChanges={};
    that day's copy of these duties.
    Shape: state.preplan[planKey][date] = { ...fields per plan type } */
 if(!state.preplan) state.preplan={};
-const PREPLAN_TYPES = [
+const BUILTIN_PREPLAN_TYPES = [
   {key:'standby',  name:'留守',       icon:'🏠', mode:'standby',  hint:'例假日留守。先設定留守起訖日與名單，再把留守人員分配到當天的子勤務（日督、夜督、話務、伙房等）。'},
   {key:'leave',    name:'休假暨事故大表', icon:'🏖️', mode:'leaveTable', hint:'選人之後在月曆上點選他要休哪幾天，按確認後整批建立休假（含前後緩衝）。可勾選榮譽假，讓假期從前一天18:00提早到12:00開始。事故也在這裡登記——切到「其他事故」類型，不到一天的部分時段用下面的「新增部分時段」輸入實際時間即可。'},
   {key:'duty',     name:'值星',       icon:'⭐', mode:'people',   presetRole:'值星', editableTime:true,
@@ -928,6 +932,18 @@ const PREPLAN_TYPES = [
   {key:'purchase', name:'採買',       icon:'🛒', mode:'roles',    presetRole:'採買', roles:['駕駛','車長'], qualified:true, editableTime:true, hint:'平日每天都有。名單只列出符合資格的人。'},
   {key:'inspect',  name:'驗菜',       icon:'🥬', mode:'people',   presetRole:'驗菜', editableTime:true, hint:'平日每天都有。時段可調整。'},
 ];
+/* 使用者自建的預排類型（在「我們的規則」→「預排資格設定」下面新增），
+   固定用「挑人＋時段」模式（跟值星/督伙同一種），不支援查哨那種固定時
+   段班、也不支援救護車那種角色制——這兩種比較特殊，先只開放最常見、最
+   泛用的這一種。用 key 前綴 `custom:` 區分，避免跟內建的 9 種 key 撞名。 */
+if(!state.customPreplanTypes) state.customPreplanTypes = [];
+let PREPLAN_TYPES = BUILTIN_PREPLAN_TYPES;
+function rebuildPreplanTypes(){
+  PREPLAN_TYPES = [...BUILTIN_PREPLAN_TYPES, ...state.customPreplanTypes.map(c=>({
+    key:c.key, name:c.name, icon:c.icon||'📋', mode:'people', editableTime:true, hint:c.hint||'（自訂項目）', custom:true,
+  }))];
+}
+rebuildPreplanTypes();
 /* 留守 defaults — the standard 例假日 pattern, all overridable per block:
    standby people are on from 14:00 the day BEFORE the holiday block until
    07:30 the day AFTER; everyone else goes on leave from 16:00 the day
@@ -1041,6 +1057,14 @@ if(!state.unitRules.leaveBuffer) state.unitRules.leaveBuffer = {
    區塊時如果沒有另外指定，就是套用這裡的值；改到這裡管理，以後要調整不
    用改程式碼。 */
 if(!state.unitRules.standbyDefaults) state.unitRules.standbyDefaults = {...STANDBY_DEFAULTS_FALLBACK};
+/* 預排資格設定——哪些預排類型(值星/督伙/中央監控值班/驗菜這種指派人到
+   角色的類型)需要特定專長，key是PREPLAN_TYPES的key，value是必要專長名稱
+   陣列(空陣列＝不限)。不符資格的人還是選得到，只是會排到清單最下面、
+   旁邊加警告文字提醒——不是強制擋掉，畢竟人力有限時可能還是得排。跟現
+   有的其他勤務常用項目資格(駕照/EMT/專長)共用同一套檢查邏輯
+   (driverQualificationIssues)，這裡設定的專長要求會跟該類型對應的常用
+   項目(如果有的話)的專長要求合併一起檢查。 */
+if(!state.unitRules.preplanSkillReqs) state.unitRules.preplanSkillReqs = {};
 
 
 if(!state.preplanOrder) state.preplanOrder = PREPLAN_TYPES.map(t=>t.key);
@@ -2177,6 +2201,11 @@ function openUnitRulesModal(){
         <span class="grow">勤務日期定義<br><span class="hint">排班畫面選定的日期，實際代表哪一段時間</span></span>
         <span style="color:var(--dim)">›</span>
       </div>
+      <div class="drawer-item" data-ur-section="preplanSkillReqs">
+        <span style="font-size:18px">🎓</span>
+        <span class="grow">預排資格設定<br><span class="hint">留守/值星/查哨/督伙/救護車/中央監控值班/採買/驗菜——挑人時需要哪些專長</span></span>
+        <span style="color:var(--dim)">›</span>
+      </div>
       <div class="drawer-item" data-ur-section="holidays">
         <span style="font-size:18px">🗓️</span>
         <span class="grow">假日設定<br><span class="hint">例假日星期＋國定假日，共${(state.holidayDates||[]).length}筆個別日期</span></span>
@@ -2224,6 +2253,73 @@ function openUnitRulesModal(){
       <div class="hint" style="margin-bottom:8px">排班分頁選定的日期，代表的是勤務「結束日」，不是「開始日」——實際勤務時段是前一天22:00開始，到選定日期22:00結束。例如選民國115年9月17日，實際勤務時段是 9/16（前一天）22:00 到 9/17 22:00。</div>
       <div class="hint">這是排班六小時規則、班次接續計算的共同基準，目前是寫死在程式碼裡的固定值（22:00），不能在這裡調整；先收在這裡是為了方便查閱，之後如果真的需要改成可調整，再另外處理。</div>`;
     document.getElementById('urBack').onclick=()=>{ section=null; draw(); };
+  };
+  const drawPreplanSkillReqs=()=>{
+    const preplanSkillTypes = PREPLAN_TYPES.filter(t=>t.mode!=='leaveTable'); // 休假暨事故大表是先選人、再點行事曆，不是「幫這個角色挑人」的模式，不適用這套資格篩選——重新在每次draw時計算，這樣新增/刪除自訂類型之後這裡才會即時反映
+    modal.innerHTML=`
+      <div class="section-title"><button class="ghost small" id="urBack">← 返回</button><h2 style="margin:0">預排資格設定</h2></div>
+      <div class="hint" style="margin-bottom:8px">挑人時，勾選的專長會拿來排序跟提醒——不符合的人還是選得到（人力有限時常常還是得排），只是會排到清單最下面、旁邊會加警告文字，不會直接擋掉不能選。不勾任何專長＝這個類型不限資格，跟現在一樣。（救護車／採買本來就有自己的駕照/證照/專長設定，在該項目自己的「設定」按鈕裡調——這裡設定的專長會「額外疊加」在那之上，不是取代。）</div>
+      <div class="divider"></div>
+      <h3>自訂預排類型</h3>
+      <div class="hint" style="margin-bottom:8px">內建的9種以外，如果還有其他固定會排的角色（例如帶隊官、留守伙房這種），可以在這裡自己加一種——固定是「挑人＋時段」模式（跟值星/督伙同一種），加好之後會自動出現在抽屜「預排」清單裡，也能在這裡設定它的專長要求。</div>
+      ${state.customPreplanTypes.length? state.customPreplanTypes.map(c=>`
+        <div class="list-item">
+          <span class="grow">${esc(c.icon||'📋')} ${esc(c.name)}</span>
+          <button class="ghost small danger" data-del-custom-preplan="${esc(c.key)}">刪除</button>
+        </div>`).join('') : ''}
+      <div class="row wrap" style="margin-bottom:6px">
+        <div style="width:70px"><label>圖示</label><input type="text" id="cpIcon" placeholder="📋" maxlength="2"></div>
+        <div class="grow"><label>名稱</label><input type="text" id="cpName" placeholder="例：帶隊官"></div>
+      </div>
+      <div class="row wrap" style="margin-bottom:8px">
+        <div class="grow"><label>說明（選填）</label><input type="text" id="cpHint" placeholder="這個類型的用途、排班規則"></div>
+      </div>
+      <button class="ghost" id="cpAdd" style="width:100%">＋新增這個類型</button>
+      <div class="divider"></div>
+      ${preplanSkillTypes.map(t=>{
+        const req = state.unitRules.preplanSkillReqs[t.key]||[];
+        return `<div class="row wrap" style="margin-bottom:4px"><b>${t.icon} ${esc(t.name)}</b></div>
+        <div class="row wrap" style="gap:10px;margin-bottom:12px">
+          ${state.skillOptions.length? state.skillOptions.map(s=>`<label style="display:flex;align-items:center;gap:4px;font-size:12px">
+            <input type="checkbox" class="ur-skillreq-cb" data-ur-skillreq-type="${t.key}" value="${esc(s)}" style="width:auto" ${req.includes(s)?'checked':''}>${esc(s)}
+          </label>`).join('') : `<div class="empty">尚未設定任何專長選項（在人員分頁的專長設定新增）</div>`}
+        </div>`;
+      }).join('')}`;
+    document.getElementById('urBack').onclick=()=>{ section=null; draw(); };
+    document.getElementById('cpAdd').onclick=()=>{
+      const name=document.getElementById('cpName').value.trim();
+      const icon=document.getElementById('cpIcon').value.trim();
+      const hint=document.getElementById('cpHint').value.trim();
+      if(!name){ showAlert('請輸入名稱'); return; }
+      if(PREPLAN_TYPES.some(t=>t.name===name)){ showAlert('已經有這個名稱的預排類型了'); return; }
+      const key = 'custom_'+uid();
+      state.customPreplanTypes.push({key, name, icon, hint});
+      rebuildPreplanTypes();
+      saveState();
+      drawPreplanSkillReqs();
+    };
+    modal.querySelectorAll('[data-del-custom-preplan]').forEach(b=>{
+      b.onclick=()=>{
+        const key=b.dataset.delCustomPreplan;
+        const type=PREPLAN_TYPES.find(t=>t.key===key);
+        showConfirm(`確定要刪除「${type?type.name:key}」這個自訂預排類型嗎？已經排定的內容不會被清掉，只是之後這個類型不會再出現在預排清單裡。`, ()=>{
+          state.customPreplanTypes = state.customPreplanTypes.filter(c=>c.key!==key);
+          delete state.unitRules.preplanSkillReqs[key];
+          rebuildPreplanTypes();
+          saveState();
+          drawPreplanSkillReqs();
+        });
+      };
+    });
+    modal.querySelectorAll('.ur-skillreq-cb').forEach(cb=>{
+      cb.onchange=()=>{
+        const key=cb.dataset.urSkillreqType;
+        const cur=new Set(state.unitRules.preplanSkillReqs[key]||[]);
+        if(cb.checked) cur.add(cb.value); else cur.delete(cb.value);
+        state.unitRules.preplanSkillReqs[key]=[...cur];
+        saveState();
+      };
+    });
   };
   const drawLeaveBuffer=()=>{
     const buf=state.unitRules.leaveBuffer;
@@ -2277,6 +2373,7 @@ function openUnitRulesModal(){
     else if(section==='timeStep') drawTimeStep();
     else if(section==='standbyDefaults') drawStandbyDefaults();
     else if(section==='dutyDayDef') drawDutyDayDef();
+    else if(section==='preplanSkillReqs') drawPreplanSkillReqs();
     else if(section==='holidays'){ section=null; openHolidaySettingsModal(); draw(); }
     else drawMain();
   };
@@ -3282,7 +3379,12 @@ function openStandbyEditor(date, onSaved){
 function openStandbyPeoplePicker(plan, onDone){
   const modal=document.createElement('div');
   modal.className='sheet-modal'; modal.style.zIndex='94';
-  const sorted=state.personnel.slice().sort((a,b)=>groupIndex(a.group)-groupIndex(b.group)||rankIndex(a.rank)-rankIndex(b.rank));
+  const requiredSkills = state.unitRules.preplanSkillReqs.standby||[];
+  const sorted=state.personnel.slice()
+    .map(p=>({p, skillIssues: requiredSkills.filter(sk=>!(p.skills||[]).includes(sk))}))
+    .sort((a,b)=>(a.skillIssues.length>0)-(b.skillIssues.length>0) || groupIndex(a.p.group)-groupIndex(b.p.group) || rankIndex(a.p.rank)-rankIndex(b.p.rank))
+    .map(x=>x.p);
+  const skillIssuesOf = p=>requiredSkills.filter(sk=>!(p.skills||[]).includes(sk));
   modal.innerHTML=`
     <div class="sheet-inner">
       <div class="section-title"><h2 style="margin:0">選擇留守人員</h2><button class="ghost small" id="spClose">關閉</button></div>
@@ -3301,9 +3403,10 @@ function openStandbyPeoplePicker(plan, onDone){
           const blockDates=(plan.startDate&&plan.endDate&&plan.startDate<=plan.endDate)? dateRangeList(plan.startDate,plan.endDate):[];
           const leaveDates=((state.preplan.leave||{})[p.id]||{}).dates||[];
           const clash=blockDates.filter(d=>leaveDates.includes(d));
-          return `<label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0">
+          const skillIssues = skillIssuesOf(p);
+          return `<label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0;${skillIssues.length?'opacity:.6':''}">
           <input type="checkbox" class="sp-person" value="${p.id}" style="width:auto" ${plan.personIds.includes(p.id)?'checked':''}>
-          ${esc(p.name)}（${p.group||'未分組'}·${p.rank}${personBadges(p)}）${clash.length? ` <span class="warn">🏖️已排休假${clash.length}天</span>`:''}
+          ${esc(p.name)}（${p.group||'未分組'}·${p.rank}${personBadges(p)}）${clash.length? ` <span class="warn">🏖️已排休假${clash.length}天</span>`:''}${skillIssues.length? ` <span class="warn">🚫${esc(skillIssues.map(skillRequirementLabel).join('・'))}</span>`:''}
         </label>`;}).join('')}
       </div>
       <button class="primary" id="spSave" style="width:100%">確定</button>
@@ -3715,7 +3818,14 @@ function openPreplanDayEditor(key, date, onSaved){
   let body='';
   // one shared preset-based eligibility check for every non-roles mode —
   // roles mode (駕駛/車長) already has its own more detailed per-role check
-  const presetReasonsFn = preset? (p=>driverQualificationIssues(p, preset)) : null;
+  const requiredSkillsForType = state.unitRules.preplanSkillReqs[key]||[];
+  const presetReasonsFn = (preset || requiredSkillsForType.length)? (p=>{
+    const issues = driverQualificationIssues(p, preset);
+    requiredSkillsForType.forEach(sk=>{
+      if(!(p.skills||[]).includes(sk) && !issues.includes(skillRequirementLabel(sk))) issues.push(skillRequirementLabel(sk));
+    });
+    return issues;
+  }) : null;
   const groupBlockHTML = (g, gi)=>`
     <div class="pp-group" data-group-idx="${gi}" style="border:1px solid var(--line);border-radius:6px;padding:8px;margin-bottom:8px">
       <div class="row" style="margin-bottom:6px;align-items:center"><span class="grow muted" style="font-weight:600">第${gi+1}組</span><button class="ghost small danger" data-remove-group="${gi}">移除這組</button></div>
@@ -3740,14 +3850,15 @@ function openPreplanDayEditor(key, date, onSaved){
       + restRow('ppRest', plan.restUntil||preplanDefault(key,'rest',(preset&&preset.restUntil)||''))
       + supportRow('ppSupport', plan.support)
       + type.roles.map((r,i)=>{
+          const extraSkillIssues = p=>requiredSkillsForType.filter(sk=>!(p.skills||[]).includes(sk)).map(skillRequirementLabel);
           const reasonsFn = (r==='車長')? (p=>{
             const reasons=[];
             if(!['士官','軍官'].includes(rankCategory(p.rank))) reasons.push('需為士官以上');
             if(currentDriver && rankIndex(p.rank)>rankIndex(currentDriver.rank)) reasons.push('階級不可低於駕駛');
             if(preset && preset.chiefRequiredMedCert && !p.medCert) reasons.push('需具備EMT或醫生證書');
             if(preset && (preset.chiefRequiredLicenses||[]).length && !preset.chiefRequiredLicenses.some(l=>licenseCovers(p.license,l))) reasons.push('需持有'+preset.chiefRequiredLicenses.join('或')+'駕照');
-            return reasons;
-          }) : (r==='駕駛' && preset)? (p=>driverQualificationIssues(p, preset)) : null;
+            return [...reasons, ...extraSkillIssues(p)];
+          }) : (r==='駕駛')? (p=>[...(preset? driverQualificationIssues(p, preset):[]), ...extraSkillIssues(p)]) : (requiredSkillsForType.length? extraSkillIssues : null);
           const selId=(plan.personIds||[])[i]||'';
           return `<div class="hint" style="margin:6px 0 2px"><b>${esc(r)}</b></div>`
             + searchBlock('ppSearch'+i)
@@ -4285,6 +4396,7 @@ function openLeaveTableEditor(date, onSaved, presetPid){
   let picked = new Set();       // full-day dates ticked in the current month, current category
   let honorDates = new Set();   // subset of picked that are 榮譽假（最寬鬆，前一天12:00起）— only meaningful if category.honorOption
   let partialDates = new Map(); // date -> {start,end} — this day only, not a full day, no buffer even if the category has one
+  let noteDraft = ''; // 備註——只有沒有前後緩衝的類型(受訓/出國/懷孕/住院/事假/其他事故)才有這個欄位，整個類型這次編輯共用一則備註，不分段
   /* switching categories used to reload straight from the SAVED store,
      which silently discarded whatever you'd just tapped for the category
      you were leaving if you hadn't hit 確認 yet — so the merged calendar
@@ -4336,17 +4448,17 @@ function openLeaveTableEditor(date, onSaved, presetPid){
   };
   const saveDraftForCurrentCat=()=>{
     if(!selectedPid) return;
-    sessionDrafts[selectedCat] = {picked:new Set(picked), honorDates:new Set(honorDates), partialDates:new Map(partialDates)};
+    sessionDrafts[selectedCat] = {picked:new Set(picked), honorDates:new Set(honorDates), partialDates:new Map(partialDates), noteDraft};
   };
   /* 有沒有還沒按「確認」存進去的變更——包含目前正在編輯的這個類型（picked/
-     honorDates/partialDates 都是本地變數，不會自動存檔），也
+     honorDates/partialDates/noteDraft 都是本地變數，不會自動存檔），也
      包含本次session切換過但還沒存的其他類型草稿（sessionDrafts）。用來在
      關閉前提醒，避免點一點就以為存了、結果一離開全部消失。 */
   const hasUnsavedChanges=()=>{
     if(!selectedPid) return false;
     const catsToCheck = new Set([selectedCat, ...Object.keys(sessionDrafts)]);
     for(const cat of catsToCheck){
-      const live = cat===selectedCat? {picked, honorDates, partialDates} : sessionDrafts[cat];
+      const live = cat===selectedCat? {picked, honorDates, partialDates, noteDraft} : sessionDrafts[cat];
       if(!live) continue;
       const rec = catRec(selectedPid, cat);
       const recDates=new Set((rec.dates||[]).filter(d=>d.startsWith(ym)));
@@ -4360,6 +4472,7 @@ function openLeaveTableEditor(date, onSaved, presetPid){
         const rt=recPartial.get(d);
         if(!rt || rt.start!==t.start || rt.end!==t.end) return true;
       }
+      if((live.noteDraft||'')!==(rec.note||'')) return true;
     }
     return false;
   };
@@ -4373,6 +4486,7 @@ function openLeaveTableEditor(date, onSaved, presetPid){
     picked = new Set((rec.dates||[]).filter(d=>d.startsWith(ym)));
     honorDates = new Set((rec.honorDates||[]).filter(d=>picked.has(d)));
     partialDates = new Map(Object.entries(rec.partialTimes||{}).filter(([d])=>d.startsWith(ym)));
+    noteDraft = rec.note||'';
   };
   const loadCategory=(cat)=>{
     // switching categories for the SAME person — prefer this session's
@@ -4383,12 +4497,14 @@ function openLeaveTableEditor(date, onSaved, presetPid){
       picked = new Set(sessionDrafts[cat].picked);
       honorDates = new Set(sessionDrafts[cat].honorDates);
       partialDates = new Map(sessionDrafts[cat].partialDates);
+      noteDraft = sessionDrafts[cat].noteDraft||'';
       return;
     }
     const rec=catRec(selectedPid, cat);
     picked = new Set((rec.dates||[]).filter(d=>d.startsWith(ym)));
     honorDates = new Set((rec.honorDates||[]).filter(d=>picked.has(d)));
     partialDates = new Map(Object.entries(rec.partialTimes||{}).filter(([d])=>d.startsWith(ym)));
+    noteDraft = rec.note||'';
   };
   if(selectedPid) loadPerson();
   const draw=()=>{
@@ -4404,13 +4520,14 @@ function openLeaveTableEditor(date, onSaved, presetPid){
     // the selected category, so switching categories never makes an
     // already-ticked category's buffer preview disappear from view.
     const categoryDataFor = (catName)=>{
-      if(catName===selectedCat) return {picked, honorDates, partialDates};
+      if(catName===selectedCat) return {picked, honorDates, partialDates, noteDraft};
       if(sessionDrafts[catName]) return sessionDrafts[catName];
       const rec=catRec(selectedPid, catName);
       return {
         picked: new Set((rec.dates||[]).filter(d=>d.startsWith(ym))),
         honorDates: new Set((rec.honorDates||[]).filter(d=>d.startsWith(ym))),
         partialDates: new Map(Object.entries(rec.partialTimes||{}).filter(([d])=>d.startsWith(ym))),
+        noteDraft: rec.note||'',
       };
     };
     const bufferPreviewFor = (cat, pickedSet)=>{
@@ -4520,6 +4637,12 @@ function openLeaveTableEditor(date, onSaved, presetPid){
           ${category&&category.fiveDayRule? ' 超過5天（含緩衝的有效天數）需要同意才能保留。' : ''}
           「留守」＝留守表已排他這天留守，跟這裡無關聯除非你也點成這個類型。虛線框的部分時段格子點一下會直接刪除。
         </div>
+        ${category && !category.buffer? `
+        <div class="row wrap" style="margin-bottom:8px">
+          <div class="grow"><label>備註（這個類型這次登記的具體原因，例如「出車支援○○任務」「體檢」）</label>
+            <textarea id="ltNote" rows="2" placeholder="不填也可以，純粹方便之後查閱">${esc(noteDraft)}</textarea>
+          </div>
+        </div>` : ''}
         <div class="row wrap" style="margin-bottom:8px">
           <button class="ghost grow" id="ltClearMonth">清空本月（此類型）</button>
           <button class="primary grow" id="ltSave">確認</button>
@@ -4571,10 +4694,12 @@ function openLeaveTableEditor(date, onSaved, presetPid){
           allEntries.sort((x,y)=>x.date.localeCompare(y.date) || (x.start||'').localeCompare(y.start||''));
           const first=allEntries[0], last=allEntries[allEntries.length-1];
           const hasBuffer = first && last && (!first.allDay || !last.allDay);
+          const noteEntry = allEntries.find(u=>u.note);
+          const noteSuffix = noteEntry? `（${noteEntry.note}）` : '';
           if(hasBuffer){
-            return `${shortDate(first.date)} ${first.start}-${shortDate(last.date)} ${last.end}${b.reason}`;
+            return `${shortDate(first.date)} ${first.start}-${shortDate(last.date)} ${last.end}${b.reason}${noteSuffix}`;
           }
-          return `${shortDate(b.start)}${b.start!==b.end? '~'+shortDate(b.end):''}${b.reason}`;
+          return `${shortDate(b.start)}${b.start!==b.end? '~'+shortDate(b.end):''}${b.reason}${noteSuffix}`;
         };
         const byPerson={};
         blocks.forEach(b=>{ if(!byPerson[b.personId]) byPerson[b.personId]=[]; byPerson[b.personId].push(b); });
@@ -4697,6 +4822,7 @@ function openLeaveTableEditor(date, onSaved, presetPid){
       modal.querySelector('#ltPrev').onclick=()=>{ ym=shiftMonth(ym,-1); preplanMonth=ym; loadPerson(); draw(); };
       modal.querySelector('#ltNext').onclick=()=>{ ym=shiftMonth(ym,1); preplanMonth=ym; loadPerson(); draw(); };
       modal.querySelector('#ltClearMonth').onclick=()=>{ picked=new Set(); honorDates=new Set(); partialDates=new Map(); draw(); };
+      { const noteEl = modal.querySelector('#ltNote'); if(noteEl) noteEl.oninput=(e)=>{ noteDraft=e.target.value; }; }
       modal.querySelector('#ltSave').onclick=()=>{
         const rec=catRec(selectedPid,selectedCat);
         const curDates=(rec.dates||[]).filter(d=>!d.startsWith(ym));
@@ -4711,7 +4837,7 @@ function openLeaveTableEditor(date, onSaved, presetPid){
         const doSave=(approvedRuns)=>{
           if(!state.preplan.leave) state.preplan.leave={};
           if(!state.preplan.leave[selectedPid]) state.preplan.leave[selectedPid]={};
-          if(mergedDates.length || Object.keys(mergedPartial).length) state.preplan.leave[selectedPid][selectedCat]={dates:mergedDates, honorDates:mergedHonor, approvedRuns, partialTimes:mergedPartial};
+          if(mergedDates.length || Object.keys(mergedPartial).length) state.preplan.leave[selectedPid][selectedCat]={dates:mergedDates, honorDates:mergedHonor, approvedRuns, partialTimes:mergedPartial, note:noteDraft.trim()};
           else delete state.preplan.leave[selectedPid][selectedCat];
           delete sessionDrafts[selectedCat]; // now persisted — the draft shadow is no longer needed
           saveState();
@@ -4945,7 +5071,7 @@ function importLeaveTable(monthPrefix){
         const flush=(end)=>{
           const isApproved = approvedRuns.some(r=>r.start===runStart && r.end===end);
           const tier = honorSet.has(runStart)? 'honor' : 'normal';
-          const r=createLeaveSegment(pid, runStart, end, category, tier, isApproved);
+          const r=createLeaveSegment(pid, runStart, end, category, tier, isApproved, rec.note);
           count++;
           if(r.honorDowngraded) downgraded.push({personId:pid, name:person?person.name:pid, start:runStart, end});
         };
@@ -4960,8 +5086,10 @@ function importLeaveTable(monthPrefix){
       // setting, since "just this window" is exactly what it says
       partialEntries.forEach(([d,{start,end}])=>{
         if(!state.unavail[d]) state.unavail[d]=[];
-        state.unavail[d].push({id:uid(), personId:pid, allDay:false, start, end, reason:category.name,
-          leaveId:uid(), leaveStart:d, leaveEnd:d, inCamp:false});
+        const entry={id:uid(), personId:pid, allDay:false, start, end, reason:category.name,
+          leaveId:uid(), leaveStart:d, leaveEnd:d, inCamp:false};
+        if(rec.note) entry.note=rec.note;
+        state.unavail[d].push(entry);
         count++;
       });
     });
@@ -6104,14 +6232,16 @@ function renderLeaveGroupSummary(date){
    adjustLeaveStart/adjustLeaveEnd — not as a third tier here. Every entry
    (buffered or not) gets the same leaveId so the whole block can still be
    found/deleted as one unit regardless of category or tier. */
-function createLeaveSegment(personId, s, e, category, tier, approved){
+function createLeaveSegment(personId, s, e, category, tier, approved, note){
   tier = tier===true? 'honor' : (tier===false || tier==null? 'normal' : tier);
   const leaveId=uid();
   const buf = state.unitRules.leaveBuffer;
   if(!category.buffer){
     dateRangeList(s,e).forEach(d=>{
       if(!state.unavail[d]) state.unavail[d]=[];
-      state.unavail[d].push({id:uid(),personId,allDay:true,start:'',end:'',reason:category.name,leaveId,leaveStart:s,leaveEnd:e,inCamp:false});
+      const entry={id:uid(),personId,allDay:true,start:'',end:'',reason:category.name,leaveId,leaveStart:s,leaveEnd:e,inCamp:false};
+      if(note) entry.note=note;
+      state.unavail[d].push(entry);
     });
     return {honorApplied:false, honorDowngraded:false, tierApplied:'none', leaveId};
   }
@@ -6163,7 +6293,7 @@ function notInCampList(date){
 function personAwayReason(personId, date){
   const dayEntries = (state.unavail[date]||[]).filter(u=>u.personId===personId && u.allDay);
   const away = dayEntries.find(u=>isLeaveReason(u.reason) || u.inCamp===false);
-  if(away) return away.reason || '（未指定原因）';
+  if(away) return (away.reason || '（未指定原因）') + (away.note? `（${away.note}）`:'');
   const person = state.personnel.find(p=>p.id===personId);
   if(person){
     const lt = effectiveLongTerm(person, date);
@@ -6195,8 +6325,28 @@ function personAwayReasonCategory(personId, date){
   }
   return '其他事故';
 }
-function notInCampItemsHTML(list, date){
+/* 依排組分組（預設），或依具體原因分組（篩選「其他事故」時用，取代原本
+   獨立的「其他事故/管制分類」卡片——那張卡片本來就是把同一天的事故依
+   「具體原因」分組顯示，現在併進不在營名單，篩選到其他事故時用同樣的
+   分組方式呈現，不會少了這個瀏覽角度）。 */
+function notInCampItemsHTML(list, date, groupByReason){
   if(!list.length) return `<div class="empty">找不到符合的人員</div>`;
+  if(groupByReason){
+    const byReason={};
+    list.forEach(p=>{ const r=personAwayReason(p.id,date)||'（未指定原因）'; if(!byReason[r]) byReason[r]=[]; byReason[r].push(p); });
+    return Object.entries(byReason).map(([reason,members])=>{
+      const bd=rankGenderBreakdown(members);
+      const sorted = members.slice().sort((a,b)=>groupIndex(a.group)-groupIndex(b.group) || rankIndex(a.rank)-rankIndex(b.rank));
+      const rows = sorted.map(p=>{
+        const lid = findLeaveIdForPerson(p.id, date);
+        return `<div class="row" style="margin-bottom:4px;align-items:flex-start">
+          <span class="muted grow">・${esc(p.name)}（${p.group||'未分組'}·${p.rank}）</span>
+          ${lid? `<button class="ghost small" data-goto-leave-table="${p.id}">去休假暨事故大表改</button>` : `<button class="ghost small" data-quick-incident="${p.id}">編輯</button>`}
+        </div>`;
+      }).join('');
+      return collapsibleCardHTML('notInCampReason-'+reason, `${esc(reason)}（${members.length}人・${fmtRankBreakdown(bd)}）`, rows);
+    }).join('');
+  }
   const byGroup={};
   list.forEach(p=>{ const g=p.group||'未分組'; if(!byGroup[g]) byGroup[g]=[]; byGroup[g].push(p); });
   return Object.entries(byGroup).sort((a,b)=>groupIndex(a[0])-groupIndex(b[0])).map(([g,members])=>{
@@ -6242,7 +6392,7 @@ function notInCampCardHTML(){
       </label>`).join('')}
     </div>
     <div class="muted" style="margin-bottom:8px" id="notInCampSummary">篩選出 ${list.length} / 共 ${fullList.length} 人不在營・${fmtRankBreakdown(rankTotal)}</div>
-    <div id="notInCampItems">${notInCampItemsHTML(list, date)}</div>
+    <div id="notInCampItems">${notInCampItemsHTML(list, date, reasonCats.length===1 && reasonCats[0]==='其他事故')}</div>
   `;
   return collapsibleCardHTML('notInCamp', `${minguoLabel(date)} 不在營名單（${fullList.length}人）`, inner);
 }
@@ -6260,7 +6410,7 @@ function wireNotInCampCardEvents(){
     if(reasonCats.length) list = list.filter(p=>reasonCats.includes(personAwayReasonCategory(p.id, date)));
     const rankTotal=rankGenderBreakdown(list);
     document.getElementById('notInCampSummary').textContent = `篩選出 ${list.length} / 共 ${fullList.length} 人不在營・${fmtRankBreakdown(rankTotal)}`;
-    document.getElementById('notInCampItems').innerHTML = notInCampItemsHTML(list, date);
+    document.getElementById('notInCampItems').innerHTML = notInCampItemsHTML(list, date, reasonCats.length===1 && reasonCats[0]==='其他事故');
     wireGotoLeaveTableButtons();
     wireQuickIncidentButtons();
   }
@@ -7121,23 +7271,6 @@ document.addEventListener('click', (e)=>{
   const btn = e.target.closest('[data-collapse-toggle]');
   if(btn){ collapseState[btn.dataset.collapseToggle] = !collapseState[btn.dataset.collapseToggle]; render(); }
 });
-function renderIncidentBreakdown(date){
-  const list = (state.unavail[date]||[]).filter(u=>!isLeaveReason(u.reason));
-  if(!list.length) return `<div class="card"><div class="empty">此日無其他事故登記</div></div>`;
-  const groups = {};
-  list.forEach(u=>{
-    const key = u.reason || '（未指定原因）';
-    if(!groups[key]) groups[key] = new Set();
-    groups[key].add(u.personId);
-  });
-  return Object.entries(groups).map(([reason, personIdSet])=>{
-    const people = [...personIdSet].map(pid=>state.personnel.find(p=>p.id===pid)).filter(Boolean)
-      .sort((a,b)=>groupIndex(a.group)-groupIndex(b.group) || rankIndex(a.rank)-rankIndex(b.rank));
-    const breakdown = rankGenderBreakdown(people);
-    const inner = people.map(p=>`<div class="muted">・${esc(p.name)}（${p.group||'未分組'}·${p.rank}）</div>`).join('');
-    return collapsibleCardHTML('incident-'+reason, `${esc(reason)}（共${people.length}人・${fmtRankBreakdown(breakdown)}）`, inner);
-  }).join('');
-}
 function renderGroupRankStats(){
   if(!state.personnel.length) return `<div class="empty">尚未新增人員</div>`;
   const groups = [...new Set(state.personnel.map(p=>p.group).filter(Boolean))].sort((a,b)=>groupIndex(a)-groupIndex(b));
@@ -7263,19 +7396,20 @@ function renderStats(){
   const groupRankStatsHTML = collapsibleCardHTML('groupRankStats', '全部人員各排組人數（官/士/兵）', renderGroupRankStats());
   const onDutyHTML = onDutyCardHTML();
   const notInCampHTML = notInCampCardHTML();
-  const incidentHTML = collapsibleCardHTML('incidentBreakdown', `${minguoLabel(currentDate)} 其他事故/管制分類（點各項展開名單）`, renderIncidentBreakdown(currentDate));
   const outingHTML = renderOutingCardHTML();
   // 休假人員已經併進「不在營名單」（勾選休假/榮譽假篩選就能看到同樣的清單），
   // 不再需要獨立一張卡片重複顯示同一批人；長期事故也一樣：真的不在營的人
   // 一樣併進「不在營名單」，人還在營但被長期事故排除排班的人，改成在「在
-  // 勤人員」自己的欄位直接顯示原因，不需要另外一張獨立的卡片重複列一次
+  // 勤人員」自己的欄位直接顯示原因，不需要另外一張獨立的卡片重複列一次。
+  // 「其他事故/管制分類」也一樣併進「不在營名單」：篩選「其他事故」時，
+  // 名單會自動改成依具體原因分組（例如出車、體檢各自一組），取代原本
+  // 獨立的那張卡片。
   const cardDefs = [
     {key:'queryForm', html:queryFormHTML},
     {key:'hourly', html:hourlyHTML},
     {key:'groupRankStats', html:groupRankStatsHTML},
     {key:'onDuty', html:onDutyHTML},
     {key:'notInCamp', html:notInCampHTML},
-    {key:'incidentBreakdown', html:incidentHTML},
     {key:'outingStats', html:outingHTML},
   ];
   app.innerHTML = renderCardList('statsCardsContainer', 'stats', cardDefs);
