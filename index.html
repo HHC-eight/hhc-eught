@@ -151,7 +151,7 @@ textarea{min-height:50px;resize:vertical;}
   <div class="topbar-main" style="flex-direction:column;align-items:stretch;gap:6px">
     <div class="row wrap" style="gap:4px;align-items:center">
       <button class="ghost small" id="preplanDrawerBtn" title="預排">☰ 預排</button>
-      <h1 id="pageTitle" style="margin:0">🌟 衛哨排班系統 <span class="muted" style="font-size:10px;font-weight:400">v119</span></h1>
+      <h1 id="pageTitle" style="margin:0">🌟 衛哨排班系統 <span class="muted" style="font-size:10px;font-weight:400">v120</span></h1>
       <button class="ghost small" id="clearRangeBtn" title="清除一段時間">🧹 清除範圍</button>
       <span style="flex:1"></span>
       <button class="ghost small" id="exportBtn">匯出</button>
@@ -1823,6 +1823,33 @@ function autoAssignMiscForDate(date){
   });
   saveState();
 }
+
+/* ---------------- 彈窗開啟時鎖住背景頁面的捲動 ----------------
+   整個系統的主要內容是靠 window/body 本身在捲動的（render() 會存/還原
+   window.scrollY），彈窗（不管是 .sheet-modal、.fullscreen-modal 還是各
+   種直接用 style.cssText 蓋出來的 position:fixed 小視窗）疊在最上層，但
+   背景的 body 本身其實還是可以捲動的——手指在彈窗上滑動時，很容易滑動
+   到背景頁面而不是彈窗自己的內容，兩邊搶著回應同一個手勢，就會出現「往
+   下滑一半又彈回去、按不到關閉按鈕」這種情況，而且不是哪一個彈窗特別壞
+   掉，是每一個彈窗都有這個風險。
+   用 MutationObserver 監看 body 底下有沒有新增/移除的元素，只要目前有
+   任何一個「看起來像彈窗」的元素還在（開頁時就有的固定元素，例如標題
+   區、分頁列，不算），就把 body 本身的捲動鎖住；等所有彈窗都關閉、這些
+   動態元素都被移除了，才把捲動還給背景頁面。這樣不用一個一個彈窗自己去
+   加開關鎖定的程式碼，新彈窗以後也會自動套用到同一套保護。 */
+(function(){
+  const staticChildren = new Set(document.body.children);
+  function isModalLike(el){
+    if(el.nodeType!==1) return false;
+    if(el.classList && (el.classList.contains('sheet-modal')||el.classList.contains('fullscreen-modal')||el.classList.contains('drawer')||el.classList.contains('drawer-backdrop'))) return true;
+    return getComputedStyle(el).position==='fixed';
+  }
+  function refreshBodyScrollLock(){
+    const hasModal = [...document.body.children].some(el=>!staticChildren.has(el) && isModalLike(el));
+    document.body.style.overflow = hasModal? 'hidden' : '';
+  }
+  if(typeof MutationObserver!=='undefined') new MutationObserver(refreshBodyScrollLock).observe(document.body, {childList:true});
+})();
 
 /* ---------------- rendering ---------------- */
 const app=document.getElementById('app');
