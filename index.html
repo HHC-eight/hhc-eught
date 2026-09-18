@@ -149,12 +149,12 @@ textarea{min-height:50px;resize:vertical;}
 </div>
 <div class="topbar">
   <div class="topbar-main" style="flex-direction:column;align-items:stretch;gap:6px">
-    <div class="row wrap" style="gap:4px;align-items:center">
-      <button class="ghost small" id="preplanDrawerBtn" title="預排">☰ 預排</button>
-      <h1 id="pageTitle" style="margin:0">🌟 衛哨排班系統 <span class="muted" style="font-size:10px;font-weight:400">v132</span></h1>
-      <button class="ghost small" id="clearRangeBtn" title="清除一段時間">🧹 清除範圍</button>
-      <span style="flex:1"></span>
-      <button class="ghost small" id="exportBtn">匯出</button>
+    <div class="row" style="gap:4px;align-items:center">
+      <button class="ghost small" id="preplanDrawerBtn" title="預排">☰</button>
+      <h1 id="pageTitle" class="grow" style="margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">🌟 衛哨排班系統 <span class="muted" style="font-size:10px;font-weight:400">v141</span></h1>
+      <button class="ghost small" id="adhocQueryTopBtn" title="臨時任務查詢">🚨</button>
+      <button class="ghost small" id="clearRangeBtn" title="清除一段時間">🧹</button>
+      <button class="ghost small" id="exportBtn" title="匯出">📤</button>
     </div>
     <div class="row wrap" style="gap:4px;align-items:center">
       <button class="ghost small" id="globalDatePrev">◀</button>
@@ -168,7 +168,6 @@ textarea{min-height:50px;resize:vertical;}
 <div class="container" id="app"></div>
 
 <div class="tabs">
-  <button data-tab="misc">🗂 其他勤務</button>
   <button data-tab="schedule">📋 排班</button>
   <button data-tab="stats">📊 統計</button>
 </div>
@@ -1044,6 +1043,106 @@ if(!state.unitRules.standbyDefaults) state.unitRules.standbyDefaults = {...STAND
    項目(如果有的話)的專長要求合併一起檢查。 */
 if(!state.unitRules.preplanSkillReqs) state.unitRules.preplanSkillReqs = {};
 
+/* ---------------- 崗位定義（統一的職務/崗位規則） ----------------
+   把原本分散三個地方的同一件事——miscPresets 的駕照/專長/人數/時段、
+   unitRules.preplanSkillReqs 額外疊加的專長、還有寫死在 BUILTIN_PREPLAN_
+   TYPES 裡的名稱/圖示/說明——收成一份使用者能隨時編輯的清單。不是整個
+   砍掉重練：舊資料結構(miscPresets/preplanSkillReqs/BUILTIN_PREPLAN_TYPES
+   的顯示欄位)還在，且仍是排班驗證、自動排班等十幾處程式碼實際讀取的地
+   方；這裡新增的是「編輯的入口只剩一個」——改崗位定義，會同步寫回那些
+   舊欄位，讀取端完全不用動，也不會有兩邊各自為政、對不起來的問題。
+   留守、休假暨事故大表兩種不是「崗位」（沒有駕照/專長/人數這種資源需
+   求，是整段時間的名單/行事曆性質），不收進這份清單。 */
+if(!state.dutyDefinitions){
+  state.dutyDefinitions = [];
+  const linkedRoles = new Set();
+  BUILTIN_PREPLAN_TYPES.filter(t=>t.mode!=='standby' && t.mode!=='leaveTable').forEach(t=>{
+    const preset = t.presetRole ? state.miscPresets.find(p=>p.role===t.presetRole) : null;
+    const extraSkills = (state.unitRules.preplanSkillReqs && state.unitRules.preplanSkillReqs[t.key]) || [];
+    if(t.presetRole) linkedRoles.add(t.presetRole);
+    state.dutyDefinitions.push({
+      key:t.key, name:t.name, icon:t.icon, mode:t.mode, hint:t.hint||'',
+      isVehicle: t.mode==='roles',
+      requiredLicenses: preset?[...(preset.requiredLicenses||[])]:[],
+      requiredMedCert: preset?!!preset.requiredMedCert:false,
+      requiredSkills: [...new Set([...(preset?preset.requiredSkills||[]:[]), ...extraSkills])],
+      chiefRequiredLicenses: preset?[...(preset.chiefRequiredLicenses||[])]:[],
+      chiefRequiredMedCert: preset?!!preset.chiefRequiredMedCert:false,
+      chiefRequiredSkills: preset?[...(preset.chiefRequiredSkills||[])]:[],
+      requiredCount: preset&&preset.requiredCount!==undefined?preset.requiredCount:null,
+      restUntil: preset?preset.restUntil||'':'',
+      times: preset?preset.times.map(x=>({...x})):[],
+      sortOrder: preset&&preset.sortOrder!==undefined?preset.sortOrder:500,
+      excludeFromExport: preset?!!preset.excludeFromExport:false,
+      isSentry: preset?!!preset.isSentry:false,
+      isAllDayAway: preset?!!preset.isAllDayAway:false,
+      standbyMode: preset?preset.standbyMode||'off':'off',
+      presetRole: t.presetRole||null, builtin:true, deletable:false, linkedPreplan:true,
+    });
+  });
+  state.customPreplanTypes.forEach(c=>{
+    linkedRoles.add(c.name);
+    state.dutyDefinitions.push({
+      key:c.key, name:c.name, icon:c.icon||'📋', mode:'people', hint:c.hint||'（自訂項目）',
+      isVehicle:false, requiredLicenses:[], requiredMedCert:false,
+      requiredSkills:[...((state.unitRules.preplanSkillReqs&&state.unitRules.preplanSkillReqs[c.key])||[])],
+      chiefRequiredLicenses:[], chiefRequiredMedCert:false, chiefRequiredSkills:[],
+      requiredCount:null, restUntil:'', times:[], sortOrder:900,
+      excludeFromExport:false, isSentry:false, isAllDayAway:false, standbyMode:'off',
+      presetRole:c.name, builtin:false, deletable:true, linkedPreplan:true,
+    });
+  });
+  // 駕駛/車長雙角色是唯一算「出車任務」的roles樣式——有些常用項目的roles
+  // 只是拿來放一句自訂的單一角色說明文字（例如話務用roles存「話務(需小型
+  // 車以上駕照)」這個顯示用標籤，不是真的要分駕駛/車長兩個人），這種不
+  // 該被當成出車任務、也不該被存回去時覆蓋掉，所以額外保留原始roles。
+  const isDriverChief = arr => Array.isArray(arr) && arr.length===2 && arr[0]==='駕駛' && arr[1]==='車長';
+  state.miscPresets.forEach(p=>{
+    if(linkedRoles.has(p.role)) return;
+    state.dutyDefinitions.push({
+      key:'misc_'+p.role, name:p.role, icon:'📋', mode: p.roles?'roles':'people', hint:'',
+      isVehicle: isDriverChief(p.roles),
+      customRoles: (p.roles && !isDriverChief(p.roles))? [...p.roles] : null,
+      requiredLicenses:[...(p.requiredLicenses||[])], requiredMedCert:!!p.requiredMedCert,
+      requiredSkills:[...(p.requiredSkills||[])],
+      chiefRequiredLicenses:[...(p.chiefRequiredLicenses||[])], chiefRequiredMedCert:!!p.chiefRequiredMedCert,
+      chiefRequiredSkills:[...(p.chiefRequiredSkills||[])],
+      requiredCount: p.requiredCount!==undefined?p.requiredCount:null,
+      restUntil:p.restUntil||'', times:p.times.map(x=>({...x})),
+      sortOrder:p.sortOrder!==undefined?p.sortOrder:999,
+      excludeFromExport:!!p.excludeFromExport, isSentry:!!p.isSentry, isAllDayAway:!!p.isAllDayAway,
+      standbyMode:p.standbyMode||'off', presetRole:p.role, builtin:true, deletable:false, linkedPreplan:false,
+    });
+  });
+}
+/* 存一筆崗位定義的變更後呼叫——寫回 miscPresets（讀取端唯一在乎的地
+   方）、如果有連到預排類型就順便更新 BUILTIN_PREPLAN_TYPES/自訂類型的
+   名稱圖示說明並 rebuildPreplanTypes()，專長要求同時寫進 preplanSkillReqs
+   （疊加式的那個舊機制），這樣不管哪段舊程式碼查哪一份，看到的都是同一
+   個、剛剛存的值，不會有兩邊對不起來的情況。 */
+function syncDutyDefinitionToLegacy(def){
+  const fields = {
+    role:def.presetRole,
+    roles: def.isVehicle?['駕駛','車長']:(def.customRoles||null),
+    times: def.times.map(x=>({...x})),
+    restUntil: def.restUntil||'',
+    requiredLicenses:[...def.requiredLicenses], requiredMedCert:!!def.requiredMedCert, requiredSkills:[...def.requiredSkills],
+    chiefRequiredLicenses:[...def.chiefRequiredLicenses], chiefRequiredMedCert:!!def.chiefRequiredMedCert, chiefRequiredSkills:[...def.chiefRequiredSkills],
+    requiredCount: def.requiredCount, rankPriority: null,
+    sortOrder: def.sortOrder, excludeFromExport: def.excludeFromExport,
+    isSentry: def.isSentry, isAllDayAway: def.isAllDayAway, standbyMode: def.standbyMode,
+  };
+  let preset = state.miscPresets.find(p=>p.role===def.presetRole);
+  if(preset){ Object.assign(preset, fields); }
+  else state.miscPresets.push({...fields, fixed: def.mode==='roles'});
+  if(def.linkedPreplan){
+    const bi = BUILTIN_PREPLAN_TYPES.findIndex(t=>t.key===def.key);
+    if(bi>=0){ BUILTIN_PREPLAN_TYPES[bi].name=def.name; BUILTIN_PREPLAN_TYPES[bi].icon=def.icon; BUILTIN_PREPLAN_TYPES[bi].hint=def.hint; }
+    else{ const c=state.customPreplanTypes.find(c=>c.key===def.key); if(c){ c.name=def.name; c.icon=def.icon; c.hint=def.hint; } }
+    rebuildPreplanTypes();
+    state.unitRules.preplanSkillReqs[def.key] = [...def.requiredSkills];
+  }
+}
 
 if(!state.preplanOrder) state.preplanOrder = PREPLAN_TYPES.map(t=>t.key);
 /* last-used times / rest-until values per preplan type, so recurring duties
@@ -1991,6 +2090,7 @@ document.getElementById('redoBtn').addEventListener('click', (e)=>{ flashPressed
 refreshUndoButton();
 document.getElementById('clearRangeBtn').addEventListener('click', (e)=>{ flashPressed(e.currentTarget); openClearRangeModal(); });
 document.getElementById('preplanDrawerBtn').addEventListener('click', (e)=>{ flashPressed(e.currentTarget); openPreplanDrawer(); });
+document.getElementById('adhocQueryTopBtn').addEventListener('click', (e)=>{ flashPressed(e.currentTarget); openAdhocQueryModal(); });
 /* two levels of "start this date over", both scoped to currentDate only:
    level 1 keeps the day's structural setup (per-day 班別 overrides, 其他
    勤務 item definitions) and just clears who's assigned / what's
@@ -2155,6 +2255,7 @@ function openUnitRulesModal(){
   const modal=document.createElement('div');
   modal.className='fullscreen-modal'; modal.style.zIndex='94';
   let section=null; // null = 主列表；否則是分類的 key
+  let editingDutyKey=null; // 崗位定義畫面：null = 清單，否則是正在編輯的 dutyDefinitions.key
   const drawMain=()=>{
     modal.innerHTML=`
       <div class="section-title"><h2 style="margin:0">⚙️ 我們的規則</h2><button class="ghost small" id="urClose">關閉</button></div>
@@ -2179,14 +2280,19 @@ function openUnitRulesModal(){
         <span class="grow">勤務日期定義<br><span class="hint">排班畫面選定的日期，實際代表哪一段時間</span></span>
         <span style="color:var(--dim)">›</span>
       </div>
-      <div class="drawer-item" data-ur-section="preplanSkillReqs">
+      <div class="drawer-item" data-ur-section="dutyDefs">
         <span style="font-size:18px">🎓</span>
-        <span class="grow">預排資格設定<br><span class="hint">留守/值星/查哨/督伙/救護車/中央監控值班/採買/驗菜——挑人時需要哪些專長</span></span>
+        <span class="grow">崗位定義<br><span class="hint">每個崗位需要什麼駕照、專長、人數、時段、補休——統一在這裡調，隨時可改</span></span>
         <span style="color:var(--dim)">›</span>
       </div>
       <div class="drawer-item" data-ur-section="holidays">
         <span style="font-size:18px">🗓️</span>
         <span class="grow">假日設定<br><span class="hint">例假日星期＋國定假日，共${(state.holidayDates||[]).length}筆個別日期</span></span>
+        <span style="color:var(--dim)">›</span>
+      </div>
+      <div class="drawer-item" data-ur-section="scheduleCategories">
+        <span style="font-size:18px">🗂️</span>
+        <span class="grow">勤務類別<br><span class="hint">新增衛哨/打飯班等類別，附排班規則說明</span></span>
         <span style="color:var(--dim)">›</span>
       </div>
       <div class="hint" style="margin-top:10px">之後陸續增加的規則，會繼續加在這份清單裡。</div>`;
@@ -2232,72 +2338,173 @@ function openUnitRulesModal(){
       <div class="hint">這是排班六小時規則、班次接續計算的共同基準，目前是寫死在程式碼裡的固定值（22:00），不能在這裡調整；先收在這裡是為了方便查閱，之後如果真的需要改成可調整，再另外處理。</div>`;
     document.getElementById('urBack').onclick=()=>{ section=null; draw(); };
   };
-  const drawPreplanSkillReqs=()=>{
-    const preplanSkillTypes = PREPLAN_TYPES.filter(t=>t.mode!=='leaveTable'); // 休假暨事故大表是先選人、再點行事曆，不是「幫這個角色挑人」的模式，不適用這套資格篩選——重新在每次draw時計算，這樣新增/刪除自訂類型之後這裡才會即時反映
+  const drawDutyDefs=()=>{
+    const linked = state.dutyDefinitions.filter(d=>d.linkedPreplan);
+    const plain = state.dutyDefinitions.filter(d=>!d.linkedPreplan);
+    const row=d=>`<div class="list-item" data-edit-duty="${esc(d.key)}" style="cursor:pointer">
+        <span class="grow">${esc(d.icon)} ${esc(d.name)}${d.isVehicle?' <span class="hint">(出車)</span>':''}</span>
+        <span style="color:var(--dim)">›</span>
+      </div>`;
     modal.innerHTML=`
-      <div class="section-title"><button class="ghost small" id="urBack">← 返回</button><h2 style="margin:0">預排資格設定</h2></div>
-      <div class="hint" style="margin-bottom:8px">挑人時，勾選的專長會拿來排序跟提醒——不符合的人還是選得到（人力有限時常常還是得排），只是會排到清單最下面、旁邊會加警告文字，不會直接擋掉不能選。不勾任何專長＝這個類型不限資格，跟現在一樣。（救護車／採買本來就有自己的駕照/證照/專長設定，在該項目自己的「設定」按鈕裡調——這裡設定的專長會「額外疊加」在那之上，不是取代。）</div>
+      <div class="section-title"><button class="ghost small" id="urBack">← 返回</button><h2 style="margin:0">崗位定義</h2></div>
+      <div class="hint" style="margin-bottom:8px">每個崗位需要什麼駕照、專長、人數、時段、補休，統一在這裡管理，隨時可改，改了立刻套用到預排跟其他勤務兩邊。挑人時，勾選的駕照/專長/證照會拿來篩選跟排序；不符合的人通常還是選得到，只是會排到後面、加警告文字，不會直接擋死（人力有限時常常還是得排）。</div>
       <div class="divider"></div>
-      <h3>自訂預排類型</h3>
-      <div class="hint" style="margin-bottom:8px">內建的9種以外，如果還有其他固定會排的角色（例如帶隊官、留守伙房這種），可以在這裡自己加一種——固定是「挑人＋時段」模式（跟值星/督伙同一種），加好之後會自動出現在抽屜「預排」清單裡，也能在這裡設定它的專長要求。</div>
-      ${state.customPreplanTypes.length? state.customPreplanTypes.map(c=>`
-        <div class="list-item">
-          <span class="grow">${esc(c.icon||'📋')} ${esc(c.name)}</span>
-          <button class="ghost small danger" data-del-custom-preplan="${esc(c.key)}">刪除</button>
-        </div>`).join('') : ''}
+      <h3>已連結預排類型的崗位</h3>
+      ${linked.map(row).join('')}
+      <div class="divider"></div>
+      <h3>其他勤務項目</h3>
+      ${plain.length? plain.map(row).join('') : '<div class="empty">目前沒有</div>'}
+      <div class="divider"></div>
+      <h3>＋新增崗位</h3>
       <div class="row wrap" style="margin-bottom:6px">
-        <div style="width:70px"><label>圖示</label><input type="text" id="cpIcon" placeholder="📋" maxlength="2"></div>
-        <div class="grow"><label>名稱</label><input type="text" id="cpName" placeholder="例：帶隊官"></div>
+        <div style="width:70px"><label>圖示</label><input type="text" id="ddIcon" placeholder="📋" maxlength="2"></div>
+        <div class="grow"><label>名稱</label><input type="text" id="ddName" placeholder="例：帶隊官"></div>
       </div>
       <div class="row wrap" style="margin-bottom:8px">
-        <div class="grow"><label>說明（選填）</label><input type="text" id="cpHint" placeholder="這個類型的用途、排班規則"></div>
+        <div class="grow"><label>說明（選填）</label><input type="text" id="ddHint" placeholder="這個崗位的用途、排班規則"></div>
       </div>
-      <button class="ghost" id="cpAdd" style="width:100%">＋新增這個類型</button>
-      <div class="divider"></div>
-      ${preplanSkillTypes.map(t=>{
-        const req = state.unitRules.preplanSkillReqs[t.key]||[];
-        return `<div class="row wrap" style="margin-bottom:4px"><b>${t.icon} ${esc(t.name)}</b></div>
-        <div class="row wrap" style="gap:10px;margin-bottom:12px">
-          ${state.skillOptions.length? state.skillOptions.map(s=>`<label style="display:flex;align-items:center;gap:4px;font-size:12px">
-            <input type="checkbox" class="ur-skillreq-cb" data-ur-skillreq-type="${t.key}" value="${esc(s)}" style="width:auto" ${req.includes(s)?'checked':''}>${esc(s)}
-          </label>`).join('') : `<div class="empty">尚未設定任何專長選項（在人員分頁的專長設定新增）</div>`}
-        </div>`;
-      }).join('')}`;
+      <label style="display:flex;align-items:center;gap:6px;font-size:13px;margin-bottom:6px">
+        <input type="checkbox" id="ddVehicle" style="width:auto"> 這是出車任務（駕駛／車長分開設定資格）
+      </label>
+      <label style="display:flex;align-items:center;gap:6px;font-size:13px;margin-bottom:8px">
+        <input type="checkbox" id="ddAsPreplan" style="width:auto"> 同時建立成預排類型（可以設定一段日期區間，自動排班會避開被排到的人）
+      </label>
+      <button class="ghost" id="ddAdd" style="width:100%">＋新增這個崗位</button>`;
     document.getElementById('urBack').onclick=()=>{ section=null; draw(); };
-    document.getElementById('cpAdd').onclick=()=>{
-      const name=document.getElementById('cpName').value.trim();
-      const icon=document.getElementById('cpIcon').value.trim();
-      const hint=document.getElementById('cpHint').value.trim();
+    modal.querySelectorAll('[data-edit-duty]').forEach(row=>{
+      row.onclick=()=>{ editingDutyKey=row.dataset.editDuty; draw(); };
+    });
+    document.getElementById('ddAdd').onclick=()=>{
+      const name=document.getElementById('ddName').value.trim();
+      const icon=document.getElementById('ddIcon').value.trim()||'📋';
+      const hint=document.getElementById('ddHint').value.trim();
+      const isVehicle=document.getElementById('ddVehicle').checked;
+      const asPreplan=document.getElementById('ddAsPreplan').checked;
       if(!name){ showAlert('請輸入名稱'); return; }
-      if(PREPLAN_TYPES.some(t=>t.name===name)){ showAlert('已經有這個名稱的預排類型了'); return; }
-      const key = 'custom_'+uid();
-      state.customPreplanTypes.push({key, name, icon, hint});
-      rebuildPreplanTypes();
+      if(state.dutyDefinitions.some(d=>d.name===name)){ showAlert('已經有這個名稱的崗位了'); return; }
+      const key = (asPreplan? 'custom_':'misc_')+uid();
+      const def = {
+        key, name, icon, mode: isVehicle?'roles':'people', hint,
+        isVehicle, requiredLicenses:[], requiredMedCert:false, requiredSkills:[],
+        chiefRequiredLicenses:[], chiefRequiredMedCert:false, chiefRequiredSkills:[],
+        requiredCount:null, restUntil:'', times:[], sortOrder: 900+state.dutyDefinitions.length,
+        excludeFromExport:false, isSentry:false, isAllDayAway:false, standbyMode:'off',
+        presetRole:name, builtin:false, deletable:true, linkedPreplan:asPreplan,
+      };
+      state.dutyDefinitions.push(def);
+      if(asPreplan) state.customPreplanTypes.push({key, name, icon, hint});
+      syncDutyDefinitionToLegacy(def);
       saveState();
-      drawPreplanSkillReqs();
+      drawDutyDefs();
     };
-    modal.querySelectorAll('[data-del-custom-preplan]').forEach(b=>{
-      b.onclick=()=>{
-        const key=b.dataset.delCustomPreplan;
-        const type=PREPLAN_TYPES.find(t=>t.key===key);
-        showConfirm(`確定要刪除「${type?type.name:key}」這個自訂預排類型嗎？已經排定的內容不會被清掉，只是之後這個類型不會再出現在預排清單裡。`, ()=>{
+  };
+  const drawDutyDefEditor=(key)=>{
+    const def = state.dutyDefinitions.find(d=>d.key===key);
+    if(!def){ editingDutyKey=null; drawDutyDefs(); return; }
+    const licenseCbs=(field,idPrefix)=>['小型車','大型車','大客車'].map(l=>`<label style="display:flex;align-items:center;gap:4px;font-size:12px">
+        <input type="checkbox" class="${idPrefix}-license-cb" value="${l}" style="width:auto" ${def[field].includes(l)?'checked':''}>${l}
+      </label>`).join('');
+    const skillCbs=(field,idPrefix)=>state.skillOptions.length? state.skillOptions.map(s=>`<label style="display:flex;align-items:center;gap:4px;font-size:12px">
+        <input type="checkbox" class="${idPrefix}-skill-cb" value="${esc(s)}" style="width:auto" ${def[field].includes(s)?'checked':''}>${esc(s)}
+      </label>`).join('') : `<div class="empty">尚未設定任何專長選項（在人員分頁的專長設定新增）</div>`;
+    const t0 = def.times[0]||{start:'',end:''};
+    modal.innerHTML=`
+      <div class="section-title"><button class="ghost small" id="urBack">← 返回</button><h2 style="margin:0">${esc(def.icon)} ${esc(def.name)}</h2></div>
+      <div class="row wrap" style="margin-bottom:6px">
+        <div style="width:70px"><label>圖示</label><input type="text" id="ddeIcon" value="${esc(def.icon)}" maxlength="2"></div>
+        <div class="grow"><label>名稱</label><input type="text" id="ddeName" value="${esc(def.name)}"></div>
+      </div>
+      <div class="row wrap" style="margin-bottom:8px">
+        <div class="grow"><label>說明</label><input type="text" id="ddeHint" value="${esc(def.hint)}"></div>
+      </div>
+      ${(def.mode==='people'||def.mode==='roles')?`<label style="display:flex;align-items:center;gap:6px;font-size:13px;margin-bottom:8px">
+        <input type="checkbox" id="ddeVehicle" style="width:auto" ${def.isVehicle?'checked':''}> 這是出車任務（駕駛／車長分開設定資格）
+      </label>`:''}
+      <div id="ddeReqBlock"></div>
+      <div class="row wrap" style="margin-bottom:8px">
+        <div class="grow"><label>需要人數（留空＝不限）</label><input type="text" id="ddeCount" value="${def.requiredCount??''}"></div>
+      </div>
+      ${def.mode!=='fixedSlots'?`<div class="row wrap" style="margin-bottom:8px">
+        <div class="grow"><label>開始時間</label>${timeSelectHTML('ddeStart', t0.start||'08:00')}</div>
+        <div class="grow"><label>結束時間</label>${timeSelectHTML('ddeEnd', t0.end||'08:00')}</div>
+      </div>`:'<div class="hint" style="margin-bottom:8px">這個崗位是固定時段班（查哨），時段清單在該項目自己的預排畫面裡調整，這裡不重複設定。</div>'}
+      <div class="row wrap" style="margin-bottom:8px">
+        <div class="grow"><label>補休到（選填）</label>${timeSelectHTML('ddeRest', def.restUntil||'')}</div>
+      </div>
+      <button class="primary" id="ddeSave" style="width:100%;margin-bottom:8px">儲存</button>
+      ${def.deletable? `<button class="ghost danger" id="ddeDelete" style="width:100%">刪除這個崗位</button>` : `<div class="hint">內建崗位不能刪除，但上面所有設定都能自由調整。</div>`}`;
+    const renderReqBlock=(isVehicle)=>{
+      document.getElementById('ddeReqBlock').innerHTML = isVehicle? `
+        <div class="hint" style="margin:4px 0"><b>駕駛</b></div>
+        <div class="row wrap" style="gap:10px;margin-bottom:4px">${licenseCbs('requiredLicenses','ddeDriver')}</div>
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;margin-bottom:4px">
+          <input type="checkbox" id="ddeDriverMedCert" style="width:auto" ${def.requiredMedCert?'checked':''}>需具備救護證照(EMT或醫生證書)
+        </label>
+        <div class="row wrap" style="gap:10px;margin-bottom:10px">${skillCbs('requiredSkills','ddeDriver')}</div>
+        <div class="hint" style="margin:4px 0"><b>車長</b></div>
+        <div class="row wrap" style="gap:10px;margin-bottom:4px">${licenseCbs('chiefRequiredLicenses','ddeChief')}</div>
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;margin-bottom:4px">
+          <input type="checkbox" id="ddeChiefMedCert" style="width:auto" ${def.chiefRequiredMedCert?'checked':''}>需具備救護證照(EMT或醫生證書)
+        </label>
+        <div class="row wrap" style="gap:10px;margin-bottom:10px">${skillCbs('chiefRequiredSkills','ddeChief')}</div>
+      ` : `
+        <div class="row wrap" style="gap:10px;margin-bottom:4px">${licenseCbs('requiredLicenses','ddeDriver')}</div>
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;margin-bottom:4px">
+          <input type="checkbox" id="ddeSoloMedCert" style="width:auto" ${def.requiredMedCert?'checked':''}>需具備救護證照(EMT或醫生證書)
+        </label>
+        <div class="row wrap" style="gap:10px;margin-bottom:10px">${skillCbs('requiredSkills','ddeDriver')}</div>
+      `;
+    };
+    renderReqBlock(def.isVehicle);
+    document.getElementById('urBack').onclick=()=>{ editingDutyKey=null; draw(); };
+    const vehicleCb = document.getElementById('ddeVehicle');
+    if(vehicleCb) vehicleCb.onchange=()=>renderReqBlock(vehicleCb.checked);
+    document.getElementById('ddeSave').onclick=()=>{
+      const name=document.getElementById('ddeName').value.trim();
+      if(!name){ showAlert('請輸入名稱'); return; }
+      if(state.dutyDefinitions.some(d=>d.key!==key && d.name===name)){ showAlert('已經有這個名稱的崗位了'); return; }
+      def.name = name;
+      def.icon = document.getElementById('ddeIcon').value.trim()||'📋';
+      def.hint = document.getElementById('ddeHint').value.trim();
+      def.isVehicle = vehicleCb? vehicleCb.checked : def.isVehicle;
+      def.requiredLicenses = [...modal.querySelectorAll('.ddeDriver-license-cb:checked')].map(cb=>cb.value);
+      def.requiredSkills = [...modal.querySelectorAll('.ddeDriver-skill-cb:checked')].map(cb=>cb.value);
+      if(def.isVehicle){
+        def.chiefRequiredLicenses = [...modal.querySelectorAll('.ddeChief-license-cb:checked')].map(cb=>cb.value);
+        def.chiefRequiredSkills = [...modal.querySelectorAll('.ddeChief-skill-cb:checked')].map(cb=>cb.value);
+        def.chiefRequiredMedCert = !!document.getElementById('ddeChiefMedCert')?.checked;
+        def.requiredMedCert = !!document.getElementById('ddeDriverMedCert')?.checked;
+      } else {
+        def.requiredMedCert = !!document.getElementById('ddeSoloMedCert')?.checked;
+        def.chiefRequiredLicenses=[]; def.chiefRequiredSkills=[]; def.chiefRequiredMedCert=false;
+      }
+      const countVal = document.getElementById('ddeCount').value.trim();
+      def.requiredCount = countVal? Math.max(1, parseInt(countVal,10)||1) : null;
+      if(def.mode!=='fixedSlots'){
+        const s=document.getElementById('ddeStart').value, e=document.getElementById('ddeEnd').value;
+        def.times = (s||e)? [{start:s,end:e}] : [];
+      }
+      def.restUntil = document.getElementById('ddeRest').value;
+      def.mode = def.isVehicle? 'roles' : (def.mode==='roles'? 'people' : def.mode);
+      syncDutyDefinitionToLegacy(def);
+      saveState();
+      editingDutyKey=null;
+      draw();
+    };
+    const delBtn=document.getElementById('ddeDelete');
+    if(delBtn) delBtn.onclick=()=>{
+      showConfirm(`確定要刪除「${def.name}」這個崗位嗎？已經排定的內容不會被清掉，只是之後這個崗位不會再出現在清單裡。`, ()=>{
+        state.dutyDefinitions = state.dutyDefinitions.filter(d=>d.key!==key);
+        if(def.linkedPreplan){
           state.customPreplanTypes = state.customPreplanTypes.filter(c=>c.key!==key);
           delete state.unitRules.preplanSkillReqs[key];
           rebuildPreplanTypes();
-          saveState();
-          drawPreplanSkillReqs();
-        });
-      };
-    });
-    modal.querySelectorAll('.ur-skillreq-cb').forEach(cb=>{
-      cb.onchange=()=>{
-        const key=cb.dataset.urSkillreqType;
-        const cur=new Set(state.unitRules.preplanSkillReqs[key]||[]);
-        if(cb.checked) cur.add(cb.value); else cur.delete(cb.value);
-        state.unitRules.preplanSkillReqs[key]=[...cur];
+        }
         saveState();
-      };
-    });
+        editingDutyKey=null;
+        draw();
+      });
+    };
   };
   const drawLeaveBuffer=()=>{
     const buf=state.unitRules.leaveBuffer;
@@ -2346,13 +2553,36 @@ function openUnitRulesModal(){
       render();
     };
   };
+  const drawScheduleCategories=()=>{
+    modal.innerHTML=`
+      <div class="section-title"><button class="ghost small" id="urBack">← 返回</button><h2 style="margin:0">勤務類別</h2></div>
+      <div class="section-title">
+        <h3 style="margin:0">勤務類別</h3>
+        <button class="ghost small" id="addCat">＋新增類別</button>
+      </div>
+      <div class="hint">安全士官／橋哨／指管：前後兩班（衛哨對衛哨）需間隔≥6小時、單日累計上限6小時（系統自動檢查，違反會標紅；此規則不含準備時間，純粹以衛哨排定時間計算）。每班衛哨開始前需空30分鐘準備：若前一段時間還在忙其他勤務（如採買、打飯班），系統會擋下並標紅，避免像「採買到08:00、緊接著08:00-12:00衛哨」這種沒時間準備的排法。橋哨／指管優先排下士，其次其他士兵/士官。打飯班早/午/晚每班2人＝1位帶隊士官（優先下士→中士→上士）＋1位士兵，盡量避免安排軍官；整天固定2人優先排訓練役，沒有訓練役才依二兵→一兵→上兵遞補。下拉選單已依此優先順序排序，越上面越優先。有設定「補休至」的班別（例：22:00-06:00 各節衛哨補休至08:00、06-08衛哨與早餐打飯班補休至08:30、午餐打飯班補休至15:30），下班後系統會自動把該員在補休時段內標示為不可排，也會檢查補休時段有沒有跟已排的其他勤務衝突，可到各類別「編輯」調整補休時間。</div>
+      <div class="hint">下拉選單中的 🚫不可排 已同時涵蓋：休假/事故、長期事故、補休、以及當天其他勤務的重複指派。</div>
+      <div class="hint" style="margin-top:8px">個別類別的名稱/班次/補休等設定，到排班畫面該類別卡片上的「編輯」調整；這裡只負責新增類別跟看規則說明。</div>`;
+    document.getElementById('urBack').onclick=()=>{ section=null; draw(); };
+    document.getElementById('addCat').onclick=()=>{
+      showPrompt('新類別名稱？（例：查哨）', '', (name)=>{
+        const newId=uid();
+        const newShifts=[sh('08:00','12:00')];
+        state.categories.push({id:newId,name,enforceRest:false,preferLowRank:false,needsNCO:false,isSentry:false,shifts:newShifts});
+        state.categoryShiftDefaults[newId]=newShifts.map(s=>({...s}));
+        saveState();
+        drawScheduleCategories();
+      });
+    };
+  };
   const draw=()=>{
     if(section==='leaveBuffer') drawLeaveBuffer();
     else if(section==='timeStep') drawTimeStep();
     else if(section==='standbyDefaults') drawStandbyDefaults();
     else if(section==='dutyDayDef') drawDutyDayDef();
-    else if(section==='preplanSkillReqs') drawPreplanSkillReqs();
+    else if(section==='dutyDefs') editingDutyKey? drawDutyDefEditor(editingDutyKey) : drawDutyDefs();
     else if(section==='holidays'){ section=null; openHolidaySettingsModal(); draw(); }
+    else if(section==='scheduleCategories') drawScheduleCategories();
     else drawMain();
   };
   document.body.appendChild(modal);
@@ -2419,7 +2649,43 @@ function openPreplanDrawer(){
   backdrop.className='drawer-backdrop';
   const drawer=document.createElement('div');
   drawer.className='drawer';
+  // 留守、休假暨事故大表跟其他7種預排本質不同——它們是「誰什麼時候在不
+  // 在營區」這種人員狀態，不是「當天要排哪個任務」，容易跟後面那串常態
+  // 勤務混在一起搞混，所以固定放在人員名冊正下方、不放進可拖曳排序的清
+  // 單裡；其餘（值星/查哨/督伙/救護車/中央監控值班/採買/驗菜/自訂類型）
+  // 繼續放在下面那份可以拖曳調順序的清單。
+  const PINNED_PREPLAN_KEYS = ['standby','leave'];
+  const preplanCountLabel = (t)=>{
+    const store=state.preplan[t.key]||{};
+    const ym = preplanMonth || monthOf(currentDate);
+    /* count only days that actually hold something, and only for the
+       month currently being viewed — this used to be an all-time total,
+       so old data from months you'd already finished planning made the
+       number look wrong relative to what you'd actually ticked this
+       month. 留守 needs its own count: one entry there represents a
+       whole span (its own start/end date), not a single day, so
+       counting keys the same way as the other types badly undercounts
+       a multi-day block — and that span only partially overlapping the
+       viewed month still needs just the overlapping days counted. */
+    const planned = t.key==='leave'
+      ? Object.values(store).filter(byCat=>Object.values(byCat||{}).some(r=>(r.dates||[]).some(d=>d.startsWith(ym)))).length
+      : t.key==='standby'
+      ? Object.values(store).filter(plan=>plan && preplanCellMark(t, plan)).reduce((sum,plan)=>sum+dateRangeList(plan.startDate, plan.endDate).filter(d=>d.startsWith(ym)).length, 0)
+      : Object.keys(store).filter(d=>d.startsWith(ym) && preplanCellMark(t, store[d])).length;
+    return planned? (t.key==='leave'? `本月已排 ${planned} 人`:`本月已預排 ${planned} 天`):'本月尚未預排';
+  };
+  // 這兩份清單要跟著 state.preplanOrder 現況重算，不能只算一次存進閉包
+  // 變數——不然拖曳排序寫回 state.preplanOrder 後，drawDrawer() 重繪時畫
+  // 面順序、以及下一次拖曳用的 data-pp-idx 索引，都還是用舊的清單，跟剛
+  // 寫回的新順序對不上。
+  let pinnedTypes, draggableTypes;
+  const recomputeTypeLists=()=>{
+    const allTypes = orderedPreplanTypes();
+    pinnedTypes = PINNED_PREPLAN_KEYS.map(k=>allTypes.find(t=>t.key===k)).filter(Boolean);
+    draggableTypes = allTypes.filter(t=>!PINNED_PREPLAN_KEYS.includes(t.key));
+  };
   const drawDrawer=()=>{
+    recomputeTypeLists();
     drawer.innerHTML=`
       <div class="section-title"><h2>📅 預排</h2><button class="ghost small" id="drawerClose">關閉</button></div>
       <div class="hint" style="margin-bottom:10px">這裡放不太會變的東西：人員名冊、跟固定的常態勤務。先建立好，之後在月曆頁按「匯入整月」寫進實際班表，不用每天重填。長按 ⠿ 可拖曳調整常態勤務的順序。</div>
@@ -2428,29 +2694,18 @@ function openPreplanDrawer(){
         <span class="grow">人員名冊<br><span class="hint">共 ${state.personnel.length} 人</span></span>
         <span style="color:var(--dim)">›</span>
       </div>
+      ${pinnedTypes.map(t=>`<div class="drawer-item" data-preplan-open="${t.key}">
+        <span style="font-size:18px">${t.icon}</span>
+        <span class="grow">${t.name}<br><span class="hint">${preplanCountLabel(t)}</span></span>
+        <span style="color:var(--dim)">›</span>
+      </div>`).join('')}
       <div class="divider"></div>
       <div id="drawerList">
-      ${orderedPreplanTypes().map((t,i)=>{
-        const store=state.preplan[t.key]||{};
-        const ym = preplanMonth || monthOf(currentDate);
-        /* count only days that actually hold something, and only for the
-           month currently being viewed — this used to be an all-time total,
-           so old data from months you'd already finished planning made the
-           number look wrong relative to what you'd actually ticked this
-           month. 留守 needs its own count: one entry there represents a
-           whole span (its own start/end date), not a single day, so
-           counting keys the same way as the other types badly undercounts
-           a multi-day block — and that span only partially overlapping the
-           viewed month still needs just the overlapping days counted. */
-        const planned = t.key==='leave'
-          ? Object.values(store).filter(byCat=>Object.values(byCat||{}).some(r=>(r.dates||[]).some(d=>d.startsWith(ym)))).length
-          : t.key==='standby'
-          ? Object.values(store).filter(plan=>plan && preplanCellMark(t, plan)).reduce((sum,plan)=>sum+dateRangeList(plan.startDate, plan.endDate).filter(d=>d.startsWith(ym)).length, 0)
-          : Object.keys(store).filter(d=>d.startsWith(ym) && preplanCellMark(t, store[d])).length;
+      ${draggableTypes.map((t,i)=>{
         return `<div class="drawer-item" data-pp-idx="${i}" data-preplan-open="${t.key}">
           <span data-pp-handle style="cursor:grab;color:var(--dim);padding-right:2px;touch-action:none">⠿</span>
           <span style="font-size:18px">${t.icon}</span>
-          <span class="grow">${t.name}<br><span class="hint">${planned? (t.key==='leave'? `本月已排 ${planned} 人`:`本月已預排 ${planned} 天`):'本月尚未預排'}</span></span>
+          <span class="grow">${t.name}<br><span class="hint">${preplanCountLabel(t)}</span></span>
           <span style="color:var(--dim)">›</span>
         </div>`;
       }).join('')}
@@ -2486,10 +2741,12 @@ function openPreplanDrawer(){
       const from=dragIdx;
       dragIdx=null; dragEl=null;
       if(to===null || to===from) { drawDrawer(); return; }
-      const order=orderedPreplanTypes().map(t=>t.key);
+      // 只在可拖曳的那份清單裡重新排序，留守/休假暨事故大表固定在最前面
+      // 不受影響——data-pp-idx 現在只對應 draggableTypes，不是全部9種。
+      const order=draggableTypes.map(t=>t.key);
       const [moved]=order.splice(from,1);
       order.splice(to,0,moved);
-      state.preplanOrder=order; saveState(); drawDrawer();
+      state.preplanOrder=[...PINNED_PREPLAN_KEYS, ...order]; saveState(); drawDrawer();
     };
     drawer.querySelectorAll('[data-pp-handle]').forEach(h=>{
       const row=h.closest('[data-pp-idx]');
@@ -4256,7 +4513,7 @@ function openEarlyReturnModal(defaultDate, onDone){
     modal.innerHTML=`
       <div class="sheet-inner">
         <div class="section-title"><h2 style="margin:0">↩️ 收假提早</h2><button class="ghost small" id="erClose">關閉</button></div>
-        <div class="hint" style="margin-bottom:8px">選這批人原本該「隔天0730收假」的那一天，勾選要提早收假的人，套用後這些人改成前一天24:00前就算收假（原本的後緩衝記錄會被移除）。</div>
+        <div class="hint" style="margin-bottom:8px">選這批人原本該「隔天0730收假」的那一天，勾選要提早收假的人，套用後這些人休假的最後一天會從紀錄中整天拿掉，改成前一天24:00前就算收假——休假暨事故大表月曆會真的少一天，不是只拿掉看不見的緩衝。</div>
         <div class="row wrap" style="margin-bottom:8px">
           <div class="grow"><label>日期（原本的收假日）</label><input type="date" id="erDate" value="${date}"></div>
         </div>
@@ -4294,10 +4551,10 @@ function openEarlyReturnModal(defaultDate, onDone){
     document.getElementById('erApply').onclick=()=>{
       const ids=[...modal.querySelectorAll('.er-entry:checked')].map(cb=>cb.value);
       if(!ids.length){ showAlert('請至少勾選一位人員'); return; }
-      showConfirm(`確定要取消這 ${ids.length} 位人員在 ${minguoLabel(date)} 的隔天收假緩衝，改成前一天24:00前就算收假嗎？`, ()=>{
+      showConfirm(`確定要讓這 ${ids.length} 位人員提早收假嗎？他們休假的最後一天（${minguoLabel(prevDateStr(date))}）會從紀錄中整天移除，改成當天24:00前就算收假。`, ()=>{
         const n=applyEarlyReturn(date, ids);
         saveState();
-        showAlert(`已處理 ${n} 筆，這些人改成前一天24:00前算收假。`);
+        showAlert(`已處理 ${n} 筆，${minguoLabel(prevDateStr(date))}已從休假紀錄中移除，改成前一天24:00前算收假。`);
         draw();
         if(onDone) onDone();
       });
@@ -4661,7 +4918,7 @@ function openLeaveTableEditor(date, onSaved, presetPid){
       <div class="divider"></div>
       <h3>特殊狀況調整（少數人因任務/處罰需要跟一般緩衝不一樣）</h3>
       <button class="ghost" id="ltDelayedStart" style="width:100%;margin-bottom:6px">⏰ 開始延後（這天才開始休假的人，改成更晚才不可排）</button>
-      <button class="ghost" id="ltEarlyReturn" style="width:100%">↩️ 收假提早（取消這天的隔天收假緩衝，提早到前一天24:00收假）</button>
+      <button class="ghost" id="ltEarlyReturn" style="width:100%">↩️ 收假提早（最後一天真的提早結束，改成前一天24:00收假）</button>
       <div class="divider"></div>
       ${(()=>{
         const seen=new Set(); const blocks=[];
@@ -5405,7 +5662,6 @@ function render(){
   if(currentTab==='people') renderPeople();
   else if(currentTab==='stats') renderStats();
   else if(currentTab==='schedule') renderSchedule();
-  else if(currentTab==='misc') renderMisc();
   window.scrollTo(0, scrollY);
 }
 
@@ -6578,15 +6834,35 @@ function isFrontBufferEntry(u){
   const buf = state.unitRules.leaveBuffer;
   return u.end==='24:00' && (u.start===buf.honorStart || u.start===buf.normalStart);
 }
-/* 收假提早——某段假期原本該「隔天0730收假」的那個隔天，取消整批人的後緩
-   衝，改成前一天24:00前就算收假。直接把那筆後緩衝記錄刪掉：假期最後一天
-   本身已經是整天登記，刪掉後緩衝之後，系統自然就不會再擋這個人到隔天早
-   上，效果就是「前一天24:00收假」，不用另外造一個新的時間概念。 */
+/* 收假提早——某段假期原本該「隔天0730收假」的那個隔天，讓整批人真的提早
+   收假：假期原本的最後一天（後緩衝記錄上的leaveEnd）從這個人這個類型的
+   登記天數(state.preplan.leave)裡整天拿掉，連同當天在state.unavail的整
+   天記錄一起刪除，同時把隔天早上的後緩衝記錄也刪掉。這樣休假暨事故大表
+   月曆才會真的少一天，而不是只拿掉看不見的緩衝、月曆卻完全沒變化。如果
+   這段假期本來有超過5天同意記錄(approvedRuns)剛好用這天當結束日，結束日
+   也跟著往前調一天，不然縮短後的這段會變成「找不到對應的同意記錄」。 */
 function peopleWithBackBufferOn(date){
   return (state.unavail[date]||[]).filter(isBackBufferEntry);
 }
 function applyEarlyReturn(date, entryIds){
   if(!state.unavail[date]) return 0;
+  const entries = state.unavail[date].filter(u=>entryIds.includes(u.id));
+  entries.forEach(u=>{
+    const lastDay = u.leaveEnd || prevDateStr(date);
+    if(u.leaveId && u.personId && u.reason && state.preplan && state.preplan.leave && state.preplan.leave[u.personId] && state.preplan.leave[u.personId][u.reason]){
+      const rec = state.preplan.leave[u.personId][u.reason];
+      rec.dates = (rec.dates||[]).filter(d=>d!==lastDay);
+      rec.honorDates = (rec.honorDates||[]).filter(d=>d!==lastDay);
+      if(rec.partialTimes) delete rec.partialTimes[lastDay];
+      if(rec.approvedRuns && rec.approvedRuns.length){
+        rec.approvedRuns = rec.approvedRuns.map(r=> r.end===lastDay? {...r, end:prevDateStr(lastDay)} : r);
+      }
+      if(!rec.dates.length) delete state.preplan.leave[u.personId][u.reason];
+    }
+    if(state.unavail[lastDay]){
+      state.unavail[lastDay] = state.unavail[lastDay].filter(x=>!(x.leaveId===u.leaveId && x.allDay));
+    }
+  });
   const before = state.unavail[date].length;
   state.unavail[date] = state.unavail[date].filter(u=>!entryIds.includes(u.id));
   return before - state.unavail[date].length;
@@ -7974,15 +8250,7 @@ function renderSchedule(){
         ${missingDefaults.map(d=>`<button class="pill-btn" data-restore-cat="${d.id}" style="cursor:pointer">還原「${esc(d.name)}」</button>`).join('')}
       </div>
     `) : ''}
-    ${collapsibleCardHTML('scheduleControls', '勤務類別新增/說明', `
-      <div class="section-title">
-        <h2 style="margin:0">勤務類別</h2>
-        <button class="ghost small" id="addCat">＋新增類別</button>
-      </div>
-      <div class="hint">安全士官／橋哨／指管：前後兩班（衛哨對衛哨）需間隔≥6小時、單日累計上限6小時（系統自動檢查，違反會標紅；此規則不含準備時間，純粹以衛哨排定時間計算）。每班衛哨開始前需空30分鐘準備：若前一段時間還在忙其他勤務（如採買、打飯班），系統會擋下並標紅，避免像「採買到08:00、緊接著08:00-12:00衛哨」這種沒時間準備的排法。橋哨／指管優先排下士，其次其他士兵/士官。打飯班早/午/晚每班2人＝1位帶隊士官（優先下士→中士→上士）＋1位士兵，盡量避免安排軍官；整天固定2人優先排訓練役，沒有訓練役才依二兵→一兵→上兵遞補。下拉選單已依此優先順序排序，越上面越優先。有設定「補休至」的班別（例：22:00-06:00 各節衛哨補休至08:00、06-08衛哨與早餐打飯班補休至08:30、午餐打飯班補休至15:30），下班後系統會自動把該員在補休時段內標示為不可排，也會檢查補休時段有沒有跟已排的其他勤務衝突，可到各類別「編輯」調整補休時間。</div>
-      <div class="hint">下拉選單中的 🚫不可排 已同時涵蓋：休假/事故、長期事故、補休、以及當天其他勤務的重複指派。</div>
-    `)}
-    <div id="scheduleCardsContainer">${renderScheduleCards()}</div>
+    ${renderScheduleCards()}
     <div class="card">
       <button class="primary" id="exportText" style="width:100%;margin-bottom:6px">📋 轉出文字班表</button>
       <button class="ghost" id="exportTextDiff" style="width:100%">🔍 比對上次發布版本再匯出</button>
@@ -8057,15 +8325,6 @@ function renderSchedule(){
       }
     };
   });
-  document.getElementById('addCat').onclick=()=>{
-    showPrompt('新類別名稱？（例：查哨）', '', (name)=>{
-      const newId=uid();
-      const newShifts=[sh('08:00','12:00')];
-      state.categories.push({id:newId,name,enforceRest:false,preferLowRank:false,needsNCO:false,isSentry:false,shifts:newShifts});
-      state.categoryShiftDefaults[newId]=newShifts.map(s=>({...s}));
-      saveState(); render();
-    });
-  };
   wireCategoryEvents();
   document.getElementById('dailyCheck').onclick=()=>runDailyCheck();
   document.getElementById('exportText').onclick=()=>openTextShareModal('文字班表', generateScheduleText(currentDate));
@@ -8275,44 +8534,54 @@ function categoryPriorityLabel(cat){
   }
   return `優先順序：${(cat.customPriority || RANK_DEFS.map(r=>r.rank)).join('→')}`;
 }
+/* 排班分頁固定分成三個區塊，順序固定、不再互相穿插：
+   1. 衛哨卡片（安全士官/橋哨/指管中心等勤務類別）——彼此之間還是可以拖曳排序
+   2. 預排項目彙整卡（值星/查哨/督伙/救護車/中央監控值班/採買/驗菜等——凡
+      是連結到預排類型的崗位，記錄一律集中在這裡，不管這筆記錄實際上是
+      「按過匯入」寫入的、還是常用項目點一下/自動排班直接產生的）
+   3. 其他勤務彙整卡（減法思維：勤務設定裡「沒有」連結預排類型的項目，按
+      「匯入預設」一次帶進來，不需要的當天自己刪除，不會自己跑回來）
+   分組準則是「角色名稱有沒有連結到預排類型」，不是看每筆記錄自己的
+   fromPreplan 旗標——那個旗標只在真的執行過「匯入到當天」那個動作時才
+   會被寫上，但值星/查哨/救護車這些角色的記錄常常是透過常用項目點一下
+   或自動排班直接產生的，沒這個旗標，用旗標分組會讓它們錯誤跑進第三塊。
+   跨區塊的相對順序固定，不需要 sortOrder；但區塊內部還是要能拖曳排序：
+   區塊1的每張衛哨類別卡片、跟區塊3彙整卡裡的每個角色小節，各自維持獨
+   立的拖曳容器（用不同的 containerId，這樣 wireDragReorder 各自抓自己
+   範圍內的 [data-drag-idx]，兩邊的索引不會因為巢狀在同一個容器裡而互相
+   誤抓、把彼此的拖曳搞亂）。 */
 function buildScheduleCardItems(){
   const dayMisc = state.misc[currentDate]||[];
-  const preplanEntries = dayMisc.filter(m=>m.fromPreplan);
-  const manualEntries = dayMisc.filter(m=>!m.fromPreplan);
+  const linkedRoleNames = new Set(state.dutyDefinitions.filter(d=>d.linkedPreplan).map(d=>d.name));
+  const preplanEntries = dayMisc.filter(m=>linkedRoleNames.has(m.role));
+  const manualEntries = dayMisc.filter(m=>!linkedRoleNames.has(m.role));
+  const catItems = orderedCategories().map(cat=>({kind:'cat', cat, sortOrder:cat.sortOrder??999})).sort((a,b)=>a.sortOrder-b.sortOrder);
   const miscByRole = {};
-  manualEntries.forEach(m=>{
-    if(!miscByRole[m.role]) miscByRole[m.role]=[];
-    miscByRole[m.role].push(m);
-  });
-  const miscGroups = Object.keys(miscByRole).map(role=>{
+  manualEntries.forEach(m=>{ if(!miscByRole[m.role]) miscByRole[m.role]=[]; miscByRole[m.role].push(m); });
+  const miscRoleGroups = Object.keys(miscByRole).map(role=>{
     const preset = state.miscPresets.find(p=>p.role===role);
-    return {kind:'misc', role, entries:miscByRole[role], preset, sortOrder: preset?(preset.sortOrder??999):999};
-  });
-  const catItems = orderedCategories().map(cat=>({kind:'cat', cat, sortOrder:cat.sortOrder??999}));
-  // 從預排匯入的項目（不管是哪個角色）都集中成同一張「預排項目」卡片，跟
-  // 手動新增/自動排班補的項目分開——要改預排的東西本來就是直接改班表，
-  // 不需要另外散在一堆各自的角色卡片裡，讓排班分頁的清單越拉越長。這張
-  // 卡片有自己的 sortOrder，一樣可以拖曳排序。
-  const preplanBundle = preplanEntries.length
-    ? [{kind:'preplanBundle', entries:preplanEntries, sortOrder: state.preplanBundleSortOrder??999}]
-    : [];
-  return [...catItems, ...miscGroups, ...preplanBundle].sort((a,b)=>a.sortOrder-b.sortOrder);
+    return {role, entries:miscByRole[role], preset, sortOrder: preset?(preset.sortOrder??999):999};
+  }).sort((a,b)=>a.sortOrder-b.sortOrder);
+  return {catItems, preplanEntries, miscRoleGroups};
 }
 function renderScheduleCards(){
-  return buildScheduleCardItems().map((item,i)=>
-    item.kind==='cat'? renderCategoryCard(item.cat, i)
-    : item.kind==='preplanBundle'? renderPreplanBundleCard(item.entries, i)
-    : renderMiscDutyCard(item.role, item.entries, item.preset, i)
-  ).join('');
+  const {catItems, preplanEntries, miscRoleGroups} = buildScheduleCardItems();
+  const catHTML = `<div id="scheduleCardsContainer">${catItems.map((item,i)=>renderCategoryCard(item.cat, i)).join('')}</div>`;
+  const preplanHTML = preplanEntries.length? renderPreplanBundleCard(preplanEntries) : '';
+  const miscHTML = renderMiscBundleCard(miscRoleGroups);
+  return catHTML + preplanHTML + miscHTML;
 }
 function wireScheduleCardsDrag(){
-  const items = buildScheduleCardItems();
-  wireDragReorder('scheduleCardsContainer', items, ()=>{
-    items.forEach((item,i)=>{
-      if(item.kind==='preplanBundle'){ state.preplanBundleSortOrder = i*10; return; }
-      const ref = item.kind==='cat'? item.cat : item.preset;
-      if(ref) ref.sortOrder = i*10;
-    });
+  const {catItems, miscRoleGroups} = buildScheduleCardItems();
+  wireDragReorder('scheduleCardsContainer', catItems, ()=>{
+    catItems.forEach((item,i)=>{ item.cat.sortOrder = i*10; });
+    saveState();
+    render();
+  });
+  // 第3區塊（其他勤務彙整卡）內部，各角色小節也能拖曳排序，改各自
+  // preset 的 sortOrder——跟區塊1是各自獨立的拖曳容器，互不影響。
+  wireDragReorder('miscBundleContainer', miscRoleGroups, ()=>{
+    miscRoleGroups.forEach((g,i)=>{ if(g.preset) g.preset.sortOrder = i*10; });
     saveState();
     render();
   });
@@ -8329,23 +8598,67 @@ function wireScheduleCardsDrag(){
       saveState();
     };
   });
+  const importBtn = document.getElementById('importDefaultMiscBtn');
+  if(importBtn) importBtn.onclick=()=>{
+    const n = importDefaultMiscDuties();
+    saveState();
+    if(n) showAlert(`已匯入 ${n} 項預設勤務，人選還是空的，自己排或按自動排班。今天不需要的項目可以直接刪除，不會再自己跑回來。`);
+    else showAlert('今天勤務設定裡的項目都已經存在了，沒有新的可以匯入。');
+    render();
+  };
 }
-/* 預排項目集中卡——內部照角色分組顯示（跟原本個別卡片看到的內容一樣），
-   只是外層包成同一張卡片。編輯方式不變，還是直接改這裡就是改班表本身。 */
-function renderPreplanBundleCard(entries, dragIdx){
+/* 減法思維：把「勤務設定」（state.dutyDefinitions 裡沒有連結到預排類型的
+   那些——話務/消防車/技工/夜督/日督/軍餐班等）材料化成今天的其他勤務記
+   錄，人選留空。已經有同名角色記錄的當天就跳過，不會重複匯入；當天刪掉
+   的項目，除非再按一次「匯入預設」，也不會自己補回來。 */
+function importDefaultMiscDuties(){
+  if(!state.misc[currentDate]) state.misc[currentDate]=[];
+  const defs = state.dutyDefinitions.filter(d=>!d.linkedPreplan);
+  let count=0;
+  defs.forEach(def=>{
+    const already = state.misc[currentDate].some(m=>m.role===def.name);
+    if(already) return;
+    const times = (def.times&&def.times.length)? def.times : [{start:'',end:''}];
+    const roles = def.isVehicle? ['駕駛','車長'] : (def.customRoles||undefined);
+    count += addMiscEntriesForToday(def.name, times, {restUntil:def.restUntil, roles});
+  });
+  return count;
+}
+/* 排班分頁第2區塊——預排項目集中卡：內部照角色分組顯示（跟原本個別卡片
+   看到的內容一樣），只是外層包成同一張卡片。編輯方式不變，還是直接改這
+   裡就是改班表本身。固定在第2區塊，不再需要拖曳把手。 */
+function renderPreplanBundleCard(entries){
   const byRole={};
   entries.forEach(m=>{ if(!byRole[m.role]) byRole[m.role]=[]; byRole[m.role].push(m); });
   const inner = Object.entries(byRole).map(([role,roleEntries])=>{
     const preset = state.miscPresets.find(p=>p.role===role);
     return renderMiscDutyCardInner(role, roleEntries, preset, false);
   }).join('<div class="divider"></div>');
-  return `<div class="card" draggable="true" data-drag-idx="${dragIdx}">
+  return `<div class="card">
     <div class="card-title-row">
-      <span data-drag-handle style="cursor:grab;color:var(--dim);padding-right:4px;touch-action:none">⠿</span>
       <h3 class="grow">📥 預排項目（${entries.length}筆）</h3>
     </div>
-    <div class="hint" style="margin-bottom:8px">這些是從預排匯入的，要改直接在這裡改就是改班表本身，跟手動新增的項目分開顯示避免清單太長。</div>
+    <div class="hint" style="margin-bottom:8px">這些是從預排匯入的，要改直接在這裡改就是改班表本身，跟其他勤務分開顯示避免清單太長。</div>
     ${inner}
+  </div>`;
+}
+/* 排班分頁第3區塊——其他勤務彙整卡（減法思維）：按「匯入預設」把「勤務
+   設定」裡定義好的項目一次帶進今天，人選留空；不需要的項目當天直接刪
+   除，不會自己跑回來。跟手動新增/自動排班補的項目共用同一張卡片，內部
+   一樣照角色分組顯示，且各角色小節仍然能拖曳排序（改各自 preset 的
+   sortOrder）——外層卡片本身固定在第3區塊、不能整張拖，但內容不是死的。
+   roleGroups 是 buildScheduleCardItems() 算好、已依 sortOrder 排序的
+   {role, entries, preset} 陣列。 */
+function renderMiscBundleCard(roleGroups){
+  const entryCount = roleGroups.reduce((n,g)=>n+g.entries.length, 0);
+  const inner = roleGroups.map((g,i)=>`<div data-drag-idx="${i}">${renderMiscDutyCardInner(g.role, g.entries, g.preset, true)}</div>`).join('<div class="divider"></div>');
+  return `<div class="card">
+    <div class="card-title-row">
+      <h3 class="grow">🗂 其他勤務${entryCount? `（${entryCount}筆）`:''}</h3>
+      <button class="ghost small" id="importDefaultMiscBtn">📥 匯入預設</button>
+    </div>
+    <div class="hint" style="margin-bottom:8px">按「匯入預設」把「勤務設定」裡定義好的項目一次帶進今天（人選留空，自己排或按自動排班），今天不需要的項目直接刪除就好，不會自己跑回來。長按項目左邊的 ⠿ 可拖曳調整順序。</div>
+    <div id="miscBundleContainer">${roleGroups.length? inner : '<div class="empty">今天還沒有其他勤務項目。</div>'}</div>
   </div>`;
 }
 /* 其他勤務卡片的實際內容（進度、標題、清單）——抽出來讓「預排項目」集中
@@ -8390,9 +8703,6 @@ function renderMiscDutyCardInner(role, entries, preset, standalone){
       </div>`;
   }).join('');
   return collapsibleCardHTML('misccard-'+role, title, inner, extraButtons);
-}
-function renderMiscDutyCard(role, entries, preset, dragIdx){
-  return `<div data-misc-card="${esc(role)}" data-drag-idx="${dragIdx}">${renderMiscDutyCardInner(role, entries, preset, true)}</div>`;
 }
 /* explains WHY a shift is still short of its "最少需要幾位士官" requirement —
    distinguishes "nobody at all is available for the empty slots" from
@@ -9019,6 +9329,88 @@ function openAdhocAddModal(personId, defaultStart, defaultEnd){
     }
     saveState(); modal.remove(); render();
   };
+}
+/* 臨時任務查詢：從最上面標題列的按鈕直接開，不用跳去「其他勤務」分頁，
+   因為臨時任務通常代表當下才突然需要人，要用最快速度抓到人。內容跟原本
+   在「其他勤務」分頁裡的卡片一樣，只是換成獨立彈窗，任何分頁都能開。 */
+function openAdhocQueryModal(){
+  const modal=document.createElement('div');
+  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:60;display:flex;align-items:flex-end;';
+  modal.innerHTML=`
+    <div class="sheet-inner">
+      <div class="section-title"><h2 style="margin:0">🚨 臨時任務查詢</h2><button class="ghost small" id="closeAdhocQueryModal">關閉</button></div>
+      <div class="hint" style="margin-bottom:8px">指定時間+需要人數/資格，列出可用人選</div>
+      <div class="row wrap" style="margin-bottom:8px">
+        <div class="grow"><label>需要開始的時間</label>${timeSelectHTML('ahTime', adhocQueryState.time||'10:00')}</div>
+      </div>
+      <div class="row wrap" style="margin-bottom:8px">
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px">
+          <input type="radio" name="ahMode" value="byRank" ${adhocQueryState.mode!=='anyCount'?'checked':''} style="width:auto"> 分官/士/兵指定人數
+        </label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px">
+          <input type="radio" name="ahMode" value="anyCount" ${adhocQueryState.mode==='anyCount'?'checked':''} style="width:auto"> 不分階級，只要湊到人數就好
+        </label>
+      </div>
+      <div class="row wrap" id="ahByRankRow" style="margin-bottom:8px;display:${adhocQueryState.mode==='anyCount'?'none':'flex'}">
+        <div class="grow"><label>需要軍官人數</label><input type="text" id="ahOfficer" value="${adhocQueryState.officer||0}"></div>
+        <div class="grow"><label>需要士官人數</label><input type="text" id="ahNCO" value="${adhocQueryState.nco||0}"></div>
+        <div class="grow"><label>需要士兵人數</label><input type="text" id="ahEnlisted" value="${adhocQueryState.enlisted||0}"></div>
+      </div>
+      <div class="row wrap" id="ahAnyCountRow" style="margin-bottom:8px;display:${adhocQueryState.mode==='anyCount'?'flex':'none'}">
+        <div class="grow"><label>需要人數</label><input type="text" id="ahAnyCount" value="${adhocQueryState.anyCount||0}"></div>
+      </div>
+      <div class="row wrap" style="margin-bottom:8px">
+        <div class="grow"><label>需要專長(選填)</label>
+          <select id="ahSkill">
+            <option value="">（不限）</option>
+            ${state.skillOptions.map(s=>`<option value="${esc(s)}" ${adhocQueryState.skill===s?'selected':''}>${esc(s)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="grow"><label>需要駕照(選填)</label>
+          <select id="ahLicense">
+            <option value="">（不限）</option>
+            ${['小型車','大型車','大客車'].map(l=>`<option value="${l}" ${adhocQueryState.license===l?'selected':''}>${l}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+      <label style="display:flex;align-items:center;gap:6px;font-size:13px;margin-bottom:8px">
+        <input type="checkbox" id="ahNeedMedCert" style="width:auto" ${adhocQueryState.needMedCert?'checked':''}> 需具備救護證照(EMT或醫生證書)
+      </label>
+      <button class="primary" id="ahQueryBtn" style="width:100%;margin-bottom:8px">查詢可用人選</button>
+      <div id="ahResult">${adhocQueryState.hasRun? renderAdhocQueryResult():''}</div>
+      <div class="hint">查到的人選旁邊可以直接按「加入」，選擇建立新的其他勤務項目或加到今天已有的項目。</div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  document.getElementById('closeAdhocQueryModal').onclick=()=>modal.remove();
+  function wireAdhocAddButtons(){
+    document.querySelectorAll('[data-adhoc-add]').forEach(b=>{
+      b.onclick=()=>openAdhocAddModal(b.dataset.adhocAdd, b.dataset.adhocStart, b.dataset.adhocEnd);
+    });
+  }
+  document.getElementById('ahQueryBtn').onclick=()=>{
+    adhocQueryState.time=getTimeSelectValue('ahTime');
+    adhocQueryState.mode=document.querySelector('input[name="ahMode"]:checked').value;
+    adhocQueryState.officer=Number(document.getElementById('ahOfficer').value)||0;
+    adhocQueryState.nco=Number(document.getElementById('ahNCO').value)||0;
+    adhocQueryState.enlisted=Number(document.getElementById('ahEnlisted').value)||0;
+    adhocQueryState.anyCount=Number(document.getElementById('ahAnyCount').value)||0;
+    adhocQueryState.skill=document.getElementById('ahSkill').value;
+    adhocQueryState.license=document.getElementById('ahLicense').value;
+    adhocQueryState.needMedCert=document.getElementById('ahNeedMedCert').checked;
+    runAdhocQuery();
+    const resultEl = document.getElementById('ahResult');
+    resultEl.innerHTML = renderAdhocQueryResult();
+    wireAdhocAddButtons();
+  };
+  document.querySelectorAll('input[name="ahMode"]').forEach(r=>{
+    r.addEventListener('change', ()=>{
+      const mode = document.querySelector('input[name="ahMode"]:checked').value;
+      document.getElementById('ahByRankRow').style.display = mode==='anyCount'? 'none':'flex';
+      document.getElementById('ahAnyCountRow').style.display = mode==='anyCount'? 'flex':'none';
+    });
+  });
+  wireAdhocAddButtons();
 }
 /* 把一個項目(可能好幾個時段)材料化成今天的其他勤務——常用項目pill點下去、
    「新增常用項目」建好範本後自動套用到今天、還有「僅新增一次」都共用這
@@ -9658,146 +10050,6 @@ function wireMiscCardEvents(){
   });
   wireMiscInlineEditors();
 }
-function renderMisc(){
-  const list = state.misc[currentDate]||[];
-  const adhocQueryHTML = collapsibleCardHTML('adhocQuery', `臨時任務查詢（指定時間+需要人數/資格，列出可用人選）`, `
-      <div class="row wrap" style="margin-bottom:8px">
-        <div class="grow"><label>需要開始的時間</label>${timeSelectHTML('ahTime', adhocQueryState.time||'10:00')}</div>
-      </div>
-      <div class="row wrap" style="margin-bottom:8px">
-        <label style="display:flex;align-items:center;gap:6px;font-size:13px">
-          <input type="radio" name="ahMode" value="byRank" ${adhocQueryState.mode!=='anyCount'?'checked':''} style="width:auto"> 分官/士/兵指定人數
-        </label>
-        <label style="display:flex;align-items:center;gap:6px;font-size:13px">
-          <input type="radio" name="ahMode" value="anyCount" ${adhocQueryState.mode==='anyCount'?'checked':''} style="width:auto"> 不分階級，只要湊到人數就好
-        </label>
-      </div>
-      <div class="row wrap" id="ahByRankRow" style="margin-bottom:8px;display:${adhocQueryState.mode==='anyCount'?'none':'flex'}">
-        <div class="grow"><label>需要軍官人數</label><input type="text" id="ahOfficer" value="${adhocQueryState.officer||0}"></div>
-        <div class="grow"><label>需要士官人數</label><input type="text" id="ahNCO" value="${adhocQueryState.nco||0}"></div>
-        <div class="grow"><label>需要士兵人數</label><input type="text" id="ahEnlisted" value="${adhocQueryState.enlisted||0}"></div>
-      </div>
-      <div class="row wrap" id="ahAnyCountRow" style="margin-bottom:8px;display:${adhocQueryState.mode==='anyCount'?'flex':'none'}">
-        <div class="grow"><label>需要人數</label><input type="text" id="ahAnyCount" value="${adhocQueryState.anyCount||0}"></div>
-      </div>
-      <div class="row wrap" style="margin-bottom:8px">
-        <div class="grow"><label>需要專長(選填)</label>
-          <select id="ahSkill">
-            <option value="">（不限）</option>
-            ${state.skillOptions.map(s=>`<option value="${esc(s)}" ${adhocQueryState.skill===s?'selected':''}>${esc(s)}</option>`).join('')}
-          </select>
-        </div>
-        <div class="grow"><label>需要駕照(選填)</label>
-          <select id="ahLicense">
-            <option value="">（不限）</option>
-            ${['小型車','大型車','大客車'].map(l=>`<option value="${l}" ${adhocQueryState.license===l?'selected':''}>${l}</option>`).join('')}
-          </select>
-        </div>
-      </div>
-      <label style="display:flex;align-items:center;gap:6px;font-size:13px;margin-bottom:8px">
-        <input type="checkbox" id="ahNeedMedCert" style="width:auto" ${adhocQueryState.needMedCert?'checked':''}> 需具備救護證照(EMT或醫生證書)
-      </label>
-      <button class="primary" id="ahQueryBtn" style="width:100%;margin-bottom:8px">查詢可用人選</button>
-      <div id="ahResult">${adhocQueryState.hasRun? renderAdhocQueryResult():''}</div>
-      <div class="hint">查到的人選旁邊可以直接按「加入」，選擇建立新的其他勤務項目或加到今天已有的項目，不用再跳去「其他勤務」分頁重填一次。</div>
-    `);
-  const miscPresetsHTML = collapsibleCardHTML('miscPresets', '常用項目（點一下自動帶入名稱、時間與角色）', `
-      <div class="row wrap">
-        ${state.miscPresets.map((mp,i)=>({mp,i})).sort((a,b)=>(b.mp.fixed?1:0)-(a.mp.fixed?1:0)).map(({mp,i})=>`<span class="pill-btn" style="cursor:pointer" data-preset="${i}">${mp.fixed?'📌':''}${esc(mp.role)} ${presetTimes(mp).map(t=>t.start+'-'+t.end).join('、')} <span data-edit-preset="${i}" style="margin-left:4px">✎</span></span>`).join('')}
-      </div>
-      <div class="hint" style="margin-bottom:8px">📌代表「固定項目」：點旁邊的 ✎ 可編輯名稱/時間/固定與否，或刪除。</div>
-      <div class="divider"></div>
-      <button class="ghost small" id="openAddPresetModal">＋新增常用項目</button>
-    `);
-  const miscTodayHTML = collapsibleCardHTML('miscToday', `${fmtDate(currentDate)} 其他勤務（${list.length}筆・共${new Set(list.flatMap(m=>(m.personIds||[]).filter(Boolean))).size}人）`, `
-      ${list.length===0? `<div class="empty">尚未新增</div>` : [...list].sort((a,b)=>{
-        const pa=state.miscPresets.find(p=>p.role===a.role), pb=state.miscPresets.find(p=>p.role===b.role);
-        return (pa?(pa.sortOrder??999):999) - (pb?(pb.sortOrder??999):999);
-      }).map(m=>{
-        if(m.id===miscInlineEditId) return miscEntryEditorHTML(m);
-        const issues = validateMiscEntry(m);
-        const nomTag2 = pid=> (m.nominalIds||[]).includes(pid)? ' <span class="hint">(掛)</span>' : '';
-        const peopleLabel = m.roles
-          ? m.roles.map((r,i)=>`${r}：${m.personIds[i]? esc(personName(m.personIds[i]))+nomTag2(m.personIds[i]) : ((m.lockedSlots&&m.lockedSlots[i])? '🔒保留空白':'（未指派）')}`).join('　')
-          : (m.personIds.map(pid=>esc(personName(pid))+nomTag2(pid)).join('、')||'（未指派）');
-        return `
-        <div class="list-item" style="flex-direction:column;align-items:stretch">
-          <div class="row">
-            <span class="grow"><b>${esc(m.role)}</b>${m.start&&m.end? ` (${m.start}-${m.end})`:''}：${peopleLabel}</span>
-            <button class="ghost small" data-edit-misc="${m.id}">編輯</button>
-            <button class="ghost small danger" data-del-misc="${m.id}">刪除</button>
-          </div>
-          ${issues.map(i=>`<div class="badge-issue">⚠️ ${esc(i)}</div>`).join('')}
-          ${miscEntryConflictsDetailed(m, currentDate).map(c=>`<div class="badge-issue row" style="align-items:center">⚠️ ${esc(c.message)}${c.isHardBlock? `<button class="ghost small" style="margin-left:auto" data-confirm-conflict="${m.id}" data-confirm-conflict-pid="${c.pid}">暫停這次</button>`:''}<button class="ghost small" style="${c.isHardBlock?'':'margin-left:auto'}" data-mark-nominal="${m.id}" data-mark-nominal-pid="${c.pid}">標為掛名</button></div>`).join('')}
-        </div>`;
-      }).join('')}
-    `);
-  const cardDefs = [
-    {key:'adhocQuery', html:adhocQueryHTML},
-    {key:'miscPresets', html:miscPresetsHTML},
-    {key:'miscToday', html:miscTodayHTML},
-  ];
-  app.innerHTML = renderCardList('miscCardsContainer', 'misc', cardDefs) + `
-    <div class="hint">此區用於不需6小時規則的項目，如：技工、採買、愛心便當、消防車、救護車、話務、督伙、開關門、健身房簽到等，依你們單位每日需要自行新增，也可以直接點上方常用項目快速帶入。採買/愛心便當/消防車/救護車需分別指定駕駛與車長：消防車駕駛需大型車或大客車駕照，救護車駕駛需小型車/大型車/大客車其中一種且救護車車長與駕駛都需具備EMT-1/EMT-2/EMT-P或醫生證書，其餘車輛駕駛至少需小型車駕照；車長需士官以上且階級不低於駕駛，選單會把符合資格的人排到最上面。話務需至少小型車駕照。</div>
-  `;
-  app.querySelectorAll('[data-preset]').forEach(b=>{
-    b.onclick=(ev)=>{
-      if(ev.target.closest('[data-edit-preset]')) return;
-      const mp = state.miscPresets[Number(b.dataset.preset)];
-      const times = presetTimes(mp);
-      const doAdd=()=>{
-        const n = addMiscEntriesForToday(mp.role, times, {restUntil:mp.restUntil, roles:mp.roles, requiredLicenses:mp.requiredLicenses, requiredMedCert:mp.requiredMedCert, requiredSkills:mp.requiredSkills});
-        collapseState['miscToday']=true;
-        autoAssignMiscForDate(currentDate);
-        saveState(); render();
-        if(n===0) showAlert(`「${mp.role}」今天已經都建過了，沒有新增。`);
-      };
-      if(times.length>1){
-        showConfirm(`要一次建立「${mp.role}」的全部 ${times.length} 個時段嗎？（${times.map(t=>t.start+'-'+t.end).join('、')}）`, doAdd);
-        return;
-      }
-      doAdd();
-    };
-  });
-  app.querySelectorAll('[data-edit-preset]').forEach(x=>{
-    x.onclick=(ev)=>{
-      ev.stopPropagation();
-      openMiscPresetModal(Number(x.dataset.editPreset));
-    };
-  });
-  document.getElementById('ahQueryBtn').onclick=()=>{
-    adhocQueryState.time=getTimeSelectValue('ahTime');
-    adhocQueryState.mode=document.querySelector('input[name="ahMode"]:checked').value;
-    adhocQueryState.officer=Number(document.getElementById('ahOfficer').value)||0;
-    adhocQueryState.nco=Number(document.getElementById('ahNCO').value)||0;
-    adhocQueryState.enlisted=Number(document.getElementById('ahEnlisted').value)||0;
-    adhocQueryState.anyCount=Number(document.getElementById('ahAnyCount').value)||0;
-    adhocQueryState.skill=document.getElementById('ahSkill').value;
-    adhocQueryState.license=document.getElementById('ahLicense').value;
-    adhocQueryState.needMedCert=document.getElementById('ahNeedMedCert').checked;
-    runAdhocQuery();
-    const resultEl = document.getElementById('ahResult');
-    resultEl.innerHTML = renderAdhocQueryResult();
-    wireAdhocAddButtons();
-  };
-  document.querySelectorAll('input[name="ahMode"]').forEach(r=>{
-    r.addEventListener('change', ()=>{
-      const mode = document.querySelector('input[name="ahMode"]:checked').value;
-      document.getElementById('ahByRankRow').style.display = mode==='anyCount'? 'none':'flex';
-      document.getElementById('ahAnyCountRow').style.display = mode==='anyCount'? 'flex':'none';
-    });
-  });
-  function wireAdhocAddButtons(){
-    document.querySelectorAll('[data-adhoc-add]').forEach(b=>{
-      b.onclick=()=>openAdhocAddModal(b.dataset.adhocAdd, b.dataset.adhocStart, b.dataset.adhocEnd);
-    });
-  }
-  wireAdhocAddButtons();
-  document.getElementById('openAddPresetModal').onclick=()=>openMiscPresetModal();
-  wireMiscCardEvents();
-  wireCardListDrag('miscCardsContainer', 'misc', cardDefs);
-}
-
 /* ---------------- init ---------------- */
 render();
 /* 標題區的實際高度量出來寫進 --banner-h，這樣彈窗/抽屜/內容區要讓出的空間
