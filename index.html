@@ -151,7 +151,7 @@ textarea{min-height:50px;resize:vertical;}
   <div class="topbar-main" style="flex-direction:column;align-items:stretch;gap:6px">
     <div class="row" style="gap:4px;align-items:center">
       <button class="ghost small" id="preplanDrawerBtn" title="預排">☰</button>
-      <h1 id="pageTitle" class="grow" style="margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">🌟 衛哨排班系統 <span class="muted" style="font-size:10px;font-weight:400">v141</span></h1>
+      <h1 id="pageTitle" class="grow" style="margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">🌟 衛哨排班系統 <span class="muted" style="font-size:10px;font-weight:400">v142</span></h1>
       <button class="ghost small" id="adhocQueryTopBtn" title="臨時任務查詢">🚨</button>
       <button class="ghost small" id="clearRangeBtn" title="清除一段時間">🧹</button>
       <button class="ghost small" id="exportBtn" title="匯出">📤</button>
@@ -575,6 +575,8 @@ function driverQualificationIssues(person, preset){
   (preset.requiredSkills||[]).forEach(sk=>{
     if(!(person.skills||[]).includes(sk)) issues.push(`需具備${sk}專長`);
   });
+  const reqRanks=preset.requiredRanks||[];
+  if(reqRanks.length && !reqRanks.includes(person.rank)) issues.push(`需為${reqRanks.join('或')}`);
   return issues;
 }
 /* 車長 eligibility: NCO+ outranking (or equal to) the driver (if one's
@@ -588,6 +590,7 @@ function chiefEligible(person, preset, driver){
   if(preset && (preset.chiefRequiredMedCert) && !person.medCert) return false;
   if(preset && (preset.chiefRequiredLicenses||[]).length && !preset.chiefRequiredLicenses.some(l=>licenseCovers(person.license, l))) return false;
   if(preset && (preset.chiefRequiredSkills||[]).some(sk=>!(person.skills||[]).includes(sk))) return false;
+  if(preset && (preset.chiefRequiredRanks||[]).length && !preset.chiefRequiredRanks.includes(person.rank)) return false;
   return true;
 }
 /* validation for structured misc entries (entry.roles present): 車長/駕駛 pairs
@@ -653,6 +656,7 @@ function validateMiscEntry(entry){
         if((preset.requiredLicenses||[]).length) reqParts.push('駕照：'+preset.requiredLicenses.join('或'));
         if(preset.requiredMedCert) reqParts.push('救護證照(EMT或醫生證書)');
         if((preset.requiredSkills||[]).length) reqParts.push('專長：'+preset.requiredSkills.join('、'));
+        if((preset.requiredRanks||[]).length) reqParts.push('階級：'+preset.requiredRanks.join('或'));
         return [`沒有符合需求（${reqParts.join('；')}）的人員可派，可手動指定或到「常用項目」調整資格要求`];
       }
       return [`目前未指派（自動排班找不到符合資格且有空的人，可能都在忙其他勤務或休假，可手動指定或稍後再試）`];
@@ -744,6 +748,8 @@ state.miscPresets.forEach(p=>{
   if(p.chiefRequiredSkills===undefined) p.chiefRequiredSkills = [];
   if(p.chiefRequiredLicenses===undefined) p.chiefRequiredLicenses = [];
   if(p.chiefRequiredMedCert===undefined) p.chiefRequiredMedCert = false;
+  if(p.requiredRanks===undefined) p.requiredRanks = [];
+  if(p.chiefRequiredRanks===undefined) p.chiefRequiredRanks = [];
   if(p.rankPriority===undefined) p.rankPriority = null; // null = default rank order (RANK_DEFS)
   /* presets saved before multi-timeslot support (`times: [{start,end}]`)
      stored a single top-level start/end instead — convert those in place so
@@ -1066,9 +1072,11 @@ if(!state.dutyDefinitions){
       requiredLicenses: preset?[...(preset.requiredLicenses||[])]:[],
       requiredMedCert: preset?!!preset.requiredMedCert:false,
       requiredSkills: [...new Set([...(preset?preset.requiredSkills||[]:[]), ...extraSkills])],
+      requiredRanks: preset?[...(preset.requiredRanks||[])]:[],
       chiefRequiredLicenses: preset?[...(preset.chiefRequiredLicenses||[])]:[],
       chiefRequiredMedCert: preset?!!preset.chiefRequiredMedCert:false,
       chiefRequiredSkills: preset?[...(preset.chiefRequiredSkills||[])]:[],
+      chiefRequiredRanks: preset?[...(preset.chiefRequiredRanks||[])]:[],
       requiredCount: preset&&preset.requiredCount!==undefined?preset.requiredCount:null,
       restUntil: preset?preset.restUntil||'':'',
       times: preset?preset.times.map(x=>({...x})):[],
@@ -1086,7 +1094,8 @@ if(!state.dutyDefinitions){
       key:c.key, name:c.name, icon:c.icon||'📋', mode:'people', hint:c.hint||'（自訂項目）',
       isVehicle:false, requiredLicenses:[], requiredMedCert:false,
       requiredSkills:[...((state.unitRules.preplanSkillReqs&&state.unitRules.preplanSkillReqs[c.key])||[])],
-      chiefRequiredLicenses:[], chiefRequiredMedCert:false, chiefRequiredSkills:[],
+      requiredRanks:[],
+      chiefRequiredLicenses:[], chiefRequiredMedCert:false, chiefRequiredSkills:[], chiefRequiredRanks:[],
       requiredCount:null, restUntil:'', times:[], sortOrder:900,
       excludeFromExport:false, isSentry:false, isAllDayAway:false, standbyMode:'off',
       presetRole:c.name, builtin:false, deletable:true, linkedPreplan:true,
@@ -1104,9 +1113,9 @@ if(!state.dutyDefinitions){
       isVehicle: isDriverChief(p.roles),
       customRoles: (p.roles && !isDriverChief(p.roles))? [...p.roles] : null,
       requiredLicenses:[...(p.requiredLicenses||[])], requiredMedCert:!!p.requiredMedCert,
-      requiredSkills:[...(p.requiredSkills||[])],
+      requiredSkills:[...(p.requiredSkills||[])], requiredRanks:[...(p.requiredRanks||[])],
       chiefRequiredLicenses:[...(p.chiefRequiredLicenses||[])], chiefRequiredMedCert:!!p.chiefRequiredMedCert,
-      chiefRequiredSkills:[...(p.chiefRequiredSkills||[])],
+      chiefRequiredSkills:[...(p.chiefRequiredSkills||[])], chiefRequiredRanks:[...(p.chiefRequiredRanks||[])],
       requiredCount: p.requiredCount!==undefined?p.requiredCount:null,
       restUntil:p.restUntil||'', times:p.times.map(x=>({...x})),
       sortOrder:p.sortOrder!==undefined?p.sortOrder:999,
@@ -1115,6 +1124,14 @@ if(!state.dutyDefinitions){
     });
   });
 }
+// 需求階級是後來加的欄位——不管dutyDefinitions是剛剛才第一次建立、還是
+// 舊資料已經存在很久，都統一補上空陣列(不限)，避免舊資料裡沒有這個欄位
+// 導致UI的checkbox畫不出勾選狀態、或driverQualificationIssues/chiefEligible
+// 讀到undefined.includes()而出錯。
+state.dutyDefinitions.forEach(d=>{
+  if(d.requiredRanks===undefined) d.requiredRanks=[];
+  if(d.chiefRequiredRanks===undefined) d.chiefRequiredRanks=[];
+});
 /* 存一筆崗位定義的變更後呼叫——寫回 miscPresets（讀取端唯一在乎的地
    方）、如果有連到預排類型就順便更新 BUILTIN_PREPLAN_TYPES/自訂類型的
    名稱圖示說明並 rebuildPreplanTypes()，專長要求同時寫進 preplanSkillReqs
@@ -1127,7 +1144,9 @@ function syncDutyDefinitionToLegacy(def){
     times: def.times.map(x=>({...x})),
     restUntil: def.restUntil||'',
     requiredLicenses:[...def.requiredLicenses], requiredMedCert:!!def.requiredMedCert, requiredSkills:[...def.requiredSkills],
+    requiredRanks:[...(def.requiredRanks||[])],
     chiefRequiredLicenses:[...def.chiefRequiredLicenses], chiefRequiredMedCert:!!def.chiefRequiredMedCert, chiefRequiredSkills:[...def.chiefRequiredSkills],
+    chiefRequiredRanks:[...(def.chiefRequiredRanks||[])],
     requiredCount: def.requiredCount, rankPriority: null,
     sortOrder: def.sortOrder, excludeFromExport: def.excludeFromExport,
     isSentry: def.isSentry, isAllDayAway: def.isAllDayAway, standbyMode: def.standbyMode,
@@ -2347,7 +2366,7 @@ function openUnitRulesModal(){
       </div>`;
     modal.innerHTML=`
       <div class="section-title"><button class="ghost small" id="urBack">← 返回</button><h2 style="margin:0">崗位定義</h2></div>
-      <div class="hint" style="margin-bottom:8px">每個崗位需要什麼駕照、專長、人數、時段、補休，統一在這裡管理，隨時可改，改了立刻套用到預排跟其他勤務兩邊。挑人時，勾選的駕照/專長/證照會拿來篩選跟排序；不符合的人通常還是選得到，只是會排到後面、加警告文字，不會直接擋死（人力有限時常常還是得排）。</div>
+      <div class="hint" style="margin-bottom:8px">每個崗位需要什麼駕照、專長、階級、人數、時段、補休，統一在這裡管理，隨時可改，改了立刻套用到預排跟其他勤務兩邊。挑人時，勾選的駕照/專長/證照/需求階級會拿來篩選跟排序；不符合的人通常還是選得到，只是會排到後面、加警告文字，不會直接擋死（人力有限時常常還是得排）。車長的額外需求階級是例外——那是加嚴在「車長需士官以上且不低於駕駛」這條原本就有的硬性規則上，不符合會直接不列入車長候選。</div>
       <div class="divider"></div>
       <h3>已連結預排類型的崗位</h3>
       ${linked.map(row).join('')}
@@ -2385,8 +2404,8 @@ function openUnitRulesModal(){
       const key = (asPreplan? 'custom_':'misc_')+uid();
       const def = {
         key, name, icon, mode: isVehicle?'roles':'people', hint,
-        isVehicle, requiredLicenses:[], requiredMedCert:false, requiredSkills:[],
-        chiefRequiredLicenses:[], chiefRequiredMedCert:false, chiefRequiredSkills:[],
+        isVehicle, requiredLicenses:[], requiredMedCert:false, requiredSkills:[], requiredRanks:[],
+        chiefRequiredLicenses:[], chiefRequiredMedCert:false, chiefRequiredSkills:[], chiefRequiredRanks:[],
         requiredCount:null, restUntil:'', times:[], sortOrder: 900+state.dutyDefinitions.length,
         excludeFromExport:false, isSentry:false, isAllDayAway:false, standbyMode:'off',
         presetRole:name, builtin:false, deletable:true, linkedPreplan:asPreplan,
@@ -2407,6 +2426,13 @@ function openUnitRulesModal(){
     const skillCbs=(field,idPrefix)=>state.skillOptions.length? state.skillOptions.map(s=>`<label style="display:flex;align-items:center;gap:4px;font-size:12px">
         <input type="checkbox" class="${idPrefix}-skill-cb" value="${esc(s)}" style="width:auto" ${def[field].includes(s)?'checked':''}>${esc(s)}
       </label>`).join('') : `<div class="empty">尚未設定任何專長選項（在人員分頁的專長設定新增）</div>`;
+    const rankCbs=(field,idPrefix)=>['軍官','士官','士兵'].map(g=>`
+        <div class="hint" style="margin:2px 0 0;font-size:11px">${g}</div>
+        <div class="row wrap" style="gap:10px;margin-bottom:2px">
+          ${RANK_DEFS.filter(r=>r.cat===g).map(r=>`<label style="display:flex;align-items:center;gap:4px;font-size:12px">
+            <input type="checkbox" class="${idPrefix}-rank-cb" value="${r.rank}" style="width:auto" ${(def[field]||[]).includes(r.rank)?'checked':''}>${r.rank}
+          </label>`).join('')}
+        </div>`).join('');
     const t0 = def.times[0]||{start:'',end:''};
     modal.innerHTML=`
       <div class="section-title"><button class="ghost small" id="urBack">← 返回</button><h2 style="margin:0">${esc(def.icon)} ${esc(def.name)}</h2></div>
@@ -2440,19 +2466,25 @@ function openUnitRulesModal(){
         <label style="display:flex;align-items:center;gap:6px;font-size:12px;margin-bottom:4px">
           <input type="checkbox" id="ddeDriverMedCert" style="width:auto" ${def.requiredMedCert?'checked':''}>需具備救護證照(EMT或醫生證書)
         </label>
-        <div class="row wrap" style="gap:10px;margin-bottom:10px">${skillCbs('requiredSkills','ddeDriver')}</div>
+        <div class="row wrap" style="gap:10px;margin-bottom:6px">${skillCbs('requiredSkills','ddeDriver')}</div>
+        <label style="font-size:12px;color:var(--text);margin-bottom:2px">需求階級(可複選，不選代表不限)</label>
+        <div style="margin-bottom:10px">${rankCbs('requiredRanks','ddeDriver')}</div>
         <div class="hint" style="margin:4px 0"><b>車長</b></div>
         <div class="row wrap" style="gap:10px;margin-bottom:4px">${licenseCbs('chiefRequiredLicenses','ddeChief')}</div>
         <label style="display:flex;align-items:center;gap:6px;font-size:12px;margin-bottom:4px">
           <input type="checkbox" id="ddeChiefMedCert" style="width:auto" ${def.chiefRequiredMedCert?'checked':''}>需具備救護證照(EMT或醫生證書)
         </label>
-        <div class="row wrap" style="gap:10px;margin-bottom:10px">${skillCbs('chiefRequiredSkills','ddeChief')}</div>
+        <div class="row wrap" style="gap:10px;margin-bottom:6px">${skillCbs('chiefRequiredSkills','ddeChief')}</div>
+        <label style="font-size:12px;color:var(--text);margin-bottom:2px">額外需求階級(可複選，不選代表只套用「車長需士官以上且不低於駕駛」的原本規則)</label>
+        <div style="margin-bottom:10px">${rankCbs('chiefRequiredRanks','ddeChief')}</div>
       ` : `
         <div class="row wrap" style="gap:10px;margin-bottom:4px">${licenseCbs('requiredLicenses','ddeDriver')}</div>
         <label style="display:flex;align-items:center;gap:6px;font-size:12px;margin-bottom:4px">
           <input type="checkbox" id="ddeSoloMedCert" style="width:auto" ${def.requiredMedCert?'checked':''}>需具備救護證照(EMT或醫生證書)
         </label>
-        <div class="row wrap" style="gap:10px;margin-bottom:10px">${skillCbs('requiredSkills','ddeDriver')}</div>
+        <div class="row wrap" style="gap:10px;margin-bottom:6px">${skillCbs('requiredSkills','ddeDriver')}</div>
+        <label style="font-size:12px;color:var(--text);margin-bottom:2px">需求階級(可複選，不選代表不限)</label>
+        <div style="margin-bottom:10px">${rankCbs('requiredRanks','ddeDriver')}</div>
       `;
     };
     renderReqBlock(def.isVehicle);
@@ -2469,14 +2501,16 @@ function openUnitRulesModal(){
       def.isVehicle = vehicleCb? vehicleCb.checked : def.isVehicle;
       def.requiredLicenses = [...modal.querySelectorAll('.ddeDriver-license-cb:checked')].map(cb=>cb.value);
       def.requiredSkills = [...modal.querySelectorAll('.ddeDriver-skill-cb:checked')].map(cb=>cb.value);
+      def.requiredRanks = [...modal.querySelectorAll('.ddeDriver-rank-cb:checked')].map(cb=>cb.value);
       if(def.isVehicle){
         def.chiefRequiredLicenses = [...modal.querySelectorAll('.ddeChief-license-cb:checked')].map(cb=>cb.value);
         def.chiefRequiredSkills = [...modal.querySelectorAll('.ddeChief-skill-cb:checked')].map(cb=>cb.value);
         def.chiefRequiredMedCert = !!document.getElementById('ddeChiefMedCert')?.checked;
         def.requiredMedCert = !!document.getElementById('ddeDriverMedCert')?.checked;
+        def.chiefRequiredRanks = [...modal.querySelectorAll('.ddeChief-rank-cb:checked')].map(cb=>cb.value);
       } else {
         def.requiredMedCert = !!document.getElementById('ddeSoloMedCert')?.checked;
-        def.chiefRequiredLicenses=[]; def.chiefRequiredSkills=[]; def.chiefRequiredMedCert=false;
+        def.chiefRequiredLicenses=[]; def.chiefRequiredSkills=[]; def.chiefRequiredMedCert=false; def.chiefRequiredRanks=[];
       }
       const countVal = document.getElementById('ddeCount').value.trim();
       def.requiredCount = countVal? Math.max(1, parseInt(countVal,10)||1) : null;
