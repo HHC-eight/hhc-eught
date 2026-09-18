@@ -151,7 +151,7 @@ textarea{min-height:50px;resize:vertical;}
   <div class="topbar-main" style="flex-direction:column;align-items:stretch;gap:6px">
     <div class="row" style="gap:4px;align-items:center">
       <button class="ghost small" id="preplanDrawerBtn" title="預排">☰</button>
-      <h1 id="pageTitle" class="grow" style="margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">🌟 衛哨排班系統 <span class="muted" style="font-size:10px;font-weight:400">v146</span></h1>
+      <h1 id="pageTitle" class="grow" style="margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">🌟 衛哨排班系統 <span class="muted" style="font-size:10px;font-weight:400">v148</span></h1>
       <button class="ghost small" id="adhocQueryTopBtn" title="臨時任務查詢">🚨</button>
       <button class="ghost small" id="clearRangeBtn" title="清除一段時間">🧹</button>
       <button class="ghost small" id="exportBtn" title="匯出">📤</button>
@@ -7324,6 +7324,101 @@ function personDutySummary(personId, date){
   });
   return parts;
 }
+/* HH:MM -> HHMM（軍中慣用的無冒號時間格式），用在下面的「當天事故」時間軸 */
+function hhmm(t){ return (t||'').replace(':',''); }
+/* 「全部人員各排組人數」卡片裡的即時事故時間軸：把長期事故、休假/收假緩
+   衝、一般有時段的事故記錄（開會/洽公/體檢…）、衛哨排班、其他勤務，全部
+   混在一起依時間先後排成一行，格式仿照使用者範例「0730收假 0800-1000
+   開會 1400-1600洽公 1800-2400休假」。跟personDutySummary()很像，但多納
+   入了一般有時段的state.unavail事故記錄(這是personDutySummary原本沒有
+   涵蓋的)，而且回傳前會依時間排序，personDutySummary不會。 */
+function personTimelineParts(personId, date){
+  const parts=[];
+  const person = state.personnel.find(p=>p.id===personId);
+  if(person){
+    const lt = effectiveLongTerm(person, date);
+    if(lt.mode==='allday' && lt.inCamp!==false) parts.push({sortMin:-2, text:`長期事故：${lt.reason||'全天不可排'}`});
+    else if(lt.mode==='range' && lt.start && lt.end) parts.push({sortMin:toMin(lt.start), text:`長期事故：每天 ${hhmm(lt.start)}-${hhmm(lt.end)} 不可排${lt.reason?`（${lt.reason}）`:''}`});
+  }
+  const buf = state.unitRules.leaveBuffer;
+  (state.unavail[date]||[]).filter(u=>u.personId===personId).forEach(u=>{
+    if(isLeaveBufferEntry(u)){
+      if(u.end==='24:00') parts.push({sortMin:toMin(u.start), text:`${hhmm(u.start)}-2400休假${u.start===buf.honorStart?'（榮譽假）':''}`});
+      else if(u.start==='00:00') parts.push({sortMin:toMin(u.end), text:`${hhmm(u.end)}收假`});
+      return;
+    }
+    if(u.allDay) parts.push({sortMin:-1, text:`整天${u.reason||'事故'}`});
+    else if(u.start && u.end) parts.push({sortMin:toMin(u.start), text:`${hhmm(u.start)}-${hhmm(u.end)}${u.reason||'事故'}`});
+  });
+  const dayAssign = state.assign[date]||{};
+  state.categories.forEach(cat=>{
+    const catAssign = dayAssign[cat.id]||{};
+    effectiveShifts(cat, date).forEach(sft=>{
+      if((catAssign[sft.id]||[]).includes(personId)){
+        const label = sft.label || `${hhmm(sft.start)}-${hhmm(sft.end)}`;
+        parts.push({sortMin:toMin(sft.start), text:`${cat.name} ${label}`});
+      }
+    });
+  });
+  (state.misc[date]||[]).forEach(m=>{
+    if((m.personIds||[]).includes(personId)){
+      const preset = presetForEntry(m);
+      const awayTag = preset && preset.isAllDayAway ? '🚗營外・' : '';
+      const timeText = m.start && m.end? ` ${hhmm(m.start)}-${hhmm(m.end)}` : '';
+      parts.push({sortMin: m.start? toMin(m.start) : -1, text:`${awayTag}${m.role}${timeText}`});
+    }
+  });
+  parts.sort((a,b)=>a.sortMin-b.sortMin);
+  return parts.map(p=>p.text);
+}
+function personTimelineLine(p, date){
+  const parts = personTimelineParts(p.id, date);
+  return parts.length? parts.join(' ') : '無排班';
+}
+let groupTimelineFilterState={search:'',group:''};
+function groupTimelineFilterFn(p){
+  if(groupTimelineFilterState.search && !p.name.includes(groupTimelineFilterState.search)) return false;
+  if(groupTimelineFilterState.group==='__none' && p.group) return false;
+  if(groupTimelineFilterState.group && groupTimelineFilterState.group!=='__none' && p.group!==groupTimelineFilterState.group) return false;
+  return true;
+}
+function renderGroupTimelineList(date){
+  const activePersonnel = state.personnel.filter(p=>!isDeparted(p)).filter(groupTimelineFilterFn);
+  if(!activePersonnel.length) return `<div class="empty">找不到符合條件的人</div>`;
+  const byGroup={};
+  activePersonnel.forEach(p=>{ const g=p.group||'未分組'; if(!byGroup[g]) byGroup[g]=[]; byGroup[g].push(p); });
+  return Object.entries(byGroup).sort((a,b)=>groupIndex(a[0])-groupIndex(b[0])).map(([g,members])=>{
+    const sorted = members.slice().sort((a,b)=>rankIndex(a.rank)-rankIndex(b.rank));
+    const rows = sorted.map(p=>`<div class="muted" style="margin-bottom:3px">・${esc(p.name)}（${p.rank}）：${esc(personTimelineLine(p,date))}</div>`).join('');
+    return collapsibleCardHTML('groupTimeline-'+g, `${esc(g)}（${members.length}人）`, rows);
+  }).join('');
+}
+function groupTimelineSectionHTML(date){
+  const groups = [...new Set(state.personnel.filter(p=>!isDeparted(p)).map(p=>p.group).filter(Boolean))].sort((a,b)=>groupIndex(a)-groupIndex(b));
+  return `
+    <div class="hint" style="margin-top:10px">下面即時彙整每個人今天的事故／勤務，依時間先後列出；沒有任何記錄的人會顯示「無排班」。</div>
+    <div class="row wrap" style="margin:8px 0">
+      <div class="grow"><label>搜尋姓名</label><input type="text" id="groupTimelineSearch" placeholder="輸入姓名關鍵字" value="${esc(groupTimelineFilterState.search)}"></div>
+      <div style="width:120px"><label>排組篩選</label>
+        <select id="groupTimelineGroupFilter">
+          <option value="" ${!groupTimelineFilterState.group?'selected':''}>（全部）</option>
+          ${groups.map(g=>`<option value="${esc(g)}" ${groupTimelineFilterState.group===g?'selected':''}>${esc(g)}</option>`).join('')}
+          <option value="__none" ${groupTimelineFilterState.group==='__none'?'selected':''}>未分組</option>
+        </select>
+      </div>
+    </div>
+    <div id="groupTimelineList">${renderGroupTimelineList(date)}</div>
+  `;
+}
+function wireGroupTimelineEvents(){
+  const searchEl = document.getElementById('groupTimelineSearch');
+  if(!searchEl) return;
+  function refresh(){
+    document.getElementById('groupTimelineList').innerHTML = renderGroupTimelineList(currentDate);
+  }
+  searchEl.oninput=(e)=>{ groupTimelineFilterState.search=e.target.value.trim(); refresh(); };
+  document.getElementById('groupTimelineGroupFilter').onchange=(e)=>{ groupTimelineFilterState.group=e.target.value; refresh(); };
+}
 let onDutyFilterState={search:'',group:''};
 function onDutyItemsHTML(list, date){
   if(!list.length) return `<div class="empty">找不到符合的人員</div>`;
@@ -7729,21 +7824,22 @@ document.addEventListener('click', (e)=>{
   if(btn){ collapseState[btn.dataset.collapseToggle] = !collapseState[btn.dataset.collapseToggle]; render(); }
 });
 function renderGroupRankStats(){
-  if(!state.personnel.length) return `<div class="empty">尚未新增人員</div>`;
-  const groups = [...new Set(state.personnel.map(p=>p.group).filter(Boolean))].sort((a,b)=>groupIndex(a)-groupIndex(b));
-  const hasUngrouped = state.personnel.some(p=>!p.group);
+  const activePersonnel = state.personnel.filter(p=>!isDeparted(p));
+  if(!activePersonnel.length) return `<div class="empty">尚未新增人員</div>`;
+  const groups = [...new Set(activePersonnel.map(p=>p.group).filter(Boolean))].sort((a,b)=>groupIndex(a)-groupIndex(b));
+  const hasUngrouped = activePersonnel.some(p=>!p.group);
   const rows = hasUngrouped? [...groups, '__none'] : groups;
   const countFor = rankGenderBreakdown;
   const cell = (bd,cat)=> `${bd[cat]}(${bd[cat+'女']})`;
-  const total = countFor(state.personnel);
+  const total = countFor(activePersonnel);
   let html = `<table style="width:100%;border-collapse:collapse;font-size:13px">
     <tr class="muted"><td style="padding:4px 0">排組</td><td style="padding:4px 0;text-align:right">官</td><td style="padding:4px 0;text-align:right">士</td><td style="padding:4px 0;text-align:right">兵</td><td style="padding:4px 0;text-align:right">總計</td></tr>`;
   rows.forEach(g=>{
-    const list = g==='__none'? state.personnel.filter(p=>!p.group) : state.personnel.filter(p=>p.group===g);
+    const list = g==='__none'? activePersonnel.filter(p=>!p.group) : activePersonnel.filter(p=>p.group===g);
     const bd = countFor(list);
     html += `<tr style="border-top:1px solid var(--line)"><td style="padding:4px 0">${g==='__none'?'未分組':esc(g)}</td><td style="padding:4px 0;text-align:right">${cell(bd,'軍官')}</td><td style="padding:4px 0;text-align:right">${cell(bd,'士官')}</td><td style="padding:4px 0;text-align:right">${cell(bd,'士兵')}</td><td style="padding:4px 0;text-align:right"><b>${list.length}</b></td></tr>`;
   });
-  html += `<tr style="border-top:2px solid var(--line)"><td style="padding:4px 0"><b>全連</b></td><td style="padding:4px 0;text-align:right"><b>${cell(total,'軍官')}</b></td><td style="padding:4px 0;text-align:right"><b>${cell(total,'士官')}</b></td><td style="padding:4px 0;text-align:right"><b>${cell(total,'士兵')}</b></td><td style="padding:4px 0;text-align:right"><b>${state.personnel.length}</b></td></tr>`;
+  html += `<tr style="border-top:2px solid var(--line)"><td style="padding:4px 0"><b>全連</b></td><td style="padding:4px 0;text-align:right"><b>${cell(total,'軍官')}</b></td><td style="padding:4px 0;text-align:right"><b>${cell(total,'士官')}</b></td><td style="padding:4px 0;text-align:right"><b>${cell(total,'士兵')}</b></td><td style="padding:4px 0;text-align:right"><b>${activePersonnel.length}</b></td></tr>`;
   html += `</table>`;
   return html;
 }
@@ -7850,7 +7946,7 @@ function renderStats(){
       }).join('')}
       <div class="hint">此數字已包含休假/事故、長期事故、補休、以及當天已排定的勤務。點任一小時列可展開看有空名單，並能搜尋姓名、篩選排組。</div>
 `);
-  const groupRankStatsHTML = collapsibleCardHTML('groupRankStats', '全部人員各排組人數（官/士/兵）', renderGroupRankStats());
+  const groupRankStatsHTML = collapsibleCardHTML('groupRankStats', '全部人員各排組人數（官/士/兵）', renderGroupRankStats() + groupTimelineSectionHTML(currentDate));
   const onDutyHTML = onDutyCardHTML();
   const notInCampHTML = notInCampCardHTML();
   const outingHTML = renderOutingCardHTML();
@@ -7884,6 +7980,7 @@ function renderStats(){
   });
   wireNotInCampCardEvents();
   wireOnDutyCardEvents();
+  wireGroupTimelineEvents();
   wireQuickIncidentButtons();
   wireOutingCardEvents();
   wireGotoLeaveTableButtons();
