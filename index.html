@@ -151,7 +151,7 @@ textarea{min-height:50px;resize:vertical;}
   <div class="topbar-main" style="flex-direction:column;align-items:stretch;gap:6px">
     <div class="row" style="gap:4px;align-items:center">
       <button class="ghost small" id="preplanDrawerBtn" title="預排">☰</button>
-      <h1 id="pageTitle" class="grow" style="margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">🌟 衛哨排班系統 <span class="muted" style="font-size:10px;font-weight:400">v149</span></h1>
+      <h1 id="pageTitle" class="grow" style="margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">🌟 衛哨排班系統 <span class="muted" style="font-size:10px;font-weight:400">v150</span></h1>
       <button class="ghost small" id="adhocQueryTopBtn" title="臨時任務查詢">🚨</button>
       <button class="ghost small" id="clearRangeBtn" title="清除一段時間">🧹</button>
       <button class="ghost small" id="exportBtn" title="匯出">📤</button>
@@ -427,6 +427,12 @@ function defaultCategories(){
   ];
 }
 function sh(start,end,count,label,restUntil){ return {id:uid(),start,end,count:count||1,label:label||'',restUntil:restUntil||''}; }
+/* 「設定→勤務類別」裡衛哨/打飯班類別清單用的一行摘要，讓使用者不用點進
+   編輯就能看到這個類別目前有哪些班次 */
+function categoryShiftsSummaryLabel(cat){
+  if(!cat.shifts || !cat.shifts.length) return '（尚未設定班別）';
+  return cat.shifts.map(s=>`${s.label||`${s.start}-${s.end}`}${s.count>1?`×${s.count}`:''}`).join('、');
+}
 /* fixed display order for the standard categories, regardless of the order
    they were added/restored in state.categories — any extra custom categories
    just appear after these, in whatever order they exist */
@@ -2652,6 +2658,16 @@ function openUnitRulesModal(){
     const plainFor = dayType => state.dutyDefinitions.filter(d=>!d.linkedPreplan && d.dayType===dayType).sort((a,b)=>(a.sortOrder??999)-(b.sortOrder??999));
     const weekdayItems = plainFor('weekday');
     const holidayItems = plainFor('holiday');
+    // 這裡點進去一律預設「套用到所有日期（預設）」——跟排班頁那個「編輯」
+    // 入口不同(那邊改成預設只套用今天)，讓「設定」名符其實地成為改預設值
+    // 的地方，不用擔心排班的時候不小心就把每天的預設也改掉了。
+    const catRow=(cat)=>`<div class="list-item" data-edit-cat-settings="${esc(cat.id)}" style="cursor:pointer">
+        <div class="grow">
+          <div>${esc(cat.name)}${cat.isSentry?' <span class="hint">(衛哨)</span>':''}</div>
+          <div class="hint">${esc(categoryShiftsSummaryLabel(cat))}</div>
+        </div>
+        <span style="color:var(--dim)">›</span>
+      </div>`;
     const plainRow=(d,i)=>{
       const summary = dutyDefPreviewLabel(d);
       return `<div class="list-item" data-drag-idx="${i}">
@@ -2684,7 +2700,8 @@ function openUnitRulesModal(){
       </div>
       <div class="hint">安全士官／橋哨／指管：前後兩班（衛哨對衛哨）需間隔≥6小時、單日累計上限6小時（系統自動檢查，違反會標紅；此規則不含準備時間，純粹以衛哨排定時間計算）。每班衛哨開始前需空30分鐘準備：若前一段時間還在忙其他勤務（如採買、打飯班），系統會擋下並標紅，避免像「採買到08:00、緊接著08:00-12:00衛哨」這種沒時間準備的排法。橋哨／指管優先排下士，其次其他士兵/士官。打飯班早/午/晚每班2人＝1位帶隊士官（優先下士→中士→上士）＋1位士兵，盡量避免安排軍官；整天固定2人優先排訓練役，沒有訓練役才依二兵→一兵→上兵遞補。下拉選單已依此優先順序排序，越上面越優先。有設定「補休至」的班別（例：22:00-06:00 各節衛哨補休至08:00、06-08衛哨與早餐打飯班補休至08:30、午餐打飯班補休至15:30），下班後系統會自動把該員在補休時段內標示為不可排，也會檢查補休時段有沒有跟已排的其他勤務衝突，可到各類別「編輯」調整補休時間。</div>
       <div class="hint">下拉選單中的 🚫不可排 已同時涵蓋：休假/事故、長期事故、補休、以及當天其他勤務的重複指派。</div>
-      <div class="hint" style="margin-top:8px">個別類別的名稱/班次/補休等設定，到排班畫面該類別卡片上的「編輯」調整；刪除類別也是同一個地方——這裡只負責新增類別跟看規則說明。</div>
+      <div class="hint" style="margin-top:8px">點下面任一個類別可以進去改名稱/班次時段/補休等設定——這裡點進去預設是「套用到所有日期（預設）」，改了就是改這個類別長期的預設值；刪除類別也在同一個編輯畫面裡。如果只是想調整「今天」某一天的班次，改到排班分頁該類別卡片上的「編輯」進去，那邊預設只套用到當天，不會動到這裡的預設。</div>
+      <div id="scheduleCategoriesContainer">${orderedCategories().map(catRow).join('')}</div>
       <div class="divider"></div>
       <h3>🌤️ 其他勤務項目・平日</h3>
       <div class="hint" style="margin-bottom:8px">平日（星期一到五，不含下面「假日設定」裡的例假日/國定假日）按「匯入預設」會用到的清單，跟「假日」是完全獨立的兩份，同一個項目如果平日假日都要有，要分別新增、各自維護。時段/人數/補休可以先在這裡看到，排列順序就是匯入後排班頁會出現的順序——長按左邊 ⠿ 可拖曳調整，點項目本身可以進去編輯細節或刪除。</div>
@@ -2708,6 +2725,9 @@ function openUnitRulesModal(){
     };
     modal.querySelectorAll('[data-edit-duty]').forEach(row=>{
       row.onclick=()=>{ editingDutyKey=row.dataset.editDuty; draw(); };
+    });
+    modal.querySelectorAll('[data-edit-cat-settings]').forEach(row=>{
+      row.onclick=()=>openCategoryEditor(row.dataset.editCatSettings, 'default', drawScheduleCategories);
     });
     wireDragReorder('dutyDefsWeekdayContainer', weekdayItems, ()=>{
       weekdayItems.forEach((d,i)=>{ d.sortOrder = i*10; syncDutyDefinitionToLegacy(d); });
@@ -9135,11 +9155,19 @@ function wireCategoryEvents(){
     };
   });
   app.querySelectorAll('[data-edit-cat]').forEach(b=>{
-    b.onclick=()=>openCategoryEditor(b.dataset.editCat);
+    // 從排班頁點進來的「編輯」，預設先假設只是想調整今天，不要一不小心把
+    // 每天都會套用的預設班別改掉——真的要改預設，到「設定→勤務類別」的
+    // 入口進去（那邊預設是「套用到所有日期」）。
+    b.onclick=()=>openCategoryEditor(b.dataset.editCat, 'today');
   });
 }
 
-function openCategoryEditor(catId){
+/* onDone：這個編輯器現在有兩個入口——排班頁(那邊本身會透過render()自動
+   刷新畫面，不需要onDone)，跟「設定→勤務類別」的類別清單(那是另一個獨立
+   疊在上面的視窗，render()刷新不到它，所以要靠這個callback通知它自己重
+   畫，不然編輯完類別名稱/班次後，設定裡的清單摘要會顯示舊的)。 */
+function openCategoryEditor(catId, initialScope, onDone){
+  initialScope = initialScope || 'default';
   const cat = state.categories.find(c=>c.id===catId);
   const modal = document.createElement('div');
   modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:50;display:flex;align-items:flex-end;';
@@ -9169,13 +9197,13 @@ function openCategoryEditor(catId){
       <h3>班別時段</h3>
       <div class="row wrap" style="margin-bottom:8px">
         <label style="display:flex;align-items:center;gap:6px;font-size:13px">
-          <input type="radio" name="editScope" value="default" checked style="width:auto"> 套用到所有日期（預設）
+          <input type="radio" name="editScope" value="default" ${initialScope==='default'?'checked':''} style="width:auto"> 套用到所有日期（預設）
         </label>
         <label style="display:flex;align-items:center;gap:6px;font-size:13px">
-          <input type="radio" name="editScope" value="today" style="width:auto"> 只套用到今天（${minguoLabel(currentDate)}）
+          <input type="radio" name="editScope" value="today" ${initialScope==='today'?'checked':''} style="width:auto"> 只套用到今天（${minguoLabel(currentDate)}）
         </label>
         <label style="display:flex;align-items:center;gap:6px;font-size:13px">
-          <input type="radio" name="editScope" value="range" style="width:auto"> 套用到指定日期範圍
+          <input type="radio" name="editScope" value="range" ${initialScope==='range'?'checked':''} style="width:auto"> 套用到指定日期範圍
         </label>
       </div>
       <div class="row wrap" id="scopeRangeRow" style="margin-bottom:8px;display:none">
@@ -9256,9 +9284,15 @@ function openCategoryEditor(catId){
      "today", per-date-for-every-date-in-range for "range"), so switching
      the radio back and forth before saving never touches the category-wide
      template. */
-  let editScope='default';
+  let editScope=initialScope;
   let todayShiftsDraft=null; // lazily built the first time the user switches to "today"
   let rangeShiftsDraft=null; // lazily built the first time the user switches to "range"
+  // 如果一開進來就是"today"(從排班頁「編輯」點進來)，這裡先把今天的草稿
+  // 準備好——邏輯跟下面radio的change監聽器裡那段完全一樣，只是提前跑一次
+  if(editScope==='today'){
+    const existing = (state.dailyShiftOverrides[currentDate]||{})[cat.id];
+    todayShiftsDraft = existing? existing.map(s=>({...s})) : cat.shifts.map(s=>({...s}));
+  }
   function activeShiftsArray(){
     if(editScope==='today') return todayShiftsDraft;
     if(editScope==='range') return rangeShiftsDraft;
@@ -9304,6 +9338,10 @@ function openCategoryEditor(catId){
     });
   }
   wireShiftRows();
+  // 開場的#shiftEditList是照著模板字串裡的cat.shifts畫的，如果一開進來
+  // 就不是"default"(例如從排班頁帶著"today"進來)，這份初始畫面其實是錯
+  // 的(該顯示今天的草稿，不是類別預設)，這裡重畫一次修正
+  if(editScope!=='default') shiftEditRowRerender();
   document.getElementById('addShift').onclick=()=>{
     activeShiftsArray().push(sh('08:00','12:00')); shiftEditRowRerender();
   };
@@ -9347,6 +9385,14 @@ function openCategoryEditor(catId){
     });
   };
   wireCloseConfirm(modal, document.getElementById('closeModal'));
+  if(onDone){
+    // 純粹關閉(不管有沒有跳「放棄修改」的確認)最後都會把modal拿掉——不管
+    // 有沒有真的存檔，通知上層清單重畫一次都是安全的(沒改的話畫出來的內
+    // 容不會變)
+    const closeBtn = document.getElementById('closeModal');
+    const origOnClick = closeBtn.onclick;
+    closeBtn.onclick = ()=>{ origOnClick(); onDone(); };
+  }
   document.getElementById('duplicateCatBtn').onclick=()=>{
     showPrompt('新類別名稱？（例：G028後門）', cat.name+'（複製）', (newName)=>{
       const newId=uid();
@@ -9366,6 +9412,7 @@ function openCategoryEditor(catId){
       modal.remove();
       showAlert(`已建立「${newName}」，複製自「${cat.name}」的全部設定，可以再進去微調細節。`);
       render();
+      if(onDone) onDone();
     });
   };
   document.getElementById('deleteCatBtn').onclick=()=>{
@@ -9381,6 +9428,7 @@ function openCategoryEditor(catId){
       modal.remove();
       showAlert(`已刪除「${cat.name}」。`);
       render();
+      if(onDone) onDone();
     });
   };
   document.getElementById('saveCat').onclick=()=>{
@@ -9417,6 +9465,7 @@ function openCategoryEditor(catId){
       // 直接問使用者要不要順便清掉今天的專屬設定，避免像是沒存到一樣的錯覺。
       const catName = cat.name, catId = cat.id, savedDate = currentDate;
       modal.remove(); render();
+      if(onDone) onDone();
       showConfirm(`「${catName}」的預設班別已經更新，但今天（${minguoLabel(savedDate)}）目前是套用「只套用到今天」的專屬設定，畫面上暫時還不會顯示剛剛的異動。要順便清除今天的專屬設定，改套用新的預設班別嗎？`, ()=>{
         if(state.dailyShiftOverrides[savedDate]) delete state.dailyShiftOverrides[savedDate][catId];
         saveState();
@@ -9424,6 +9473,7 @@ function openCategoryEditor(catId){
       });
     } else {
       modal.remove(); render();
+      if(onDone) onDone();
     }
   };
   function shiftEditRow(s,i){
