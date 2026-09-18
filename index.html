@@ -151,7 +151,7 @@ textarea{min-height:50px;resize:vertical;}
   <div class="topbar-main" style="flex-direction:column;align-items:stretch;gap:6px">
     <div class="row" style="gap:4px;align-items:center">
       <button class="ghost small" id="preplanDrawerBtn" title="預排">☰</button>
-      <h1 id="pageTitle" class="grow" style="margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">🌟 衛哨排班系統 <span class="muted" style="font-size:10px;font-weight:400">v143</span></h1>
+      <h1 id="pageTitle" class="grow" style="margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">🌟 衛哨排班系統 <span class="muted" style="font-size:10px;font-weight:400">v145</span></h1>
       <button class="ghost small" id="adhocQueryTopBtn" title="臨時任務查詢">🚨</button>
       <button class="ghost small" id="clearRangeBtn" title="清除一段時間">🧹</button>
       <button class="ghost small" id="exportBtn" title="匯出">📤</button>
@@ -2270,6 +2270,20 @@ function openAllPreplanImportModal(){
 /* 我們的規則——全頁＋分類點入的方式，不是整頁攤開一次滑到底：主畫面列出
    規則分類，點進去才看那一類的內容，跟抽屜的預排項目是同一種瀏覽方式，
    之後規則增加也不會讓主畫面越滑越長。 */
+/* 崗位定義清單裡「其他勤務項目」每一列的一行摘要——排班頁按「匯入預設」
+   會把這些項目原封不動帶進當天，所以在設定裡先讓人看到時段/人數/補休這
+   些關鍵設定，不用點進去才知道匯入後會長怎樣。 */
+function dutyDefPreviewLabel(d){
+  const parts=[];
+  if(d.mode!=='fixedSlots' && d.times && d.times.length && d.times[0] && d.times[0].start){
+    parts.push(d.times.map(t=>`${t.start}-${t.end}`).join('、'));
+  }
+  if(d.isVehicle) parts.push('駕駛＋車長');
+  else if(d.customRoles && d.customRoles.length) parts.push(d.customRoles.join('、'));
+  else parts.push(d.requiredCount==null? '人數不限' : `${d.requiredCount}人`);
+  if(d.restUntil) parts.push(`補休至${d.restUntil}`);
+  return parts.join('・');
+}
 function openUnitRulesModal(){
   const modal=document.createElement('div');
   modal.className='fullscreen-modal'; modal.style.zIndex='94';
@@ -2301,7 +2315,7 @@ function openUnitRulesModal(){
       </div>
       <div class="drawer-item" data-ur-section="dutyDefs">
         <span style="font-size:18px">🎓</span>
-        <span class="grow">崗位定義<br><span class="hint">每個崗位需要什麼駕照、專長、人數、時段、補休——統一在這裡調，隨時可改</span></span>
+        <span class="grow">崗位定義<br><span class="hint">已連結預排類型的崗位（值星／查哨／救護車等），駕照、專長、人數、時段、補休統一在這裡調</span></span>
         <span style="color:var(--dim)">›</span>
       </div>
       <div class="drawer-item" data-ur-section="holidays">
@@ -2311,7 +2325,7 @@ function openUnitRulesModal(){
       </div>
       <div class="drawer-item" data-ur-section="scheduleCategories">
         <span style="font-size:18px">🗂️</span>
-        <span class="grow">勤務類別<br><span class="hint">新增衛哨/打飯班等類別，附排班規則說明</span></span>
+        <span class="grow">勤務類別<br><span class="hint">衛哨/打飯班類別，跟其他勤務項目（匯入預設會用到的清單）</span></span>
         <span style="color:var(--dim)">›</span>
       </div>
       <div class="hint" style="margin-top:10px">之後陸續增加的規則，會繼續加在這份清單裡。</div>`;
@@ -2358,23 +2372,26 @@ function openUnitRulesModal(){
     document.getElementById('urBack').onclick=()=>{ section=null; draw(); };
   };
   const drawDutyDefs=()=>{
+    // 「其他勤務項目」(沒有連結預排類型的崗位)已經搬到「勤務類別」畫面
+    // (跟衛哨/打飯班類別放在一起管理，那裡才是排班頁「匯入預設」實際會
+    // 用到的清單)；這裡只剩下已經連結「預排」類型的崗位(值星/查哨/救護
+    // 車等)，這些崗位本身有一段可設定的日期區間、自動排班會避開被排到
+    // 的人，跟「其他勤務」的用法不一樣，維持獨立管理。
     const linked = state.dutyDefinitions.filter(d=>d.linkedPreplan);
-    const plain = state.dutyDefinitions.filter(d=>!d.linkedPreplan);
     const row=d=>`<div class="list-item" data-edit-duty="${esc(d.key)}" style="cursor:pointer">
         <span class="grow">${esc(d.icon)} ${esc(d.name)}${d.isVehicle?' <span class="hint">(出車)</span>':''}</span>
         <span style="color:var(--dim)">›</span>
       </div>`;
     modal.innerHTML=`
       <div class="section-title"><button class="ghost small" id="urBack">← 返回</button><h2 style="margin:0">崗位定義</h2></div>
-      <div class="hint" style="margin-bottom:8px">每個崗位需要什麼駕照、專長、階級、人數、時段、補休，統一在這裡管理，隨時可改，改了立刻套用到預排跟其他勤務兩邊。挑人時，勾選的駕照/專長/證照/需求階級會拿來篩選跟排序；不符合的人通常還是選得到，只是會排到後面、加警告文字，不會直接擋死（人力有限時常常還是得排）。車長的額外需求階級是例外——那是加嚴在「車長需士官以上且不低於駕駛」這條原本就有的硬性規則上，不符合會直接不列入車長候選。</div>
+      <div class="hint" style="margin-bottom:8px">這裡管理已經連結「預排」類型的崗位（值星／查哨／救護車等）——這些崗位可以設定一段日期區間，自動排班會避開已經被排到的人。每個崗位需要什麼駕照、專長、階級、人數、時段、補休，統一在這裡調，改了立刻套用。挑人時，勾選的駕照/專長/證照/需求階級會拿來篩選跟排序；不符合的人通常還是選得到，只是會排到後面、加警告文字，不會直接擋死（人力有限時常常還是得排）。車長的額外需求階級是例外——那是加嚴在「車長需士官以上且不低於駕駛」這條原本就有的硬性規則上，不符合會直接不列入車長候選。</div>
+      <div class="hint" style="margin-bottom:8px">其他隨手就能匯入的勤務項目（話務/消防車/技工/夜督/日督/軍餐班等），改到「勤務類別」設定裡管理。</div>
       <div class="divider"></div>
       <h3>已連結預排類型的崗位</h3>
       ${linked.map(row).join('')}
       <div class="divider"></div>
-      <h3>其他勤務項目</h3>
-      ${plain.length? plain.map(row).join('') : '<div class="empty">目前沒有</div>'}
-      <div class="divider"></div>
-      <h3>＋新增崗位</h3>
+      <h3>＋新增已連結預排的崗位</h3>
+      <div class="hint" style="margin-bottom:6px">只用來新增需要「預排」（設定一段日期區間、自動排班避開被排到的人）的崗位；一般其他勤務項目，到「勤務類別」設定新增即可。</div>
       <div class="row wrap" style="margin-bottom:6px">
         <div style="width:70px"><label>圖示</label><input type="text" id="ddIcon" placeholder="📋" maxlength="2"></div>
         <div class="grow"><label>名稱</label><input type="text" id="ddName" placeholder="例：帶隊官"></div>
@@ -2382,11 +2399,8 @@ function openUnitRulesModal(){
       <div class="row wrap" style="margin-bottom:8px">
         <div class="grow"><label>說明（選填）</label><input type="text" id="ddHint" placeholder="這個崗位的用途、排班規則"></div>
       </div>
-      <label style="display:flex;align-items:center;gap:6px;font-size:13px;margin-bottom:6px">
-        <input type="checkbox" id="ddVehicle" style="width:auto"> 這是出車任務（駕駛／車長分開設定資格）
-      </label>
       <label style="display:flex;align-items:center;gap:6px;font-size:13px;margin-bottom:8px">
-        <input type="checkbox" id="ddAsPreplan" style="width:auto"> 同時建立成預排類型（可以設定一段日期區間，自動排班會避開被排到的人）
+        <input type="checkbox" id="ddVehicle" style="width:auto"> 這是出車任務（駕駛／車長分開設定資格）
       </label>
       <button class="ghost" id="ddAdd" style="width:100%">＋新增這個崗位</button>`;
     document.getElementById('urBack').onclick=()=>{ section=null; draw(); };
@@ -2398,20 +2412,19 @@ function openUnitRulesModal(){
       const icon=document.getElementById('ddIcon').value.trim()||'📋';
       const hint=document.getElementById('ddHint').value.trim();
       const isVehicle=document.getElementById('ddVehicle').checked;
-      const asPreplan=document.getElementById('ddAsPreplan').checked;
       if(!name){ showAlert('請輸入名稱'); return; }
       if(state.dutyDefinitions.some(d=>d.name===name)){ showAlert('已經有這個名稱的崗位了'); return; }
-      const key = (asPreplan? 'custom_':'misc_')+uid();
+      const key = 'custom_'+uid();
       const def = {
         key, name, icon, mode: isVehicle?'roles':'people', hint,
         isVehicle, requiredLicenses:[], requiredMedCert:false, requiredSkills:[], requiredRanks:[],
         chiefRequiredLicenses:[], chiefRequiredMedCert:false, chiefRequiredSkills:[], chiefRequiredRanks:[],
         requiredCount:null, restUntil:'', times:[], sortOrder: 900+state.dutyDefinitions.length,
         excludeFromExport:false, isSentry:false, isAllDayAway:false, standbyMode:'off',
-        presetRole:name, builtin:false, deletable:true, linkedPreplan:asPreplan,
+        presetRole:name, builtin:false, deletable:true, linkedPreplan:true,
       };
       state.dutyDefinitions.push(def);
-      if(asPreplan) state.customPreplanTypes.push({key, name, icon, hint});
+      state.customPreplanTypes.push({key, name, icon, hint});
       syncDutyDefinitionToLegacy(def);
       saveState();
       drawDutyDefs();
@@ -2419,7 +2432,7 @@ function openUnitRulesModal(){
   };
   const drawDutyDefEditor=(key)=>{
     const def = state.dutyDefinitions.find(d=>d.key===key);
-    if(!def){ editingDutyKey=null; drawDutyDefs(); return; }
+    if(!def){ editingDutyKey=null; section=null; draw(); return; }
     const licenseCbs=(field,idPrefix)=>['小型車','大型車','大客車'].map(l=>`<label style="display:flex;align-items:center;gap:4px;font-size:12px">
         <input type="checkbox" class="${idPrefix}-license-cb" value="${l}" style="width:auto" ${def[field].includes(l)?'checked':''}>${l}
       </label>`).join('');
@@ -2588,15 +2601,51 @@ function openUnitRulesModal(){
     };
   };
   const drawScheduleCategories=()=>{
+    // 「其他勤務項目」照sortOrder排序顯示——這就是排班頁按「匯入預設」時
+    // 實際會用的順序(syncDutyDefinitionToLegacy會把sortOrder寫進legacy的
+    // miscPresets.sortOrder，buildScheduleCardItems排序時讀的正是這個欄
+    // 位)，讓使用者在這裡看到的順序，就是匯入後排班頁會出現的順序。
+    const plain = [...state.dutyDefinitions.filter(d=>!d.linkedPreplan)].sort((a,b)=>(a.sortOrder??999)-(b.sortOrder??999));
+    const plainRow=(d,i)=>{
+      const summary = dutyDefPreviewLabel(d);
+      return `<div class="list-item" data-drag-idx="${i}">
+        <span data-drag-handle style="cursor:grab;padding-top:2px;font-size:16px;color:var(--dim)">⠿</span>
+        <div class="grow" data-edit-duty="${esc(d.key)}" style="cursor:pointer">
+          <div>${esc(d.icon)} ${esc(d.name)}${d.isVehicle?' <span class="hint">(出車)</span>':''}</div>
+          ${summary? `<div class="hint">${esc(summary)}</div>`:''}
+        </div>
+        <span style="color:var(--dim)">›</span>
+      </div>`;
+    };
     modal.innerHTML=`
       <div class="section-title"><button class="ghost small" id="urBack">← 返回</button><h2 style="margin:0">勤務類別</h2></div>
       <div class="section-title">
-        <h3 style="margin:0">勤務類別</h3>
+        <h3 style="margin:0">衛哨／打飯班類別</h3>
         <button class="ghost small" id="addCat">＋新增類別</button>
       </div>
       <div class="hint">安全士官／橋哨／指管：前後兩班（衛哨對衛哨）需間隔≥6小時、單日累計上限6小時（系統自動檢查，違反會標紅；此規則不含準備時間，純粹以衛哨排定時間計算）。每班衛哨開始前需空30分鐘準備：若前一段時間還在忙其他勤務（如採買、打飯班），系統會擋下並標紅，避免像「採買到08:00、緊接著08:00-12:00衛哨」這種沒時間準備的排法。橋哨／指管優先排下士，其次其他士兵/士官。打飯班早/午/晚每班2人＝1位帶隊士官（優先下士→中士→上士）＋1位士兵，盡量避免安排軍官；整天固定2人優先排訓練役，沒有訓練役才依二兵→一兵→上兵遞補。下拉選單已依此優先順序排序，越上面越優先。有設定「補休至」的班別（例：22:00-06:00 各節衛哨補休至08:00、06-08衛哨與早餐打飯班補休至08:30、午餐打飯班補休至15:30），下班後系統會自動把該員在補休時段內標示為不可排，也會檢查補休時段有沒有跟已排的其他勤務衝突，可到各類別「編輯」調整補休時間。</div>
       <div class="hint">下拉選單中的 🚫不可排 已同時涵蓋：休假/事故、長期事故、補休、以及當天其他勤務的重複指派。</div>
-      <div class="hint" style="margin-top:8px">個別類別的名稱/班次/補休等設定，到排班畫面該類別卡片上的「編輯」調整；這裡只負責新增類別跟看規則說明。</div>`;
+      <div class="hint" style="margin-top:8px">個別類別的名稱/班次/補休等設定，到排班畫面該類別卡片上的「編輯」調整；刪除類別也是同一個地方——這裡只負責新增類別跟看規則說明。</div>
+      <div class="divider"></div>
+      <h3>其他勤務項目</h3>
+      <div class="hint" style="margin-bottom:8px">排班頁按「匯入預設」帶進去的就是這些項目，時段/人數/補休可以先在這裡看到，下面的排列順序就是匯入後排班頁會出現的順序——長按左邊 ⠿ 可拖曳調整，點項目本身可以進去編輯細節或刪除。</div>
+      <div id="dutyDefsPlainContainer">${plain.length? plain.map(plainRow).join('') : '<div class="empty">目前沒有</div>'}</div>
+      <div class="divider"></div>
+      <h3>＋新增其他勤務項目</h3>
+      <div class="row wrap" style="margin-bottom:6px">
+        <div style="width:70px"><label>圖示</label><input type="text" id="ddIcon" placeholder="📋" maxlength="2"></div>
+        <div class="grow"><label>名稱</label><input type="text" id="ddName" placeholder="例：帶隊官"></div>
+      </div>
+      <div class="row wrap" style="margin-bottom:8px">
+        <div class="grow"><label>說明（選填）</label><input type="text" id="ddHint" placeholder="這個崗位的用途、排班規則"></div>
+      </div>
+      <label style="display:flex;align-items:center;gap:6px;font-size:13px;margin-bottom:6px">
+        <input type="checkbox" id="ddVehicle" style="width:auto"> 這是出車任務（駕駛／車長分開設定資格）
+      </label>
+      <label style="display:flex;align-items:center;gap:6px;font-size:13px;margin-bottom:8px">
+        <input type="checkbox" id="ddAsPreplan" style="width:auto"> 同時建立成預排類型（可以設定一段日期區間，自動排班會避開被排到的人；建立後改到「崗位定義」管理）
+      </label>
+      <button class="ghost" id="ddAdd" style="width:100%">＋新增這個項目</button>`;
     document.getElementById('urBack').onclick=()=>{ section=null; draw(); };
     document.getElementById('addCat').onclick=()=>{
       showPrompt('新類別名稱？（例：查哨）', '', (name)=>{
@@ -2608,13 +2657,45 @@ function openUnitRulesModal(){
         drawScheduleCategories();
       });
     };
+    modal.querySelectorAll('[data-edit-duty]').forEach(row=>{
+      row.onclick=()=>{ editingDutyKey=row.dataset.editDuty; draw(); };
+    });
+    wireDragReorder('dutyDefsPlainContainer', plain, ()=>{
+      plain.forEach((d,i)=>{ d.sortOrder = i*10; syncDutyDefinitionToLegacy(d); });
+      saveState();
+      drawScheduleCategories();
+    });
+    document.getElementById('ddAdd').onclick=()=>{
+      const name=document.getElementById('ddName').value.trim();
+      const icon=document.getElementById('ddIcon').value.trim()||'📋';
+      const hint=document.getElementById('ddHint').value.trim();
+      const isVehicle=document.getElementById('ddVehicle').checked;
+      const asPreplan=document.getElementById('ddAsPreplan').checked;
+      if(!name){ showAlert('請輸入名稱'); return; }
+      if(state.dutyDefinitions.some(d=>d.name===name)){ showAlert('已經有這個名稱的崗位了'); return; }
+      const key = (asPreplan? 'custom_':'misc_')+uid();
+      const def = {
+        key, name, icon, mode: isVehicle?'roles':'people', hint,
+        isVehicle, requiredLicenses:[], requiredMedCert:false, requiredSkills:[], requiredRanks:[],
+        chiefRequiredLicenses:[], chiefRequiredMedCert:false, chiefRequiredSkills:[], chiefRequiredRanks:[],
+        requiredCount:null, restUntil:'', times:[], sortOrder: 900+state.dutyDefinitions.length,
+        excludeFromExport:false, isSentry:false, isAllDayAway:false, standbyMode:'off',
+        presetRole:name, builtin:false, deletable:true, linkedPreplan:asPreplan,
+      };
+      state.dutyDefinitions.push(def);
+      if(asPreplan) state.customPreplanTypes.push({key, name, icon, hint});
+      syncDutyDefinitionToLegacy(def);
+      saveState();
+      drawScheduleCategories();
+    };
   };
   const draw=()=>{
+    if(editingDutyKey){ drawDutyDefEditor(editingDutyKey); return; }
     if(section==='leaveBuffer') drawLeaveBuffer();
     else if(section==='timeStep') drawTimeStep();
     else if(section==='standbyDefaults') drawStandbyDefaults();
     else if(section==='dutyDayDef') drawDutyDayDef();
-    else if(section==='dutyDefs') editingDutyKey? drawDutyDefEditor(editingDutyKey) : drawDutyDefs();
+    else if(section==='dutyDefs') drawDutyDefs();
     else if(section==='holidays'){ section=null; openHolidaySettingsModal(); draw(); }
     else if(section==='scheduleCategories') drawScheduleCategories();
     else drawMain();
@@ -8617,9 +8698,16 @@ function wireScheduleCardsDrag(){
     render();
   });
   // 第3區塊（其他勤務彙整卡）內部，各角色小節也能拖曳排序，改各自
-  // preset 的 sortOrder——跟區塊1是各自獨立的拖曳容器，互不影響。
+  // preset 的 sortOrder——跟區塊1是各自獨立的拖曳容器，互不影響。同時也
+  // 把新順序寫回對應的崗位定義(sortOrder)，這樣設定裡「崗位定義→其他勤
+  // 務項目」看到的順序，才不會因為在排班頁這邊拖過而跟著過期。
   wireDragReorder('miscBundleContainer', miscRoleGroups, ()=>{
-    miscRoleGroups.forEach((g,i)=>{ if(g.preset) g.preset.sortOrder = i*10; });
+    miscRoleGroups.forEach((g,i)=>{
+      if(!g.preset) return;
+      g.preset.sortOrder = i*10;
+      const def = state.dutyDefinitions.find(d=>d.presetRole===g.role);
+      if(def) def.sortOrder = i*10;
+    });
     saveState();
     render();
   });
