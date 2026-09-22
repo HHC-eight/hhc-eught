@@ -109,11 +109,11 @@ textarea{min-height:50px;resize:vertical;}
 .hint{font-size:11px;color:var(--dim);margin-top:4px;line-height:1.5;}
 .time-select-pair{display:inline-flex;align-items:center;gap:3px;width:100%;}
 .time-select-pair select{width:auto;flex:1;min-width:0;}
-.drawer-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:90;}
-.drawer{position:fixed;top:var(--banner-h);left:0;bottom:0;width:min(84vw,320px);background:var(--panel);border-right:1px solid var(--line);z-index:91;overflow:auto;padding:14px 14px calc(14px + env(safe-area-inset-bottom));box-shadow:2px 0 12px rgba(0,0,0,.4);}
-.fullscreen-modal{position:fixed;top:var(--banner-h);left:0;right:0;bottom:0;background:var(--bg);overflow:auto;padding:14px 14px calc(24px + env(safe-area-inset-bottom));z-index:80;}
+.drawer-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:150;}
+.drawer{position:fixed;top:var(--banner-h);left:0;bottom:0;width:min(84vw,320px);background:var(--panel);border-right:1px solid var(--line);z-index:151;overflow:auto;-webkit-overflow-scrolling:touch;padding:14px 14px calc(14px + env(safe-area-inset-bottom));box-shadow:2px 0 12px rgba(0,0,0,.4);}
+.fullscreen-modal{position:fixed;top:var(--banner-h);left:0;right:0;bottom:0;background:var(--bg);overflow:auto;-webkit-overflow-scrolling:touch;padding:14px 14px calc(24px + env(safe-area-inset-bottom));z-index:80;}
 .sheet-modal{position:fixed;top:var(--banner-h);left:0;right:0;bottom:0;background:rgba(0,0,0,.6);display:flex;align-items:flex-end;z-index:80;}
-.sheet-inner{background:var(--panel);width:100%;max-height:88vh;overflow:auto;border-radius:12px 12px 0 0;padding:14px 14px calc(14px + env(safe-area-inset-bottom));}
+.sheet-inner{background:var(--panel);width:100%;max-height:88vh;overflow:auto;-webkit-overflow-scrolling:touch;border-radius:12px 12px 0 0;padding:14px 14px calc(14px + env(safe-area-inset-bottom));}
 .drawer h2{margin:0 0 10px;font-size:16px;}
 .drawer-item{display:flex;align-items:center;gap:8px;width:100%;padding:10px 8px;margin-bottom:6px;background:var(--bg);border:1px solid var(--line);border-radius:8px;color:var(--text);font-size:14px;text-align:left;cursor:pointer;}
 .cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:3px;}
@@ -151,7 +151,7 @@ textarea{min-height:50px;resize:vertical;}
   <div class="topbar-main" style="flex-direction:column;align-items:stretch;gap:6px">
     <div class="row" style="gap:4px;align-items:center">
       <button class="ghost small" id="preplanDrawerBtn" title="預排">☰</button>
-      <h1 id="pageTitle" class="grow" style="margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">🌟 衛哨排班系統 <span class="muted" style="font-size:10px;font-weight:400">v150</span></h1>
+      <h1 id="pageTitle" class="grow" style="margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">🌟 衛哨排班系統 <span class="muted" style="font-size:10px;font-weight:400">v153</span></h1>
       <button class="ghost small" id="adhocQueryTopBtn" title="臨時任務查詢">🚨</button>
       <button class="ghost small" id="clearRangeBtn" title="清除一段時間">🧹</button>
       <button class="ghost small" id="exportBtn" title="匯出">📤</button>
@@ -1520,6 +1520,11 @@ function isPersonUnavailable(personId, date, s, e, excludeCatShift){
   for(const u of entries){
     if(u.allDay) return true;
     if(incidentBlocksWindow(u, s, e, false)) return true;
+    // 事故登載也可以填「補休時間」(仿照班別/其他勤務本來就有的restUntil)：
+    // 事故本身結束(u.end)之後到補休時間之前，一樣要排除其他勤務。用
+    // windowsOverlapRecurring才能正確處理跨過午夜的情況(不用像
+    // incidentBlocksWindow那樣另外處理前一天spillover)。
+    if(u.restUntil && u.end && windowsOverlapRecurring(s,e,toMin(u.end),toMin(u.restUntil))) return true;
   }
   /* an incident logged as e.g. 22:00-02:00 runs past midnight, so the
      00:00-02:00 half belongs to the NEXT calendar day — check yesterday's
@@ -1581,6 +1586,7 @@ function unavailabilityReasonsInRange(personId, date, s, e){
   (state.unavail[date]||[]).filter(u=>u.personId===personId).forEach(u=>{
     const hit = u.allDay || incidentBlocksWindow(u, s, e, false);
     if(hit) out.push(`${u.allDay? '全天':`${u.start}-${u.end}`}${u.reason? '（'+u.reason+'）':'（未註記原因）'}`);
+    else if(u.restUntil && u.end && windowsOverlapRecurring(s,e,toMin(u.end),toMin(u.restUntil))) out.push(`補休中（${u.reason||'事故'} 後，至 ${u.restUntil}）`);
   });
   for(const w of personCompRestWindows(personId, date)){
     if(windowsOverlapRecurring(s,e,toMin(w.start),toMin(w.end))) out.push(`補休中（${w.catName} ${w.label} 後，至 ${w.end}）`);
@@ -1821,32 +1827,11 @@ function autoAssignDay(date){
 const MISC_SIBLING_ROLE={'採買':'愛心便當','愛心便當':'採買'};
 function autoAssignMiscForDate(date){
   if(!state.misc[date]) state.misc[date]=[];
-  state.miscPresets.filter(p=>p.fixed).forEach(preset=>{
-    const roles = preset.roles;
-    const times = presetTimes(preset);
-    if(times.length===1){
-      const exists = state.misc[date].some(m=>m.role===preset.role);
-      if(!exists){
-        const t=times[0];
-        state.misc[date].push({
-          id:uid(), role:preset.role, start:t.start, end:t.end, restUntil:preset.restUntil||'',
-          roles: roles?[...roles]:undefined,
-          personIds: roles? roles.map(()=>undefined) : []
-        });
-      }
-      return;
-    }
-    times.forEach(t=>{
-      const exists = state.misc[date].some(m=>m.role===preset.role && m.start===t.start && m.end===t.end);
-      if(!exists){
-        state.misc[date].push({
-          id:uid(), role:preset.role, start:t.start, end:t.end, restUntil:preset.restUntil||'',
-          roles: roles?[...roles]:undefined,
-          personIds: roles? roles.map(()=>undefined) : []
-        });
-      }
-    });
-  });
+  // 這裡以前會把標記「固定項目」的常用項目(消防車/救護車/值星等，每天都
+  // 要有)自動建立成今天的項目，再排人進去——使用者反映「自動排班」應該
+  // 單純只做「排人補空缺」，不要自己新增新的勤務項目，即使是標記固定的
+  // 也一樣，這類每天都要有的項目改成自己先按「匯入預設」或手動新增。這
+  // 裡故意不再自動建立，只處理下面「幫已經存在的項目補人」這件事。
   /* process entries with the strictest requirements first (most required
      license/EMT/skill types, weighted by how many of the entry's role
      slots actually need one — an item where BOTH driver and chief need
@@ -2466,6 +2451,24 @@ function openUnitRulesModal(){
       drawDutyDefs();
     };
   };
+  /* 刪除一個崗位/其他勤務項目——drawDutyDefEditor自己的「刪除」按鈕、跟
+     drawScheduleCategories清單裡直接刪的按鈕共用同一套邏輯，不要各自維
+     護一份，避免以後改邏輯漏改到其中一邊。onDone讓兩邊呼叫完之後各自決
+     定要導回清單還是留在原地重繪。 */
+  const deleteDutyDefinition=(key, onDone)=>{
+    const def = state.dutyDefinitions.find(d=>d.key===key);
+    if(!def) return;
+    showConfirm(`確定要刪除「${def.name}」這個崗位嗎？已經排定的內容不會被清掉，只是之後這個崗位不會再出現在清單裡。`, ()=>{
+      state.dutyDefinitions = state.dutyDefinitions.filter(d=>d.key!==key);
+      if(def.linkedPreplan){
+        state.customPreplanTypes = state.customPreplanTypes.filter(c=>c.key!==key);
+        delete state.unitRules.preplanSkillReqs[key];
+        rebuildPreplanTypes();
+      }
+      saveState();
+      if(onDone) onDone();
+    });
+  };
   const drawDutyDefEditor=(key)=>{
     const def = state.dutyDefinitions.find(d=>d.key===key);
     if(!def){ editingDutyKey=null; section=null; draw(); return; }
@@ -2572,10 +2575,14 @@ function openUnitRulesModal(){
       const countVal = document.getElementById('ddeCount').value.trim();
       def.requiredCount = countVal? Math.max(1, parseInt(countVal,10)||1) : null;
       if(def.mode!=='fixedSlots'){
-        const s=document.getElementById('ddeStart').value, e=document.getElementById('ddeEnd').value;
+        // 這裡是一對時/分select(timeSelectHTML)，不是單一input——要用
+        // getTimeSelectValue讀，直接document.getElementById('ddeStart')
+        // 抓不到東西(id其實是ddeStart__h/ddeStart__m)，.value會整個save
+        // 失敗，改的時間就這樣憑空消失。
+        const s=getTimeSelectValue('ddeStart'), e=getTimeSelectValue('ddeEnd');
         def.times = (s||e)? [{start:s,end:e}] : [];
       }
-      def.restUntil = document.getElementById('ddeRest').value;
+      def.restUntil = getTimeSelectValue('ddeRest');
       def.mode = def.isVehicle? 'roles' : (def.mode==='roles'? 'people' : def.mode);
       if(!def.linkedPreplan){
         const dayTypeSel = document.getElementById('ddeDayType');
@@ -2585,20 +2592,11 @@ function openUnitRulesModal(){
       saveState();
       editingDutyKey=null;
       draw();
+      showToast('已儲存');
     };
     const delBtn=document.getElementById('ddeDelete');
     if(delBtn) delBtn.onclick=()=>{
-      showConfirm(`確定要刪除「${def.name}」這個崗位嗎？已經排定的內容不會被清掉，只是之後這個崗位不會再出現在清單裡。`, ()=>{
-        state.dutyDefinitions = state.dutyDefinitions.filter(d=>d.key!==key);
-        if(def.linkedPreplan){
-          state.customPreplanTypes = state.customPreplanTypes.filter(c=>c.key!==key);
-          delete state.unitRules.preplanSkillReqs[key];
-          rebuildPreplanTypes();
-        }
-        saveState();
-        editingDutyKey=null;
-        draw();
-      });
+      deleteDutyDefinition(key, ()=>{ editingDutyKey=null; draw(); });
     };
   };
   const drawLeaveBuffer=()=>{
@@ -2649,6 +2647,13 @@ function openUnitRulesModal(){
     };
   };
   const drawScheduleCategories=()=>{
+    // 這三個區塊預設是展開的(跟collapsibleCardHTML其他地方預設收合不同)
+    // ——這裡本來就是一進來就要看到內容、點進去編輯的設定畫面，不是「偶
+    // 爾才需要看」的輔助資訊，只有使用者自己手動收合過一次之後(collapse
+    // State裡已經有明確true/false)，才會照使用者上次的選擇來。
+    ['catSettingsGuard','dutyDefsWeekdayBlock','dutyDefsHolidayBlock'].forEach(k=>{
+      if(collapseState[k]===undefined) collapseState[k]=true;
+    });
     // 「其他勤務項目」分成「平日」「假日」兩份完全獨立的清單(dayType)，各
     // 自照sortOrder排序——這就是排班頁按「匯入預設」時實際會用的順序
     // (syncDutyDefinitionToLegacy會把sortOrder寫進legacy的
@@ -2676,6 +2681,7 @@ function openUnitRulesModal(){
           <div>${esc(d.icon)} ${esc(d.name)}${d.isVehicle?' <span class="hint">(出車)</span>':''}</div>
           ${summary? `<div class="hint">${esc(summary)}</div>`:''}
         </div>
+        <button class="ghost small danger" data-del-duty-inline="${esc(d.key)}" title="刪除">🗑️</button>
         <span style="color:var(--dim)">›</span>
       </div>`;
     };
@@ -2692,27 +2698,40 @@ function openUnitRulesModal(){
         <input type="checkbox" id="ddVehicle${idSuf}" style="width:auto"> 這是出車任務（駕駛／車長分開設定資格）
       </label>
       <button class="ghost" id="ddAdd${idSuf}" style="width:100%">＋新增這個項目</button>`;
-    modal.innerHTML=`
-      <div class="section-title"><button class="ghost small" id="urBack">← 返回</button><h2 style="margin:0">勤務類別</h2></div>
-      <div class="section-title">
-        <h3 style="margin:0">衛哨／打飯班類別</h3>
-        <button class="ghost small" id="addCat">＋新增類別</button>
-      </div>
+    // 三個區塊(衛哨/打飯班類別、其他勤務項目平日、其他勤務項目假日)都包成
+    // collapsibleCardHTML——項目一多，畫面拉很長，能收合比較好找。但這個
+    // 畫面本身是疊在openUnitRulesModal上的獨立彈窗，不是#app的一部分，
+    // collapsibleCardHTML內建那套「data-collapse-toggle交給document層級
+    // 監聽、toggle完呼叫全域render()」的機制對這裡沒用(render()只會重繪
+    // #app，不會重繪這個彈窗)，所以下面另外接管這幾顆按鈕的點擊，自己切
+    // 換collapseState並呼叫drawScheduleCategories()重繪，同時擋掉事件往
+    // 上冒泡，避免document那層監聽也跟著多切一次、兩邊互相抵銷。
+    const guardSectionInner = `
       <div class="hint">安全士官／橋哨／指管：前後兩班（衛哨對衛哨）需間隔≥6小時、單日累計上限6小時（系統自動檢查，違反會標紅；此規則不含準備時間，純粹以衛哨排定時間計算）。每班衛哨開始前需空30分鐘準備：若前一段時間還在忙其他勤務（如採買、打飯班），系統會擋下並標紅，避免像「採買到08:00、緊接著08:00-12:00衛哨」這種沒時間準備的排法。橋哨／指管優先排下士，其次其他士兵/士官。打飯班早/午/晚每班2人＝1位帶隊士官（優先下士→中士→上士）＋1位士兵，盡量避免安排軍官；整天固定2人優先排訓練役，沒有訓練役才依二兵→一兵→上兵遞補。下拉選單已依此優先順序排序，越上面越優先。有設定「補休至」的班別（例：22:00-06:00 各節衛哨補休至08:00、06-08衛哨與早餐打飯班補休至08:30、午餐打飯班補休至15:30），下班後系統會自動把該員在補休時段內標示為不可排，也會檢查補休時段有沒有跟已排的其他勤務衝突，可到各類別「編輯」調整補休時間。</div>
       <div class="hint">下拉選單中的 🚫不可排 已同時涵蓋：休假/事故、長期事故、補休、以及當天其他勤務的重複指派。</div>
       <div class="hint" style="margin-top:8px">點下面任一個類別可以進去改名稱/班次時段/補休等設定——這裡點進去預設是「套用到所有日期（預設）」，改了就是改這個類別長期的預設值；刪除類別也在同一個編輯畫面裡。如果只是想調整「今天」某一天的班次，改到排班分頁該類別卡片上的「編輯」進去，那邊預設只套用到當天，不會動到這裡的預設。</div>
-      <div id="scheduleCategoriesContainer">${orderedCategories().map(catRow).join('')}</div>
-      <div class="divider"></div>
-      <h3>🌤️ 其他勤務項目・平日</h3>
-      <div class="hint" style="margin-bottom:8px">平日（星期一到五，不含下面「假日設定」裡的例假日/國定假日）按「匯入預設」會用到的清單，跟「假日」是完全獨立的兩份，同一個項目如果平日假日都要有，要分別新增、各自維護。時段/人數/補休可以先在這裡看到，排列順序就是匯入後排班頁會出現的順序——長按左邊 ⠿ 可拖曳調整，點項目本身可以進去編輯細節或刪除。</div>
+      <div id="scheduleCategoriesContainer">${orderedCategories().map(catRow).join('')}</div>`;
+    const weekdaySectionInner = `
+      <div class="hint" style="margin-bottom:8px">平日（星期一到五，不含下面「假日設定」裡的例假日/國定假日）按「匯入預設」會用到的清單，跟「假日」是完全獨立的兩份，同一個項目如果平日假日都要有，要分別新增、各自維護。時段/人數/補休可以先在這裡看到，排列順序就是匯入後排班頁會出現的順序——長按左邊 ⠿ 可拖曳調整，點項目本身可以進去編輯細節，或直接點🗑️刪除。</div>
       <div id="dutyDefsWeekdayContainer">${weekdayItems.length? weekdayItems.map(plainRow).join('') : '<div class="empty">目前沒有</div>'}</div>
-      ${addFormHTML('平日','Wd')}
-      <div class="divider"></div>
-      <h3>🌙 其他勤務項目・假日</h3>
+      ${addFormHTML('平日','Wd')}`;
+    const holidaySectionInner = `
       <div class="hint" style="margin-bottom:8px">例假日（含國定假日，在「假日設定」調整）按「匯入預設」會用到的清單，跟上面「平日」完全獨立，互不影響。</div>
       <div id="dutyDefsHolidayContainer">${holidayItems.length? holidayItems.map(plainRow).join('') : '<div class="empty">目前沒有</div>'}</div>
       ${addFormHTML('假日','Hol')}`;
+    modal.innerHTML=`
+      <div class="section-title"><button class="ghost small" id="urBack">← 返回</button><h2 style="margin:0">勤務類別</h2></div>
+      ${collapsibleCardHTML('catSettingsGuard', '衛哨／打飯班類別', guardSectionInner, `<button class="ghost small" id="addCat">＋新增類別</button>`)}
+      ${collapsibleCardHTML('dutyDefsWeekdayBlock', '🌤️ 其他勤務項目・平日', weekdaySectionInner)}
+      ${collapsibleCardHTML('dutyDefsHolidayBlock', '🌙 其他勤務項目・假日', holidaySectionInner)}`;
     document.getElementById('urBack').onclick=()=>{ section=null; draw(); };
+    modal.querySelectorAll('[data-collapse-toggle]').forEach(btn=>{
+      btn.onclick=(e)=>{
+        e.stopPropagation();
+        collapseState[btn.dataset.collapseToggle] = !collapseState[btn.dataset.collapseToggle];
+        drawScheduleCategories();
+      };
+    });
     document.getElementById('addCat').onclick=()=>{
       showPrompt('新類別名稱？（例：查哨）', '', (name)=>{
         const newId=uid();
@@ -2725,6 +2744,12 @@ function openUnitRulesModal(){
     };
     modal.querySelectorAll('[data-edit-duty]').forEach(row=>{
       row.onclick=()=>{ editingDutyKey=row.dataset.editDuty; draw(); };
+    });
+    modal.querySelectorAll('[data-del-duty-inline]').forEach(btn=>{
+      btn.onclick=(e)=>{
+        e.stopPropagation(); // 不要連帶觸發同一行data-edit-duty的「進去編輯」
+        deleteDutyDefinition(btn.dataset.delDutyInline, drawScheduleCategories);
+      };
     });
     modal.querySelectorAll('[data-edit-cat-settings]').forEach(row=>{
       row.onclick=()=>openCategoryEditor(row.dataset.editCatSettings, 'default', drawScheduleCategories);
@@ -5689,7 +5714,8 @@ function previewClearRange(from, to, opts){
 }
 function openClearRangeModal(){
   const modal=document.createElement('div');
-  modal.className='sheet-modal'; modal.style.zIndex='70';
+  // 同openAdhocQueryModal的z-index說明——這顆🧹也是標題列常駐按鈕。
+  modal.className='sheet-modal'; modal.style.zIndex='150';
   const scheduleItems = [
     ['assign','衛哨排班'], ['misc','其他勤務'], ['unavail','事故/休假'],
     ['dailyShiftOverrides','當日班別設定'], ['dutyChanges','異動紀錄'],
@@ -5797,7 +5823,8 @@ function openExportModal(){
   const dataStr = JSON.stringify(state, null, 2);
   const fileName = 'duty-roster-backup-'+todayStr()+'.json';
   const modal=document.createElement('div');
-  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:60;display:flex;align-items:flex-end;';
+  // 同openAdhocQueryModal的z-index說明——這顆📤也是標題列常駐按鈕。
+  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:150;display:flex;align-items:flex-end;';
   modal.innerHTML=`
     <div class="sheet-inner">
       <div class="section-title"><h2 style="margin:0">匯出備份</h2><button class="ghost small" id="closeExport">關閉</button></div>
@@ -6919,10 +6946,14 @@ function openQuickIncidentModal(personId, date, onDone){
       <div class="section-title"><h2 style="margin:0">登記/編輯事故：${esc(person.name)}</h2><button class="ghost small" id="closeModal">關閉</button></div>
       <div class="hint" style="margin-bottom:8px">${minguoLabel(date)}</div>
       <div id="qiExistingList" style="margin-bottom:8px">${existing.length? existing.map(u=>`
-        <div class="list-item">
-          <span class="grow">${u.allDay? '全天':`${u.start}-${u.end}`}${u.reason? `（${esc(u.reason)}）`:''}${u.inCamp===false? ' 🚫不在營':''}</span>
-          <button class="ghost small" data-qi-edit="${u.id}">編輯</button>
-          <button class="ghost small danger" data-qi-del="${u.id}">刪除</button>
+        <div class="list-item" style="flex-direction:column;align-items:stretch">
+          <div class="row">
+            <span class="grow">${u.allDay? '全天':`${u.start}-${u.end}`}${u.reason? `（${esc(u.reason)}）`:''}${u.inCamp===false? ' 🚫不在營':''}</span>
+            <button class="ghost small" data-qi-edit="${u.id}">編輯</button>
+            <button class="ghost small danger" data-qi-del="${u.id}">刪除</button>
+          </div>
+          ${u.restUntil? `<div class="hint">😴 補休至 ${esc(u.restUntil)}</div>`:''}
+          ${u.note? `<div class="hint">📝 ${esc(u.note)}</div>`:''}
         </div>`).join('') : `<div class="empty">今天還沒有登記</div>`}</div>
       <div class="divider"></div>
       <h3 id="qiFormTitle">新增一筆</h3>
@@ -6932,6 +6963,9 @@ function openQuickIncidentModal(personId, date, onDone){
       <div class="row wrap" id="qiTimeRow" style="margin-bottom:8px;display:none">
         <div class="grow"><label>開始</label>${timeSelectHTML('qiStart','08:00')}</div>
         <div class="grow"><label>結束</label>${timeSelectHTML('qiEnd','12:00')}</div>
+      </div>
+      <div class="row wrap" id="qiRestRow" style="margin-bottom:8px;display:none">
+        <div class="grow"><label>補休至(選填，事故結束後自動排除其他勤務至此時間)</label>${timeSelectHTML('qiRest', '', {allowEmpty:true})}</div>
       </div>
       <div class="row wrap" style="margin-bottom:8px">
         <div class="grow"><label>原因</label>
@@ -6947,6 +6981,9 @@ function openQuickIncidentModal(personId, date, onDone){
         <label style="display:flex;align-items:center;gap:6px;font-size:12px;align-self:flex-end;padding-bottom:8px">
           <input type="checkbox" id="qiReasonAddToPreset" style="width:auto"> 加入預設列表
         </label>
+      </div>
+      <div class="row wrap" style="margin-bottom:8px">
+        <div class="grow"><label>備註（選填）</label><input type="text" id="qiNote" placeholder="想額外記錄的事項"></div>
       </div>
       <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text);margin-bottom:8px">
         <input type="checkbox" id="qiInCamp" style="width:auto"> 在營
@@ -6964,6 +7001,9 @@ function openQuickIncidentModal(personId, date, onDone){
   document.getElementById('closeModal').onclick=()=>{ modal.remove(); if(onDone) onDone(); };
   document.getElementById('qiAllDay').onchange=(e)=>{
     document.getElementById('qiTimeRow').style.display = e.target.checked? 'none':'flex';
+    // 補休至是接在事故「結束時間」後面算的，全天事故沒有結束時間可以接，
+    // 所以跟qiTimeRow一起顯示/隱藏。
+    document.getElementById('qiRestRow').style.display = e.target.checked? 'none':'flex';
   };
   document.getElementById('qiReasonPreset').onchange=(e)=>{
     document.getElementById('qiReasonCustomRow').style.display = e.target.value==='__custom'? 'flex':'none';
@@ -6983,11 +7023,16 @@ function openQuickIncidentModal(personId, date, onDone){
       document.getElementById('qiFormTitle').textContent='編輯這筆';
       document.getElementById('qiAllDay').checked=u.allDay;
       document.getElementById('qiTimeRow').style.display=u.allDay?'none':'flex';
-      if(!u.allDay){ setTimeSelectValue('qiStart',u.start); setTimeSelectValue('qiEnd',u.end); }
+      document.getElementById('qiRestRow').style.display=u.allDay?'none':'flex';
+      if(!u.allDay){
+        setTimeSelectValue('qiStart',u.start); setTimeSelectValue('qiEnd',u.end);
+        setTimeSelectValue('qiRest', u.restUntil||'');
+      }
       const presetSel=document.getElementById('qiReasonPreset');
       const known=[...presetSel.options].some(o=>o.value===u.reason);
       if(known){ presetSel.value=u.reason; }
       else if(u.reason){ presetSel.value='__custom'; document.getElementById('qiReasonCustomRow').style.display='flex'; document.getElementById('qiReasonCustom').value=u.reason; }
+      document.getElementById('qiNote').value = u.note||'';
       document.getElementById('qiInCamp').checked = u.inCamp!==false;
       document.getElementById('qiAdd').textContent='儲存修改';
       modal.querySelector('.sheet-inner').scrollTop = modal.querySelector('.sheet-inner').scrollHeight;
@@ -7000,6 +7045,8 @@ function openQuickIncidentModal(personId, date, onDone){
     const allDay = document.getElementById('qiAllDay').checked;
     const start = allDay? '' : getTimeSelectValue('qiStart');
     const end = allDay? '' : getTimeSelectValue('qiEnd');
+    const restUntil = allDay? '' : getTimeSelectValue('qiRest');
+    const note = document.getElementById('qiNote').value.trim();
     const presetVal = document.getElementById('qiReasonPreset').value;
     const reason = presetVal==='__custom'? document.getElementById('qiReasonCustom').value.trim() : presetVal;
     const inCamp = document.getElementById('qiInCamp').checked;
@@ -7008,7 +7055,10 @@ function openQuickIncidentModal(personId, date, onDone){
       state.dailyReasonOptions.push(reason);
     }
     if(!state.unavail[date]) state.unavail[date]=[];
-    state.unavail[date].push({id:uid(), personId, allDay, start, end, reason, inCamp});
+    const entry={id:uid(), personId, allDay, start, end, reason, inCamp};
+    if(restUntil) entry.restUntil=restUntil;
+    if(note) entry.note=note;
+    state.unavail[date].push(entry);
     if(syncRosterDefault && reason){
       const existingLt = personLongTerm(person);
       const mode = existingLt.mode!=='off' ? existingLt.mode : 'allday';
@@ -7388,8 +7438,10 @@ function personTimelineParts(personId, date){
       else if(u.start==='00:00') parts.push({sortMin:toMin(u.end), text:`${hhmm(u.end)}收假`});
       return;
     }
-    if(u.allDay) parts.push({sortMin:-1, text:`整天${u.reason||'事故'}`});
-    else if(u.start && u.end) parts.push({sortMin:toMin(u.start), text:`${hhmm(u.start)}-${hhmm(u.end)}${u.reason||'事故'}`});
+    const noteSuffix = u.note? `（📝${u.note}）` : '';
+    const restSuffix = u.restUntil? `・補休至${hhmm(u.restUntil)}` : '';
+    if(u.allDay) parts.push({sortMin:-1, text:`整天${u.reason||'事故'}${noteSuffix}`});
+    else if(u.start && u.end) parts.push({sortMin:toMin(u.start), text:`${hhmm(u.start)}-${hhmm(u.end)}${u.reason||'事故'}${restSuffix}${noteSuffix}`});
   });
   const dayAssign = state.assign[date]||{};
   state.categories.forEach(cat=>{
@@ -7410,7 +7462,21 @@ function personTimelineParts(personId, date){
     }
   });
   parts.sort((a,b)=>a.sortMin-b.sortMin);
-  return parts.map(p=>p.text);
+  // 同一人同一天，state.unavail裡有時候會同時存在好幾筆「文字上看起來一
+  // 樣」的紀錄——例如一筆有leaveId的正式休假記錄，跟另一筆沒有leaveId、
+  // 舊資料留下來的（或「留守期間非留守人員」自動產生的）休假紀錄，兩筆
+  // 底層是各自獨立的record，但顯示出來的文字剛好相同（例如都是「整天休
+  // 假」或「0730收假」）。以前沒有這個時間軸功能，這種重複是隱形的；現
+  // 在會並排顯示，看起來像「0730收假 0730收假」，容易讓人誤以為是bug或
+  // 資料錯亂。這裡只處理「顯示」層面，同一行裡文字完全相同的只留第一筆
+  // ，底層資料本身不動。
+  const seenText=new Set();
+  const deduped = parts.filter(p=>{
+    if(seenText.has(p.text)) return false;
+    seenText.add(p.text);
+    return true;
+  });
+  return deduped.map(p=>p.text);
 }
 function personTimelineLine(p, date){
   const parts = personTimelineParts(p.id, date);
@@ -7714,6 +7780,22 @@ function wireReasonPoolDeleteButtons(){
   });
 }
 
+/* 輕量、不擋畫面的提示——存檔成功這種「讓你知道有效」的回饋，不需要
+   showAlert那種要點「確定」才能關掉的彈窗，跳一下、自己淡出就好，
+   不打斷接下來的操作。跟showAlert/showConfirm不同，這裡故意不用
+   document.getElementById抓id，直接對回傳的元素操作，避免同一瞬間疊
+   出多個toast時互相干擾。 */
+function showToast(message){
+  const el=document.createElement('div');
+  el.style.cssText='position:fixed;left:50%;bottom:calc(24px + env(safe-area-inset-bottom));transform:translateX(-50%);background:var(--ok);color:var(--bg);padding:10px 18px;border-radius:20px;font-size:13px;font-weight:600;z-index:300;box-shadow:0 4px 14px rgba(0,0,0,.35);opacity:0;transition:opacity .2s ease;max-width:80vw;text-align:center;';
+  el.textContent = message;
+  document.body.appendChild(el);
+  requestAnimationFrame(()=>{ el.style.opacity='1'; });
+  setTimeout(()=>{
+    el.style.opacity='0';
+    setTimeout(()=>el.remove(), 250);
+  }, 1600);
+}
 function showAlert(message){
   const modal=document.createElement('div');
   modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:200;display:flex;align-items:center;justify-content:center;padding:20px;';
@@ -7733,21 +7815,30 @@ function wireCloseConfirm(modal, closeBtn){
   });
   closeBtn.onclick=()=>{
     if(dirty){
-      showConfirm('有尚未儲存的修改，確定要放棄並關閉嗎？', ()=>modal.remove());
+      // 按鈕文字故意不用「確定」/「取消」——這裡的「確定」其實是「確定放
+      // 棄」，容易被一路點過來的人誤會成「確定存檔」，改用不會誤判方向
+      // 的字。
+      showConfirm('有尚未儲存的修改，確定要放棄並關閉嗎？', ()=>modal.remove(), {confirmLabel:'放棄修改', cancelLabel:'繼續編輯'});
     } else {
       modal.remove();
     }
   };
 }
-function showConfirm(message, onConfirm){
+function showConfirm(message, onConfirm, opts){
+  // opts.confirmLabel/opts.cancelLabel：預設是「確定」/「取消」，但像「放棄
+  // 修改」這種情境，「確定」容易被誤讀成「確定要儲存」而不是「確定要放
+  // 棄」，這時可以換成不會誤會方向的文字。
+  opts = opts||{};
+  const confirmLabel = opts.confirmLabel || '確定';
+  const cancelLabel = opts.cancelLabel || '取消';
   const modal=document.createElement('div');
   modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:200;display:flex;align-items:center;justify-content:center;padding:20px;';
   modal.innerHTML=`
     <div style="background:var(--panel);max-width:320px;width:100%;border-radius:10px;padding:16px;border:1px solid var(--line);">
       <div style="margin-bottom:14px;font-size:14px;line-height:1.5;color:var(--text);white-space:pre-wrap">${esc(message)}</div>
       <div class="row wrap">
-        <button class="ghost grow" id="confirmCancel">取消</button>
-        <button class="primary grow" id="confirmOk">確定</button>
+        <button class="ghost grow" id="confirmCancel">${esc(cancelLabel)}</button>
+        <button class="primary grow" id="confirmOk">${esc(confirmLabel)}</button>
       </div>
     </div>`;
   document.body.appendChild(modal);
@@ -8275,6 +8366,7 @@ function hardUnavailabilityReasons(personId, date, s, e){
   (state.unavail[date]||[]).filter(u=>u.personId===personId).forEach(u=>{
     const hit = u.allDay || incidentBlocksWindow(u, s, e, false);
     if(hit) out.push(`${u.allDay? '全天':`${u.start}-${u.end}`}${u.reason? '（'+u.reason+'）':'（未註記原因）'}`);
+    else if(u.restUntil && u.end && windowsOverlapRecurring(s,e,toMin(u.end),toMin(u.restUntil))) out.push(`補休中（${u.reason||'事故'} 後，至 ${u.restUntil}）`);
   });
   for(const w of personCompRestWindows(personId, date)){
     if(windowsOverlapRecurring(s,e,toMin(w.start),toMin(w.end))) out.push(`補休中（${w.catName} ${w.label} 後，至 ${w.end}）`);
@@ -9170,7 +9262,13 @@ function openCategoryEditor(catId, initialScope, onDone){
   initialScope = initialScope || 'default';
   const cat = state.categories.find(c=>c.id===catId);
   const modal = document.createElement('div');
-  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:50;display:flex;align-items:flex-end;';
+  // z-index故意用150、不是原本沿用其他小型sheet常見的50/60——這個編輯器
+  // 除了從排班頁(基礎畫面，z<50即可)開之外，也會從「我們的規則→勤務類
+  // 別」設定畫面(openUnitRulesModal，z:94)裡疊著開，50/60都比94低，疊在
+  // 設定畫面底下會整個被蓋住、看起來像「點下去沒反應」，只有z:200的
+  // showConfirm能穿出來。比照openQuickIncidentModal同樣「可能疊在別的
+  // fullscreen-modal上面開」的做法，統一用150。
+  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:150;display:flex;align-items:flex-end;';
   modal.innerHTML = `
     <div class="sheet-inner">
       <div class="section-title"><h2 style="margin:0">編輯：${esc(cat.name)}</h2><div class="row" style="gap:4px"><button class="ghost small" id="duplicateCatBtn">📋 複製此類別</button><button class="ghost small" id="closeModal">關閉</button></div></div>
@@ -9474,6 +9572,7 @@ function openCategoryEditor(catId, initialScope, onDone){
     } else {
       modal.remove(); render();
       if(onDone) onDone();
+      showToast(editScope==='today'? '已儲存（僅套用到今天）' : editScope==='range'? '已儲存（套用到指定日期範圍）' : '已儲存');
     }
   };
   function shiftEditRow(s,i){
@@ -9636,7 +9735,9 @@ function openAdhocAddModal(personId, defaultStart, defaultEnd){
   if(!person) return;
   const todayFreeform = (state.misc[currentDate]||[]).filter(m=>!m.roles);
   const modal=document.createElement('div');
-  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:70;display:flex;align-items:center;justify-content:center;padding:20px;';
+  // 這個是疊在openAdhocQueryModal(z:150)上面開的，z-index要比它高，不然
+  // 會被蓋住(跟openAdhocQueryModal那邊的說明是同一組問題)。
+  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:160;display:flex;align-items:center;justify-content:center;padding:20px;';
   modal.innerHTML=`
     <div style="background:var(--panel);max-width:360px;width:100%;border-radius:10px;padding:16px;border:1px solid var(--line);">
       <h2 style="margin:0 0 10px">將 ${esc(person.name)} 加入其他勤務</h2>
@@ -9686,7 +9787,13 @@ function openAdhocAddModal(personId, defaultStart, defaultEnd){
    在「其他勤務」分頁裡的卡片一樣，只是換成獨立彈窗，任何分頁都能開。 */
 function openAdhocQueryModal(){
   const modal=document.createElement('div');
-  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:60;display:flex;align-items:flex-end;';
+  // z-index用150、不是原本的60——這個按鈕在最上面的標題列，「我們的規則」
+  // 之類的.fullscreen-modal（top只從banner高度開始，標題列本來就還留在
+  // 畫面上、按得到）開著的時候一樣點得到這顆按鈕，60比那些畫面的90幾都
+  // 低，疊上去會整個被蓋住、看起來像「點下去/查詢完沒反應」。凡是從標題
+  // 列常駐按鈕開出來的畫面都比照辦理，統一用150(參考openCategoryEditor/
+  // openQuickIncidentModal同樣的處理)。
+  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:150;display:flex;align-items:flex-end;';
   modal.innerHTML=`
     <div class="sheet-inner">
       <div class="section-title"><h2 style="margin:0">🚨 臨時任務查詢</h2><button class="ghost small" id="closeAdhocQueryModal">關閉</button></div>
@@ -9810,11 +9917,6 @@ function openMiscPresetModal(editIndex){
       <div class="row wrap" style="margin-bottom:8px">
         <div class="grow"><label>需求人數（選填，預設1人；自動排班會依這個數字補到滿）</label><input type="number" id="mpRequiredCount" min="1" value="${existing&&existing.requiredCount?existing.requiredCount:1}" style="width:100%"></div>
       </div>` : ''}
-      <div class="row wrap" style="margin-bottom:8px">
-        <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text)">
-          <input type="checkbox" id="mpFixed" style="width:auto" ${existing&&existing.fixed?'checked':''}> 固定項目（每天一定會有，例如消防車、救護車；勾選後自動排班時會自動建立當天項目並補人，會列在最上面）
-        </label>
-      </div>
       <div class="row wrap" style="margin-bottom:8px">
         <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text)">
           <input type="checkbox" id="mpSentry" style="width:auto" ${existing&&existing.isSentry?'checked':''}> 是衛哨類項目（例如查哨）
@@ -9955,7 +10057,6 @@ function openMiscPresetModal(editIndex){
   document.getElementById('saveMiscPreset').onclick=()=>{
     const role=document.getElementById('mpName').value.trim();
     if(!role){ showAlert('請輸入項目名稱'); return; }
-    const fixed=document.getElementById('mpFixed').checked;
     const isSentry=document.getElementById('mpSentry').checked;
     const isAllDayAway=document.getElementById('mpAllDayAway').checked;
     const standbyMode=document.querySelector('input[name="mpStandbyMode"]:checked').value;
@@ -9973,7 +10074,7 @@ function openMiscPresetModal(editIndex){
     const isDefaultOrder = rankPriorityDraft.length===defaultOrder.length && rankPriorityDraft.every((r,i)=>r===defaultOrder[i]);
     const rankPriority = isDefaultOrder? null : [...rankPriorityDraft];
     if(editing){
-      existing.role=role; existing.times=timesDraft.map(t=>({...t})); existing.fixed=fixed; existing.isSentry=isSentry; existing.isAllDayAway=isAllDayAway; existing.standbyMode=standbyMode; existing.restUntil=restUntil;
+      existing.role=role; existing.times=timesDraft.map(t=>({...t})); existing.isSentry=isSentry; existing.isAllDayAway=isAllDayAway; existing.standbyMode=standbyMode; existing.restUntil=restUntil;
       existing.requiredLicenses=requiredLicenses; existing.requiredMedCert=requiredMedCert; existing.requiredSkills=requiredSkills;
       if(!existing.roles) existing.requiredCount=requiredCount;
       if((existing.roles||[]).includes('車長')){
@@ -9993,7 +10094,7 @@ function openMiscPresetModal(editIndex){
         // 目」共用同一個輸入表單，用這個勾選框來分流
         addMiscEntriesForToday(role, timesDraft, {restUntil, requiredLicenses, requiredMedCert, requiredSkills});
       } else {
-        state.miscPresets.push({role,times:timesDraft.map(t=>({...t})),roles:null,fixed,isSentry,isAllDayAway,standbyMode,restUntil,requiredCount,requiredLicenses,requiredMedCert,requiredSkills,rankPriority,sortOrder:nextSortOrder(),excludeFromExport:false});
+        state.miscPresets.push({role,times:timesDraft.map(t=>({...t})),roles:null,isSentry,isAllDayAway,standbyMode,restUntil,requiredCount,requiredLicenses,requiredMedCert,requiredSkills,rankPriority,sortOrder:nextSortOrder(),excludeFromExport:false});
         // 新增常用項目之後,直接把今天份也建好,不用另外再點一次才會出現在
         // 「當日其他勤務」——省掉「建好範本→還要再找地方套用到今天」這一步
         addMiscEntriesForToday(role, timesDraft, {restUntil});
@@ -10053,6 +10154,7 @@ function miscEditBusyReasons(personId, date, s, eRaw, excludeEntryId){
   (state.unavail[date]||[]).filter(u=>u.personId===personId).forEach(u=>{
     const hit = u.allDay || incidentBlocksWindow(u, s, e, false);
     if(hit) out.push(`${u.allDay? '全天':`${u.start}-${u.end}`}${u.reason? '（'+u.reason+'）':'（未註記原因）'}`);
+    else if(u.restUntil && u.end && windowsOverlapRecurring(s,e,toMin(u.end),toMin(u.restUntil))) out.push(`補休中（${u.reason||'事故'} 後，至 ${u.restUntil}）`);
   });
   for(const w of personCompRestWindows(personId, date)){
     if(windowsOverlapRecurring(s,e,toMin(w.start),toMin(w.end))) out.push(`補休中（${w.catName} ${w.label} 後，至 ${w.end}）`);
