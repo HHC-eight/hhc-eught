@@ -7,170 +7,353 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="mobile-web-app-capable" content="yes">
 <title>衛哨排班</title>
+<meta name="theme-color" content="#1C2718">
+<script id="themeInit">try{if(localStorage.getItem('drs_theme_v1')==='night')document.documentElement.dataset.theme='night';}catch(e){}</script>
 <style>
+/* ================================================================
+   「勤務板」設計系統（v159 全面改版）
+   ----------------------------------------------------------------
+   設計方向：白天在戶外、辦公室都要一眼看得清楚——淺色紙面＋墨黑文字，
+   陸軍綠只用在「可以按的主要動作」與目前選取的狀態，其餘層級靠字重、
+   大小、留白來分，不再每個標題都上色、每一層都加框。
+   狀態一律用三種訊號色：綠＝完成、琥珀＝還缺、紅＝衝突/危險。
+   夜間查哨可以按標題列的 ☾ 切成「夜間」配色（同一套版面，只換顏色），
+   設定只存在這支手機。
+   所有顏色只寫在下面兩組變數裡，版面、元件都只讀變數。
+   ================================================================ */
 :root{
-  --bg:#11161c;
-  --panel:#1a2029;
-  --panel2:#212936;
-  --line:#2c3542;
-  --text:#e7ebf0;
-  --dim:#8b97a6;
-  --accent:#c98a3c;
-  --accent2:#7d9a5f;
-  --danger:#c9573c;
-  --ok:#5a9a6f;
-  /* 標題區固定在最上層，其他彈窗/抽屜都要往下讓出這個高度，不然會被蓋到。
-     這裡只是保底估計值，實際高度由 JS 量出來後覆寫（見 syncBannerHeight），
-     這樣不管標題區內容怎麼調整、換行與否、字體大小不同，都不會需要再手動
-     調整這個數字。 */
-  --banner-h:48px;
+  --bg:#EEF0EA; --panel:#FFFFFF; --panel2:#F3F5EF; --input-bg:#F7F8F4; --btn-bg:#EBEFE6;
+  --line:#DDE2D6; --line-strong:#C4CBB9; --card-border:transparent;
+  --text:#1B2117; --dim:#566150;
+  --accent:#2E5A33; --accent-ink:#FFFFFF; --accent-soft:#E2EDDD; --accent-text:#2A5530;
+  --accent2:#2E5A33; /* 舊變數名稱，保留相容 */
+  --gold:#D9AE45;
+  --danger:#B42318; --danger-soft:#FDECEA;
+  --warn:#9A5405;   --warn-soft:#FCF0DC;
+  --ok:#1F7040;     --ok-soft:#E2F2E7;
+  --scrim:rgba(24,32,20,.46);
+  --shadow:0 1px 2px rgba(27,33,23,.06),0 3px 12px rgba(27,33,23,.05);
+  --shadow-pop:0 18px 50px rgba(20,28,16,.28);
+  --banner-bg:linear-gradient(135deg,#1C2718 0%,#2A3B25 100%);
+  --banner-ink:#F1F4EC; --banner-sub:#A9BA9C; --banner-btn:rgba(255,255,255,.09);
+  --bar-bg:rgba(255,255,255,.86);
+  --rank-officer:#B42318; --rank-nco:#9A5405; --rank-enlisted:#1F7040;
+  --bar-fill:#CDE2C4;
+  --radius:16px; --radius-sm:11px; --radius-xs:8px;
+  --banner-h:56px;
+  color-scheme:light;
 }
+html[data-theme="night"]{
+  --bg:#0E120D; --panel:#161B14; --panel2:#1D2419; --input-bg:#1D2419; --btn-bg:#232B1F;
+  --line:#2B3427; --line-strong:#3B4735; --card-border:#232B1F;
+  --text:#E6EBE0; --dim:#A0AA97;
+  --accent:#8CC079; --accent-ink:#0F1A0C; --accent-soft:rgba(140,192,121,.15); --accent-text:#9DCB8B;
+  --accent2:#8CC079;
+  --danger:#F28B82; --danger-soft:rgba(242,139,130,.13);
+  --warn:#EBAE55;   --warn-soft:rgba(235,174,85,.13);
+  --ok:#80CF95;     --ok-soft:rgba(128,207,149,.13);
+  --scrim:rgba(0,0,0,.66);
+  --shadow:none; --shadow-pop:0 18px 50px rgba(0,0,0,.6);
+  --banner-bg:linear-gradient(135deg,#090C08 0%,#121A10 100%);
+  --banner-ink:#E6EBE0; --banner-sub:#8E9A86; --banner-btn:rgba(255,255,255,.07);
+  --bar-bg:rgba(22,27,20,.9);
+  --rank-officer:#F28B82; --rank-nco:#EBAE55; --rank-enlisted:#80CF95;
+  --bar-fill:#3A5132;
+  color-scheme:dark;
+}
+
+/* ---------------- 基礎 ---------------- */
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
-html,body{margin:0;padding:0;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"PingFang TC","Noto Sans TC",Segoe UI,sans-serif;}
-body{padding-bottom:calc(96px + env(safe-area-inset-bottom));}
-h1,h2,h3{font-weight:600;margin:0 0 10px;}
-h1{font-size:17px;letter-spacing:.5px;}
-h2{font-size:14px;color:var(--accent);}
-h3{font-size:13px;color:var(--dim);font-weight:500;}
-.topbar{position:sticky;top:0;z-index:20;background:var(--bg);border-bottom:1px solid var(--line);}
-.unit-banner{position:fixed;top:0;left:0;right:0;z-index:999;display:flex;flex-direction:column;gap:4px;padding:calc(6px + env(safe-area-inset-top)) 14px 6px;background:linear-gradient(180deg,#1a2117,var(--bg));border-bottom:1px solid rgba(125,154,95,.35);box-shadow:0 2px 8px rgba(0,0,0,.3);}
+html,body{margin:0;padding:0;background:var(--bg);color:var(--text);
+  font-family:-apple-system,BlinkMacSystemFont,"PingFang TC","Noto Sans TC","Microsoft JhengHei",sans-serif;}
+body{padding-top:var(--banner-h);padding-bottom:calc(92px + env(safe-area-inset-bottom));
+  font-size:15px;line-height:1.5;-webkit-font-smoothing:antialiased;font-variant-numeric:tabular-nums;}
+h1,h2,h3{margin:0 0 10px;}
+h1{font-size:17px;font-weight:700;}
+h2{font-size:16px;font-weight:700;color:var(--text);letter-spacing:.01em;}
+h3{font-size:13px;font-weight:700;color:var(--dim);letter-spacing:.04em;}
+b,strong{font-weight:700;}
+svg.i{width:20px;height:20px;flex-shrink:0;fill:none;stroke:currentColor;stroke-width:1.85;stroke-linecap:round;stroke-linejoin:round;vertical-align:-4px;}
+svg.i.fill{fill:currentColor;stroke:none;}
+
+/* ---------------- 單位標題列（固定在最上層 z:999）---------------- */
+.unit-banner{position:fixed;top:0;left:0;right:0;z-index:999;display:flex;flex-direction:column;gap:6px;
+  padding:calc(6px + env(safe-area-inset-top)) 10px 6px;background:var(--banner-bg);color:var(--banner-ink);
+  box-shadow:0 1px 0 rgba(0,0,0,.25),0 6px 18px rgba(12,18,10,.18);}
 .unit-banner-row1{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:8px;}
-.unit-banner-center{display:flex;align-items:center;justify-content:center;gap:8px;}
-.unit-banner-badge{width:18px;height:18px;border-radius:50%;background:var(--accent2);color:#0d130a;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;flex-shrink:0;}
-.unit-banner-text{font-size:12px;letter-spacing:2.5px;color:var(--accent2);font-weight:600;}
-/* 標題區改成 fixed，脫離文件流，所以幫 body 補上等高的上邊距，內容才不
-   會被蓋住；抓不到確切高度時用估計值，寧可多留一點空白也不要蓋到內容 */
-body{padding-top:var(--banner-h);}
-.topbar-main{padding:12px 14px;display:flex;align-items:center;justify-content:space-between;}
-.container{padding:12px 12px 40px;max-width:640px;margin:0 auto;}
-.card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:8px;box-shadow:0 1px 3px rgba(0,0,0,.2);}
-button.primary{box-shadow:0 1px 4px rgba(201,138,60,.35);}
-select[data-assign-cat]{border-left:3px solid var(--line);}
-select[data-assign-cat]:has(option[value=""]:checked){border-left:3px solid var(--accent);}
+.banner-side{display:flex;align-items:center;gap:4px;}
+.banner-side.right{justify-content:flex-end;}
+.unit-banner-center{display:flex;align-items:center;justify-content:center;gap:9px;min-width:0;}
+.unit-banner-badge{width:30px;height:30px;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;
+  background:radial-gradient(circle at 35% 30%,#F0CF72,var(--gold) 60%,#A87F22);color:#1C2718;box-shadow:0 0 0 2px rgba(217,174,69,.25);}
+.unit-banner-badge svg.i{width:17px;height:17px;}
+.unit-banner-titles{display:flex;flex-direction:column;align-items:flex-start;line-height:1.2;min-width:0;}
+.unit-banner-text{font-size:13.5px;font-weight:800;letter-spacing:.08em;color:var(--banner-ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;}
+.unit-banner h1#pageTitle{margin:1px 0 0;font-size:11px;font-weight:600;letter-spacing:.06em;color:var(--banner-sub);white-space:nowrap;}
+.unit-banner h1#pageTitle .muted{font-size:10.5px;color:var(--banner-sub);letter-spacing:.04em;}
+.icon-btn{display:inline-flex;align-items:center;justify-content:center;width:40px;height:40px;min-height:0;padding:0 !important;
+  border-radius:12px;border:none;background:transparent;color:inherit;}
+.unit-banner .icon-btn{background:var(--banner-btn);color:var(--banner-ink);width:38px;height:38px;}
+.unit-banner-titles{overflow:hidden;}
+@media (max-width:380px){.unit-banner .icon-btn{width:34px;height:34px;border-radius:10px;}.banner-side{gap:3px;}.unit-banner-center{gap:7px;}.unit-banner-badge{width:26px;height:26px;}.unit-banner-text{font-size:13px;letter-spacing:.04em;}}
+.unit-banner .icon-btn:disabled{opacity:.3;}
+#storageWarnBar{background:var(--danger) !important;color:#fff !important;border-radius:10px !important;}
+
+/* ---------------- 日期列（黏在標題列正下方）---------------- */
+.topbar{position:sticky;top:var(--banner-h);z-index:20;background:var(--bar-bg);
+  -webkit-backdrop-filter:saturate(1.5) blur(14px);backdrop-filter:saturate(1.5) blur(14px);
+  border-bottom:1px solid var(--line);}
+.topbar-main{display:flex;align-items:center;gap:6px;padding:6px 10px;max-width:680px;margin:0 auto;}
+.datenav{flex:1;display:flex;align-items:center;justify-content:center;gap:2px;min-width:0;}
+.datenav .icon-btn{color:var(--text);width:38px;height:38px;}
+#globalDateLabel{flex:0 1 auto;min-width:0;min-height:0;display:flex;flex-direction:column;align-items:center;gap:1px;
+  background:transparent;border:none;padding:3px 10px;line-height:1.15;color:var(--text);border-radius:12px;}
+#globalDateLabel .dl-main{font-size:20px;font-weight:800;letter-spacing:.01em;white-space:nowrap;}
+#globalDateLabel .dl-main .dl-wd{font-size:15px;font-weight:700;margin-left:6px;color:var(--dim);}
+#globalDateLabel.is-holiday .dl-main .dl-wd{color:var(--danger);}
+#globalDateLabel .dl-sub{font-size:11.5px;font-weight:600;color:var(--dim);white-space:nowrap;}
+#globalDateLabel .dl-chip{display:inline-block;margin-left:6px;padding:0 7px;border-radius:999px;font-size:10.5px;line-height:17px;vertical-align:1px;
+  background:var(--accent);color:var(--accent-ink);}
+#globalDateLabel .dl-chip.hol{background:var(--danger-soft);color:var(--danger);}
+#globalDateToday{min-height:34px;padding:5px 12px;border-radius:999px;font-size:13px;background:var(--accent-soft);color:var(--accent-text);border:none;}
+
+/* 週條＋常用工具（跟著頁面捲動） */
+.subbar{max-width:680px;margin:0 auto;padding:10px 12px 0;}
+.weekstrip{display:grid;grid-template-columns:repeat(7,1fr);gap:4px;background:var(--panel);border-radius:var(--radius);padding:6px;box-shadow:var(--shadow);border:1px solid var(--card-border);}
+.weekstrip button{min-height:0;display:flex;flex-direction:column;align-items:center;gap:1px;padding:6px 0 7px;border-radius:12px;border:none;background:transparent;color:var(--text);font-weight:600;}
+.weekstrip .ws-wd{font-size:11px;color:var(--dim);font-weight:600;}
+.weekstrip .ws-d{font-size:17px;font-weight:800;line-height:1.1;}
+.weekstrip button.hol .ws-d,.weekstrip button.hol .ws-wd{color:var(--danger);}
+.weekstrip button.today .ws-d{text-decoration:underline;text-decoration-thickness:2px;text-underline-offset:4px;text-decoration-color:var(--gold);}
+.weekstrip button.sel{background:var(--accent);color:var(--accent-ink);box-shadow:0 2px 8px rgba(46,90,51,.28);}
+.weekstrip button.sel .ws-wd,.weekstrip button.sel .ws-d{color:var(--accent-ink);}
+.toolgrid{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-top:10px;}
+.tool-tile{min-height:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;padding:9px 2px 8px;
+  background:var(--panel);border:1px solid var(--card-border);border-radius:14px;box-shadow:var(--shadow);color:var(--text);font-size:11.5px;font-weight:700;letter-spacing:.02em;white-space:nowrap;}
+.tool-tile svg.i{width:22px;height:22px;color:var(--accent-text);}
+
+.container{padding:12px 12px 40px;max-width:680px;margin:0 auto;}
+
+/* ---------------- 卡片／區塊 ---------------- */
+.card{background:var(--panel);border:1px solid var(--card-border);border-radius:var(--radius);padding:14px 16px;margin-bottom:12px;box-shadow:var(--shadow);}
+.card .card{background:var(--panel2);border:none;box-shadow:none;border-radius:13px;padding:12px 12px;margin-bottom:10px;}
+.card .card .card{background:var(--panel);}
 .row{display:flex;gap:8px;align-items:center;}
 .row.wrap{flex-wrap:wrap;}
 .grow{flex:1;min-width:0;}
-label{display:block;font-size:11px;color:var(--dim);margin-bottom:3px;}
-input[type=text],input[type=date],select,textarea{
-  width:100%;background:var(--panel2);border:1px solid var(--line);color:var(--text);
-  padding:9px 8px;border-radius:6px;font-size:14px;font-family:inherit;
-}
-select{-webkit-appearance:none;appearance:none;}
-input[type=checkbox]{width:22px !important;height:22px !important;min-width:22px;accent-color:var(--accent);cursor:pointer;flex-shrink:0;}
-button{
-  border:1px solid var(--line);background:var(--panel2);color:var(--text);
-  padding:9px 12px;border-radius:6px;font-size:13px;cursor:pointer;font-family:inherit;
-}
-button.primary{background:var(--accent);border-color:var(--accent);color:#1a140a;font-weight:600;}
-button.ghost{background:transparent;}
-button.danger{color:var(--danger);border-color:var(--danger);background:transparent;}
-button.small{padding:5px 9px;font-size:12px;}
-.topbar button.small{padding:3px 6px;font-size:11px;}
-.topbar select{font-size:10px;padding:3px 4px;}
-.topbar h1#pageTitle{font-size:13px;}
-button{transition:transform .12s ease, opacity .12s ease;}
-button:active{opacity:.6;transform:scale(.94);}
-button:disabled{opacity:.3;cursor:default;}
+.section-title{display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px;margin-bottom:0;min-height:26px;}
+.section-title h2,.section-title h3{margin:0;flex:1 1 auto;min-width:0;line-height:1.45;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.section-title h2 svg.i{color:var(--accent-text);margin-right:6px;}
+.section-title>.row,.section-title>button{flex-shrink:0;margin-left:auto;}
+.section-title[data-collapse-row]{cursor:pointer;}
+.section-title .stat{display:inline-block;margin-left:8px;padding:1px 8px;border-radius:999px;font-size:12px;font-weight:700;vertical-align:1px;background:var(--ok-soft);color:var(--ok);}
+.section-title .stat.short{background:var(--warn-soft);color:var(--warn);}
+/* 收合/展開：圓角膠囊＋會轉向的箭頭 */
+button.collapse-btn{display:inline-flex;align-items:center;gap:3px;min-height:32px;padding:4px 8px 4px 11px;border-radius:999px;
+  background:var(--btn-bg);border:none;color:var(--dim);font-size:12.5px;font-weight:700;}
+button.collapse-btn svg.i{width:17px;height:17px;transition:transform .2s ease;}
+button.collapse-btn[aria-expanded="true"]{background:var(--accent-soft);color:var(--accent-text);}
+button.collapse-btn[aria-expanded="true"] svg.i{transform:rotate(180deg);}
+.card-toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:0 0 10px;margin-bottom:10px;border-bottom:1px solid var(--line);}
+
+/* ---------------- 今日概況 ---------------- */
+.status-card{padding:14px 14px 12px;}
+.status-head{display:flex;align-items:center;gap:8px;margin-bottom:10px;}
+.status-head .st-title{font-size:16px;font-weight:800;}
+.status-head .st-badge{margin-left:auto;font-size:12px;font-weight:700;padding:3px 9px;border-radius:999px;background:var(--warn-soft);color:var(--warn);}
+.status-head .st-badge.done{background:var(--ok-soft);color:var(--ok);}
+.status-tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(90px,1fr));gap:8px;}
+.st-tile{background:var(--panel2);border-radius:12px;padding:9px 10px 10px;}
+.st-tile .st-label{font-size:12px;font-weight:700;color:var(--dim);}
+.st-tile .st-num{font-size:22px;font-weight:800;line-height:1.2;margin-top:2px;}
+.st-tile .st-num small{font-size:13px;font-weight:700;color:var(--dim);margin-left:1px;}
+.st-tile .st-bar{height:5px;border-radius:999px;background:var(--line);overflow:hidden;margin-top:6px;}
+.st-tile .st-bar i{display:block;height:100%;border-radius:999px;background:var(--ok);}
+.st-tile.short .st-num{color:var(--warn);}
+.st-tile.short .st-bar i{background:var(--warn);}
+.st-alert{display:flex;align-items:center;gap:6px;margin-top:10px;padding:8px 10px;border-radius:10px;background:var(--danger-soft);color:var(--danger);font-size:13px;font-weight:700;}
+.status-card .st-cta{margin-top:12px;}
+
+/* ---------------- 按鈕 ---------------- */
+button{font-family:inherit;font-size:14px;font-weight:600;line-height:1.25;min-height:40px;padding:8px 14px;border-radius:var(--radius-sm);
+  border:1px solid transparent;background:var(--btn-bg);color:var(--text);cursor:pointer;
+  transition:transform .12s ease,opacity .12s ease,background-color .15s ease;}
+button.ghost{background:var(--btn-bg);color:var(--text);}
+button.primary{background:var(--accent);color:var(--accent-ink);border-color:transparent;font-weight:700;
+  box-shadow:0 1px 2px rgba(20,40,20,.18),inset 0 -1px 0 rgba(0,0,0,.14);}
+button.primary svg.i,button.ghost svg.i{margin-right:6px;}
+button.danger{background:var(--danger-soft);color:var(--danger);border-color:transparent;}
+button.small{min-height:32px;padding:5px 10px;font-size:13px;border-radius:9px;}
+button.small svg.i{width:16px;height:16px;margin-right:4px;vertical-align:-3px;}
+button.collapse-btn svg.i{margin-right:0;}
+/* 放在跟按鈕底色差不多的面上（內層卡片、全螢幕彈窗/抽屜的底）時，改成白底加細框，按鈕輪廓才看得出來 */
+.card .card button.ghost,.shift-row button.ghost,.st-tile button.ghost,
+.fullscreen-modal>button.ghost,.fullscreen-modal>.row>button.ghost,.fullscreen-modal>.row>.grow>button.ghost,.fullscreen-modal>.section-title button.ghost,
+.drawer>button.ghost,.drawer>.section-title button.ghost,.fullscreen-modal>div>button.ghost{background:var(--panel);box-shadow:inset 0 0 0 1px var(--line);}
+.card .card button.danger{background:var(--danger-soft);box-shadow:none;}
+button:active{opacity:.7;transform:scale(.96);}
+button:disabled{opacity:.35;cursor:default;}
 button:disabled:active{transform:none;}
-@keyframes pressFlash{0%{background-color:var(--accent);color:#1a140a;}100%{background-color:inherit;color:inherit;}}
+@keyframes pressFlash{0%{background-color:var(--accent);color:var(--accent-ink);}100%{}}
 button.press-flash{animation:pressFlash .4s ease;}
 button.pressed,.pill-btn.pressed{opacity:.6;transform:scale(.94);}
-.tabs{position:fixed;bottom:0;left:0;right:0;display:flex;background:var(--panel);border-top:1px solid var(--line);z-index:30;padding-bottom:env(safe-area-inset-bottom);}
-.tabs button{flex:1;background:transparent;border:none;border-radius:0;padding:11px 4px;font-size:12px;color:var(--dim);}
-.tabs button.active{color:var(--accent);font-weight:600;}
-.list-item{display:flex;align-items:flex-start;gap:8px;padding:8px 0;border-bottom:1px solid var(--line);}
-.list-item:last-child{border-bottom:none;}
-.tag{font-size:11px;padding:2px 7px;border-radius:20px;border:1px solid var(--line);color:var(--dim);white-space:nowrap;}
-.tag.rank-軍官{color:#c9573c;border-color:#c9573c;}
-.tag.rank-士官{color:#c98a3c;border-color:#c98a3c;}
-.tag.rank-士兵{color:#7d9a5f;border-color:#7d9a5f;}
-.muted{color:var(--dim);font-size:12px;}
-.warn{color:var(--danger);font-size:12px;}
-.ok{color:var(--ok);font-size:12px;}
-.shift-row{border:1px solid var(--line);border-radius:6px;padding:8px;margin-bottom:8px;background:var(--panel2);}
-.shift-head{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;margin-bottom:6px;}
-.shift-head>.muted{margin-left:auto;}
-.shift-time{font-size:13px;font-weight:600;}
-.slot-select{margin-bottom:4px;}
-.badge-issue{display:inline-block;font-size:11px;color:var(--danger);margin-top:2px;}
-.section-title{display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px;margin-bottom:0;min-height:22px;}
-.section-title h2,.section-title h3{margin:0;flex:1 1 auto;min-width:0;line-height:1.5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-.section-title>.row,.section-title>button{flex-shrink:0;margin-left:auto;}
-.hr-table{width:100%;border-collapse:collapse;font-size:11px;}
-.hr-table td,.hr-table th{padding:3px 2px;text-align:center;border-bottom:1px solid var(--line);}
-.hr-table th{color:var(--dim);font-weight:500;}
-.bar-wrap{background:var(--panel2);border-radius:3px;overflow:hidden;height:14px;position:relative;}
-.bar-fill{background:var(--accent2);height:100%;}
-.pill-btn{display:inline-block;padding:4px 9px;border-radius:14px;border:1px solid var(--line);font-size:12px;margin:2px 3px 0 0;background:var(--panel2);transition:transform .12s ease, opacity .12s ease;}
-.pill-btn:active{opacity:.6;transform:scale(.93);}
-.empty{color:var(--dim);font-size:13px;text-align:center;padding:20px 0;}
-.divider{height:1px;background:var(--line);margin:12px 0;}
-textarea{min-height:50px;resize:vertical;}
-.hint{font-size:11px;color:var(--dim);margin-top:4px;line-height:1.5;}
+
+/* ---------------- 表單 ---------------- */
+label{display:block;font-size:12.5px;font-weight:600;color:var(--dim);margin-bottom:4px;}
+input[type=text],input[type=date],input[type=number],select,textarea{
+  width:100%;background:var(--input-bg);border:1px solid var(--line);color:var(--text);
+  padding:10px 11px;border-radius:var(--radius-sm);font-size:15px;font-family:inherit;min-height:44px;}
+input[type=text]:focus,input[type=date]:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft);}
+select{-webkit-appearance:none;appearance:none;padding-right:32px;
+  background-image:linear-gradient(45deg,transparent 50%,var(--dim) 50%),linear-gradient(135deg,var(--dim) 50%,transparent 50%);
+  background-position:calc(100% - 17px) 52%,calc(100% - 12px) 52%;background-size:5px 5px,5px 5px;background-repeat:no-repeat;}
+input[type=checkbox]{width:22px !important;height:22px !important;min-width:22px;accent-color:var(--accent);cursor:pointer;flex-shrink:0;}
+input[type=radio]{accent-color:var(--accent);width:18px;height:18px;}
+textarea{min-height:50px;resize:vertical;line-height:1.5;}
+::placeholder{color:var(--dim);opacity:.75;}
 .time-select-pair{display:inline-flex;align-items:center;gap:3px;width:100%;}
 .time-select-pair select{width:auto;flex:1;min-width:0;}
-.drawer-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:150;}
-.drawer{position:fixed;top:var(--banner-h);left:0;bottom:0;width:min(84vw,320px);background:var(--panel);border-right:1px solid var(--line);z-index:151;overflow:auto;-webkit-overflow-scrolling:touch;padding:14px 14px calc(14px + env(safe-area-inset-bottom));box-shadow:2px 0 12px rgba(0,0,0,.4);}
-.fullscreen-modal{position:fixed;top:var(--banner-h);left:0;right:0;bottom:0;background:var(--bg);overflow:auto;-webkit-overflow-scrolling:touch;padding:14px 14px calc(24px + env(safe-area-inset-bottom));z-index:80;}
-.sheet-modal{position:fixed;top:var(--banner-h);left:0;right:0;bottom:0;background:rgba(0,0,0,.6);display:flex;align-items:flex-end;z-index:80;}
-.sheet-inner{background:var(--panel);width:100%;max-height:88vh;overflow:auto;-webkit-overflow-scrolling:touch;border-radius:12px 12px 0 0;padding:14px 14px calc(14px + env(safe-area-inset-bottom));}
-.drawer h2{margin:0 0 10px;font-size:16px;}
-.drawer-item{display:flex;align-items:center;gap:8px;width:100%;padding:10px 8px;margin-bottom:6px;background:var(--bg);border:1px solid var(--line);border-radius:8px;color:var(--text);font-size:14px;text-align:left;cursor:pointer;}
-.cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:3px;}
-.cal-head{text-align:center;font-size:11px;color:var(--dim);padding:2px 0;}
-.cal-cell{aspect-ratio:1;border:1px solid var(--line);border-radius:6px;background:var(--bg);display:flex;flex-direction:column;align-items:center;justify-content:flex-start;padding:2px;cursor:pointer;overflow:hidden;}
-.cal-cell.empty{border:none;background:transparent;cursor:default;}
-.cal-cell.has{border-color:var(--accent);}
-.cal-cell.standby-marked{border-color:var(--ok);}
-.cal-cell.leave-marked{border-color:var(--danger);}
+.time-select-colon{color:var(--dim);font-weight:700;}
+
+/* ---------------- 班次（時間軸） ---------------- */
+.shift-row{position:relative;background:var(--panel);border-radius:13px;padding:10px 10px 8px 16px;margin-bottom:8px;border:none;box-shadow:0 0 0 1px var(--line);}
+.shift-row::before{content:"";position:absolute;left:6px;top:12px;bottom:12px;width:3px;border-radius:3px;background:var(--line-strong);}
+.shift-row:has(select[data-assign-cat] option[value=""]:checked)::before{background:var(--warn);}
+.shift-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 10px;margin-bottom:8px;}
+.shift-head>.muted{margin-left:auto;font-size:12px;}
+.shift-time{font-size:15px;font-weight:800;letter-spacing:.01em;}
+.slot-select{margin-bottom:6px;}
+.slot-select .row{gap:6px;}
+.slot-select button.small{min-width:38px;min-height:40px;}
+select[data-assign-cat]{background-color:var(--input-bg);font-weight:600;border-color:var(--line);}
+select[data-assign-cat]:has(option[value=""]:checked){background-color:var(--warn-soft);border-color:transparent;color:var(--warn);}
+.badge-issue{display:block;width:fit-content;max-width:100%;font-size:12.5px;font-weight:600;line-height:1.45;color:var(--danger);background:var(--danger-soft);
+  border-radius:8px;padding:4px 8px;margin-top:5px;}
+
+/* ---------------- 清單／標籤／文字 ---------------- */
+.list-item{display:flex;align-items:flex-start;gap:8px;padding:10px 0;border-bottom:1px solid var(--line);}
+.list-item:last-child{border-bottom:none;}
+.tag{display:inline-block;font-size:11.5px;font-weight:700;padding:2px 8px;border-radius:999px;border:none;background:var(--btn-bg);color:var(--dim);white-space:nowrap;}
+.tag.rank-軍官{color:var(--rank-officer);background:var(--danger-soft);}
+.tag.rank-士官{color:var(--rank-nco);background:var(--warn-soft);}
+.tag.rank-士兵{color:var(--rank-enlisted);background:var(--ok-soft);}
+.muted{color:var(--dim);font-size:13px;}
+.warn{color:var(--danger);font-size:13px;font-weight:600;}
+.ok{color:var(--ok);font-size:13px;font-weight:600;}
+.hint{font-size:12.5px;color:var(--dim);margin-top:4px;line-height:1.6;}
+.empty{color:var(--dim);font-size:14px;text-align:center;padding:22px 0;}
+.divider{height:1px;background:var(--line);margin:14px 0;}
+.pill-btn{display:inline-flex;align-items:center;gap:3px;padding:5px 11px;border-radius:999px;border:none;font-size:13px;font-weight:600;margin:3px 4px 0 0;
+  background:var(--btn-bg);color:var(--text);transition:transform .12s ease,opacity .12s ease;}
+.pill-btn:active{opacity:.6;transform:scale(.93);}
+.hr-table{width:100%;border-collapse:collapse;font-size:12.5px;}
+.hr-table td,.hr-table th{padding:5px 3px;text-align:center;border-bottom:1px solid var(--line);}
+.hr-table th{color:var(--dim);font-weight:700;}
+/* 每時段空閒人數：長條上面還疊著「官/士/兵」的小字，所以長條用淺色，字才讀得到 */
+.bar-wrap{background:var(--panel2);border-radius:7px;overflow:hidden;height:20px;position:relative;box-shadow:inset 0 0 0 1px var(--line);}
+.bar-fill{background:var(--bar-fill);height:100%;border-radius:7px 0 0 7px;box-shadow:inset -2px 0 0 var(--accent);}
+
+/* ---------------- 下方分頁列 ---------------- */
+.tabs{position:fixed;left:12px;right:12px;bottom:calc(10px + env(safe-area-inset-bottom));z-index:30;display:flex;gap:6px;padding:6px;
+  max-width:420px;margin:0 auto;background:var(--bar-bg);-webkit-backdrop-filter:saturate(1.5) blur(16px);backdrop-filter:saturate(1.5) blur(16px);
+  border:1px solid var(--line);border-radius:22px;box-shadow:0 10px 30px rgba(20,30,16,.16);}
+.tabs button{flex:1;display:flex;align-items:center;justify-content:center;gap:7px;min-height:48px;border:none;border-radius:16px;background:transparent;
+  color:var(--dim);font-size:14px;font-weight:700;}
+.tabs button svg.i{width:22px;height:22px;}
+.tabs button.active{background:var(--accent);color:var(--accent-ink);}
+
+/* ---------------- 彈窗／抽屜 ---------------- */
+.drawer-backdrop{position:fixed;inset:0;background:var(--scrim);z-index:150;}
+.drawer{position:fixed;top:var(--banner-h);left:0;bottom:0;width:min(86vw,340px);background:var(--bg);z-index:151;overflow:auto;-webkit-overflow-scrolling:touch;
+  padding:14px 14px calc(14px + env(safe-area-inset-bottom));box-shadow:8px 0 30px rgba(10,16,8,.28);border-radius:0 20px 20px 0;}
+.drawer h2{margin:0 0 10px;font-size:18px;font-weight:800;}
+.drawer-item{display:flex;align-items:center;gap:10px;width:100%;min-height:56px;padding:10px 12px;margin-bottom:8px;background:var(--panel);border:1px solid var(--card-border);
+  border-radius:14px;color:var(--text);font-size:15px;font-weight:700;text-align:left;cursor:pointer;box-shadow:var(--shadow);}
+.drawer-item .hint{font-weight:500;margin-top:1px;}
+.fullscreen-modal{position:fixed;top:var(--banner-h);left:0;right:0;bottom:0;background:var(--bg);overflow:auto;-webkit-overflow-scrolling:touch;
+  padding:14px 14px calc(24px + env(safe-area-inset-bottom));z-index:80;}
+.sheet-modal{position:fixed;top:var(--banner-h);left:0;right:0;bottom:0;background:var(--scrim);display:flex;align-items:flex-end;z-index:80;}
+/* 上限同時卡在「實際可用高度」（見v157的說明）：88vh沒有扣掉標題列，內容
+   長時框會往上溢出被標題列蓋住。 */
+.sheet-inner{background:var(--panel);width:100%;max-height:88vh;max-height:min(88vh,calc(100vh - var(--banner-h) - 12px));overflow:auto;-webkit-overflow-scrolling:touch;
+  border-radius:22px 22px 0 0;padding:8px 16px calc(16px + env(safe-area-inset-bottom));box-shadow:0 -10px 40px rgba(10,16,8,.25);}
+.sheet-inner::before{content:"";display:block;width:38px;height:5px;border-radius:999px;background:var(--line-strong);margin:0 auto 8px;}
+/* 每個彈窗最前面那一列（標題＋關閉）固定在頂端，內容再長都按得到關閉（v157） */
+.sheet-inner>.section-title:first-child,.fullscreen-modal>.section-title:first-child,.drawer>.section-title:first-child{
+  position:sticky;top:-8px;z-index:2;background:var(--panel);padding:8px 0 10px;margin-bottom:6px;border-bottom:1px solid var(--line);}
+.fullscreen-modal>.section-title:first-child{top:-14px;background:var(--bg);padding-top:10px;}
+.drawer>.section-title:first-child{top:-14px;background:var(--bg);padding-top:10px;}
+.sheet-inner>.section-title:first-child h2,.fullscreen-modal>.section-title:first-child h2,.drawer>.section-title:first-child h2{font-size:18px;font-weight:800;}
+.dialog-box{border:none !important;border-radius:20px !important;padding:20px 18px 16px !important;box-shadow:var(--shadow-pop);}
+.dialog-box h2{font-size:17px;}
+
+/* ---------------- 月曆 ---------------- */
+.cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:4px;}
+.cal-head{text-align:center;font-size:12px;font-weight:700;color:var(--dim);padding:2px 0;}
+.cal-cell{aspect-ratio:1;border:1.5px solid transparent;border-radius:10px;background:var(--panel);display:flex;flex-direction:column;align-items:center;justify-content:flex-start;padding:3px 2px;cursor:pointer;overflow:hidden;box-shadow:inset 0 0 0 1px var(--line);}
+.cal-cell.empty{border:none;background:transparent;box-shadow:none;cursor:default;}
+.cal-cell.has{border-color:var(--accent);background:var(--accent-soft);box-shadow:none;}
+.cal-cell.standby-marked{border-color:var(--ok);background:var(--ok-soft);box-shadow:none;}
+.cal-cell.leave-marked{border-color:var(--danger);background:var(--danger-soft);box-shadow:none;}
 .cal-cell.leave-marked .cal-mark{color:var(--danger);}
-.cal-cell.leave-partial-marked{border-color:var(--warn,#d9a441);border-style:dashed;}
-.cal-cell.leave-partial-marked .cal-mark{color:var(--warn,#d9a441);font-style:italic;}
-.cal-cell.incident-marked{border-color:var(--warn,#d9a441);}
+.cal-cell.leave-partial-marked{border-color:var(--warn);border-style:dashed;background:var(--warn-soft);box-shadow:none;}
+.cal-cell.leave-partial-marked .cal-mark{color:var(--warn);font-style:italic;}
+.cal-cell.incident-marked{border-color:var(--warn);background:var(--warn-soft);box-shadow:none;}
 .cal-cell.standby-marked .cal-mark{color:var(--ok);}
 .cal-cell.holiday .cal-day{color:var(--danger);}
-.cal-day{font-size:11px;color:var(--dim);line-height:1.2;}
-.cal-mark{font-size:10px;color:var(--accent);line-height:1.15;text-align:center;word-break:break-all;}
-.cal-mark-outside{color:var(--warn,#d9a441);font-style:italic;}
-.time-select-colon{color:var(--dim);}
+.cal-day{font-size:12px;font-weight:700;color:var(--dim);line-height:1.2;}
+.cal-mark{font-size:10px;font-weight:600;color:var(--accent-text);line-height:1.15;text-align:center;word-break:break-all;}
+.cal-mark-outside{color:var(--warn);font-style:italic;}
 </style>
 </head>
 <body>
 
 <div class="unit-banner">
   <div class="unit-banner-row1">
-    <span class="row" style="gap:4px;justify-self:start">
-      <button class="ghost small" id="undoBtn" title="復原上一步" disabled>↩️</button>
-      <button class="ghost small" id="redoBtn" title="取消復原（重做）" disabled>↪️</button>
+    <span class="banner-side">
+      <button class="icon-btn" id="undoBtn" title="復原上一步" aria-label="復原上一步" disabled><i data-ico="undo"></i></button>
+      <button class="icon-btn" id="redoBtn" title="取消復原（重做）" aria-label="重做" disabled><i data-ico="redo"></i></button>
     </span>
-    <span class="unit-banner-center"><span class="unit-banner-badge">★</span><span class="unit-banner-text">陸軍第八軍團 本部連</span></span>
-    <button class="ghost" id="unitRulesBtn" title="我們的規則" style="justify-self:end;padding:2px 6px;font-size:11px">⚙️</button>
+    <span class="unit-banner-center">
+      <span class="unit-banner-badge"><i data-ico="star"></i></span>
+      <span class="unit-banner-titles">
+        <span class="unit-banner-text">陸軍第八軍團 本部連</span>
+        <h1 id="pageTitle">衛哨排班系統 <span class="muted">v159</span></h1>
+      </span>
+    </span>
+    <span class="banner-side right">
+      <button class="icon-btn" id="themeToggleBtn" title="切換日間／夜間配色" aria-label="切換日間／夜間配色"><i data-ico="moon"></i></button>
+      <button class="icon-btn" id="unitRulesBtn" title="我們的規則" aria-label="我們的規則"><i data-ico="sliders"></i></button>
+    </span>
   </div>
+  <div id="storageWarnBar" role="alert" style="display:none;background:var(--danger);color:#fff;border-radius:6px;padding:5px 8px;font-size:12px;font-weight:600;text-align:center;cursor:pointer">⚠️ 儲存空間已滿，最近的修改沒有存進手機——點這裡看怎麼處理</div>
 </div>
 <div class="topbar">
-  <div class="topbar-main" style="flex-direction:column;align-items:stretch;gap:6px">
-    <div class="row" style="gap:4px;align-items:center">
-      <button class="ghost small" id="preplanDrawerBtn" title="預排">☰</button>
-      <h1 id="pageTitle" class="grow" style="margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">🌟 衛哨排班系統 <span class="muted" style="font-size:10px;font-weight:400">v156</span></h1>
-      <button class="ghost small" id="adhocQueryTopBtn" title="臨時任務查詢">🚨</button>
-      <button class="ghost small" id="quickLeaveTopBtn" title="快速登記休假/事故">⚡</button>
-      <button class="ghost small" id="clearRangeBtn" title="清除一段時間">🧹</button>
-      <button class="ghost small" id="exportBtn" title="匯出">📤</button>
+  <div class="topbar-main">
+    <div class="datenav">
+      <button class="icon-btn" id="globalDatePrev" title="前一天" aria-label="前一天"><i data-ico="chevL"></i></button>
+      <button id="globalDateLabel" title="選擇日期"></button>
+      <button class="icon-btn" id="globalDateNext" title="後一天" aria-label="後一天"><i data-ico="chevR"></i></button>
     </div>
-    <div class="row wrap" style="gap:4px;align-items:center">
-      <button class="ghost small" id="globalDatePrev">◀</button>
-      <button class="ghost small" id="globalDateLabel"></button>
-      <button class="ghost small" id="globalDateNext">▶</button>
-      <button class="ghost small" id="globalDateToday">今天</button>
-    </div>
+    <button id="globalDateToday">今天</button>
+  </div>
+</div>
+<div class="subbar">
+  <div class="weekstrip" id="weekStrip"></div>
+  <div class="toolgrid">
+    <button class="tool-tile" id="preplanDrawerBtn" title="預排與人員名冊"><i data-ico="clipboard"></i>預排名冊</button>
+    <button class="tool-tile" id="adhocQueryTopBtn" title="臨時任務查詢"><i data-ico="siren"></i>臨時查詢</button>
+    <button class="tool-tile" id="quickLeaveTopBtn" title="快速登記休假/事故"><i data-ico="calPlus"></i>快速請假</button>
+    <button class="tool-tile" id="clearRangeBtn" title="清除一段時間"><i data-ico="eraser"></i>清除資料</button>
+    <button class="tool-tile" id="exportBtn" title="匯出備份"><i data-ico="upload"></i>匯出備份</button>
   </div>
 </div>
 
 <div class="container" id="app"></div>
 
 <div class="tabs">
-  <button data-tab="schedule">📋 排班</button>
-  <button data-tab="stats">📊 統計</button>
+  <button data-tab="schedule"><i data-ico="calendar"></i>排班</button>
+  <button data-tab="stats"><i data-ico="chart"></i>統計</button>
 </div>
 
 <input type="file" id="importFile" accept="application/json" style="display:none">
@@ -178,6 +361,43 @@ textarea{min-height:50px;resize:vertical;}
 <script>
 /* ---------------- storage ---------------- */
 const LS_KEY='drs_data_v1';
+/* ---------------- 圖示（v159「勤務板」改版）----------------
+   介面上的功能按鈕原本都用emoji（🚨⚡🧹📤☰），每支手機顯示的樣子不一樣、
+   意思也不容易猜。改成同一套線條圖示＋文字標籤。 */
+const ICON_PATHS={
+  undo:'<path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/>',
+  redo:'<path d="m15 14 5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/>',
+  sliders:'<path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/>',
+  moon:'<path d="M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5z"/>',
+  sun:'<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
+  chevL:'<path d="m15 18-6-6 6-6"/>',
+  chevR:'<path d="m9 18 6-6-6-6"/>',
+  chevD:'<path d="m6 9 6 6 6-6"/>',
+  clipboard:'<rect x="5" y="4" width="14" height="17" rx="2.5"/><path d="M9 3h6v3H9z"/><path d="M9 11h6M9 15h4"/>',
+  siren:'<path d="M7 18v-5a5 5 0 0 1 10 0v5"/><path d="M5 21h14M12 3v1.5M4.6 6.6l1 1M19.4 6.6l-1 1"/><path d="M10 14a2 2 0 0 1 2-2"/>',
+  calPlus:'<rect x="3" y="5" width="18" height="16" rx="2.5"/><path d="M3 10h18M8 3v4M16 3v4M12 13v5M9.5 15.5h5"/>',
+  eraser:'<path d="M20 20H9.5L4.4 14.9a2 2 0 0 1 0-2.8l8.2-8.2a2 2 0 0 1 2.8 0l5 5a2 2 0 0 1 0 2.8L12 20"/><path d="m8.5 10.5 6 6"/>',
+  upload:'<path d="M12 3v12M7 8l5-5 5 5"/><path d="M5 14v4.5A2.5 2.5 0 0 0 7.5 21h9a2.5 2.5 0 0 0 2.5-2.5V14"/>',
+  calendar:'<rect x="3" y="5" width="18" height="16" rx="2.5"/><path d="M3 10h18M8 3v4M16 3v4M7.5 14h2M11 14h2M14.5 14h2M7.5 17.5h2M11 17.5h2"/>',
+  chart:'<path d="M3 21h18"/><rect x="5" y="11" width="3.2" height="7" rx="1"/><rect x="10.4" y="5" width="3.2" height="13" rx="1"/><rect x="15.8" y="13" width="3.2" height="5" rx="1"/>',
+  shield:'<path d="M12 3 5 6v6c0 4.2 3 7.6 7 9 4-1.4 7-4.8 7-9V6z"/><path d="m9 12 2 2 4-4"/>',
+  inbox:'<path d="M4 13h4l2 3h4l2-3h4"/><path d="M4 13 6.5 5h11L20 13v5.5a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 18.5z"/>',
+  layers:'<path d="m12 3 9 5-9 5-9-5z"/><path d="m3 13 9 5 9-5"/>',
+  sparkles:'<path d="M11 3l1.9 5.1L18 10l-5.1 1.9L11 17l-1.9-5.1L4 10l5.1-1.9z"/><path d="M18.5 15l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8z"/>',
+  fileText:'<path d="M14 3H7.5A2.5 2.5 0 0 0 5 5.5v13A2.5 2.5 0 0 0 7.5 21h9a2.5 2.5 0 0 0 2.5-2.5V8z"/><path d="M14 3v5h5M9 13h6M9 17h6"/>',
+  compare:'<path d="M7 4v13M17 7v13"/><path d="m3.5 13.5 3.5 3.5 3.5-3.5M13.5 10.5 17 7l3.5 3.5"/>',
+  checkCircle:'<circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/>',
+  alert:'<path d="M12 4 2.8 20h18.4z"/><path d="M12 10v4.5M12 17.5v.3"/>',
+  send:'<path d="M21 3 10 14"/><path d="M21 3 14.5 21 10 14 3 9.5z"/>',
+  star:'<path d="M12 2.8l2.8 5.8 6.4.9-4.6 4.5 1.1 6.3L12 17.3l-5.7 3 1.1-6.3L2.8 9.5l6.4-.9z"/>',
+};
+function ico(name, extraClass){
+  const d=ICON_PATHS[name]; if(!d) return '';
+  const fill = name==='star';
+  return `<svg class="i${fill?' fill':''}${extraClass?' '+extraClass:''}" viewBox="0 0 24 24" aria-hidden="true">${d}</svg>`;
+}
+/* 靜態頁面上的 <i data-ico="…"> 換成真正的圖示 */
+document.querySelectorAll('i[data-ico]').forEach(el=>{ el.outerHTML = ico(el.dataset.ico); });
 /* independent save-checkpoints — separate from the 50-step in-memory undo
    stack, which is lost on reload and only goes back so far. Each of the 9
    預排 types and the personnel roster gets its own checkpoint list (scope
@@ -188,16 +408,27 @@ function listCheckpoints(scope){
   try{ return JSON.parse(localStorage.getItem(checkpointKey(scope))||'[]'); }
   catch(e){ return []; }
 }
+/* 回傳true/false：手機儲存空間不夠時setItem會丟例外，原本會直接讓「建立
+   存檔點」按鈕的後續動作中斷、畫面沒反應，卻又已經先跳出「已建立存檔點」
+   以外的狀態，使用者以為存好了。現在失敗會明講，呼叫端只有成功才說成功。 */
 function saveCheckpoint(scope, data, label){
   const list = listCheckpoints(scope);
   list.unshift({ts:Date.now(), label:label||'', data:JSON.stringify(data)});
   if(list.length>20) list.length=20;
-  localStorage.setItem(checkpointKey(scope), JSON.stringify(list));
+  try{
+    localStorage.setItem(checkpointKey(scope), JSON.stringify(list));
+    return true;
+  }catch(e){
+    showAlert('存檔點沒有建立成功：這台手機給這個網頁的儲存空間不夠了。\n\n可以先刪掉幾個用不到的舊存檔點，或用🧹清除已經不需要的舊月份資料，再試一次。');
+    return false;
+  }
 }
 function deleteCheckpoint(scope, idx){
   const list = listCheckpoints(scope);
   list.splice(idx,1);
-  localStorage.setItem(checkpointKey(scope), JSON.stringify(list));
+  try{ localStorage.setItem(checkpointKey(scope), JSON.stringify(list)); }catch(e){}
+  // 刪存檔點會空出空間——如果主資料先前因為空間滿了沒存進去，趁現在重存一次
+  if(storageSaveFailed && typeof lastSavedSnapshot==='string') writeStateToStorage(lastSavedSnapshot);
 }
 function checkpointTimeLabel(ts){
   const d=new Date(ts);
@@ -230,8 +461,7 @@ function openCheckpointModal(scope, title, currentDataFn, applyDataFn){
     document.getElementById('cpClose').onclick=()=>modal.remove();
     document.getElementById('cpSave').onclick=()=>{
       const label=document.getElementById('cpLabel').value.trim();
-      saveCheckpoint(scope, currentDataFn(), label);
-      showAlert('已建立存檔點。');
+      if(saveCheckpoint(scope, currentDataFn(), label)) showAlert('已建立存檔點。');
       draw();
     };
     modal.querySelectorAll('[data-cp-restore]').forEach(b=>{
@@ -275,12 +505,79 @@ function saveState(){
   // to avoid unbounded memory/localStorage growth over a long session
   if(typeof lastSavedSnapshot!=='undefined'){
     undoStack.push(lastSavedSnapshot);
-    if(undoStack.length>UNDO_LIMIT) undoStack.shift();
+    trimUndoStack();
   }
   redoStack=[]; // a fresh change invalidates whatever "future" redo had
   lastSavedSnapshot = JSON.stringify(state);
-  localStorage.setItem(LS_KEY, lastSavedSnapshot);
+  writeStateToStorage(lastSavedSnapshot);
+  maybeWarnStorageGrowing();
   if(typeof refreshUndoButton==='function') refreshUndoButton();
+}
+/* ---- 手機儲存空間滿了的保護 ----
+   整份資料每次都整包存進localStorage，瀏覽器給每個網站的空間有上限（實測
+   Chromium約524萬字；iPhone Safari的上限一般是5MB，含中文的資料可能只到
+   一半左右）。事故/休假是「每人每天一筆」，以目前真實資料量大約每個月增加
+   45萬字，用久了一定會碰到上限。碰到的時候setItem會丟例外——原本沒有接住：
+   畫面上看起來改好了（記憶體裡的資料有改），但其實沒存進手機，一重新整
+   理就消失，而且例外會讓後面的render()之類整個中斷，只剩主控台一行錯誤，
+   使用者完全不知道（真瀏覽器實測重現過）。
+   現在：存不進去時照樣讓畫面能繼續用（才能匯出備份把資料救出來），第一次
+   失敗跳出說明，之後頂端一直掛著紅色提示直到重新存成功為止。 */
+let storageSaveFailed=false;
+const STORAGE_FULL_MSG='⚠️ 這台手機給這個網頁的儲存空間已經滿了，剛剛的修改只在目前畫面上，沒有存進手機——關掉或重新整理就會不見。\n\n建議馬上：\n1. 按📤匯出備份，把目前完整的資料（包含還沒存進去的修改）另外存一份。\n2. 用🧹清除一段時間的資料，把已經用不到的舊月份（例如幾個月前的事故/休假、排班）清掉，騰出空間。\n3. 也可以刪掉各預排/名冊裡用不到的舊「存檔點」。\n\n騰出空間後系統會自動重新存檔，頂端的紅色提示消失就代表存好了。';
+function writeStateToStorage(snapshot){
+  try{
+    localStorage.setItem(LS_KEY, snapshot);
+    if(storageSaveFailed){ storageSaveFailed=false; refreshStorageWarning(); }
+    return true;
+  }catch(e){
+    const firstFailure = !storageSaveFailed;
+    storageSaveFailed=true;
+    refreshStorageWarning();
+    if(firstFailure) showAlert(STORAGE_FULL_MSG);
+    return false;
+  }
+}
+function refreshStorageWarning(){
+  const bar=document.getElementById('storageWarnBar');
+  if(!bar) return;
+  bar.style.display = storageSaveFailed? 'block' : 'none';
+  if(typeof syncBannerHeight==='function') syncBannerHeight();
+}
+/* 提早預警：還沒滿之前就先提醒，不要等到真的存不進去才發現。門檻抓保守
+   的200萬字（依iPhone Safari可能只有約一半容量的最壞情況估，還留一些餘
+   裕），每次開啟只提醒一次。 */
+const STORAGE_WARN_CHARS=2000000;
+let storageGrowthWarned=false;
+/* 這個網頁在手機上實際占用的總量：主資料＋所有存檔點（存檔點也存在同一
+   個空間裡，每個都是一份完整副本，存滿20個可能比主資料本身還大）。 */
+function storageUsage(){
+  const out={total:0, main:0, checkpoints:0};
+  try{
+    for(let i=0;i<localStorage.length;i++){
+      const k=localStorage.key(i); const n=k.length+(localStorage.getItem(k)||'').length;
+      out.total+=n;
+      if(k===LS_KEY) out.main+=n; else if(k.startsWith('drs_checkpoint_')) out.checkpoints+=n;
+    }
+  }catch(e){}
+  return out;
+}
+function maybeWarnStorageGrowing(){
+  if(storageGrowthWarned || storageSaveFailed) return;
+  const used=storageUsage(); // 實測就算含20個存檔點共160萬字，讀一次也不到1ms
+  if(used.total<STORAGE_WARN_CHARS) return;
+  storageGrowthWarned=true;
+  showAlert(`提醒：這個網頁在手機上已經用了約${Math.round(used.total/10000)}萬字的空間（主資料約${Math.round(used.main/10000)}萬、存檔點約${Math.round(used.checkpoints/10000)}萬），有些手機瀏覽器的儲存空間可能快要不夠了。\n\n建議找時間先按📤匯出備份存一份，再用🧹清除已經用不到的舊月份資料（例如幾個月前的事故/休假、排班），或刪掉用不到的舊存檔點，避免哪天突然存不進去。`);
+}
+/* 復原堆疊：除了最多50步，另外限制總字數。每一步都是整份資料的完整快照，
+   資料量小的時候50步沒問題（目前真實資料約52萬字，50步≈2600萬字），但資
+   料一直長大之後，50份完整快照會吃掉好幾百MB記憶體，手機可能因此把整頁
+   強制重新載入。超過總量時從最舊的開始丟，資料量小的時候行為完全不變。 */
+const UNDO_CHAR_BUDGET=30000000;
+function trimUndoStack(){
+  if(undoStack.length>UNDO_LIMIT) undoStack.shift();
+  let total=undoStack.reduce((n,x)=>n+x.length,0);
+  while(undoStack.length>1 && total>UNDO_CHAR_BUDGET){ total-=undoStack.shift().length; }
 }
 const UNDO_LIMIT=50;
 let undoStack=[];
@@ -292,7 +589,7 @@ function undoLastAction(){
   redoStack.push(lastSavedSnapshot);
   state = JSON.parse(prevSnapshot);
   lastSavedSnapshot = prevSnapshot;
-  localStorage.setItem(LS_KEY, prevSnapshot);
+  writeStateToStorage(prevSnapshot);
   if(typeof refreshUndoButton==='function') refreshUndoButton();
   render();
 }
@@ -302,7 +599,7 @@ function redoLastAction(){
   undoStack.push(lastSavedSnapshot);
   state = JSON.parse(nextSnapshot);
   lastSavedSnapshot = nextSnapshot;
-  localStorage.setItem(LS_KEY, nextSnapshot);
+  writeStateToStorage(nextSnapshot);
   if(typeof refreshUndoButton==='function') refreshUndoButton();
   render();
 }
@@ -2008,9 +2305,66 @@ document.querySelectorAll('.tabs button').forEach(btn=>{
   btn.addEventListener('click',()=>{ currentTab=btn.dataset.tab; window.scrollTo(0,0); render(); });
 });
 document.getElementById('unitRulesBtn').addEventListener('click', ()=>openUnitRulesModal());
+// 頂端紅色「儲存空間已滿」提示：放在.unit-banner裡（跟⚙️同一層、永遠在最上
+// 面），不管開著哪個彈窗都看得到、按得到。按下去先試著重存一次（可能已經清
+// 出空間了），還是存不進去才顯示處理方式，並可直接開匯出備份。
+document.getElementById('storageWarnBar').addEventListener('click', ()=>{
+  if(typeof lastSavedSnapshot==='string' && writeStateToStorage(lastSavedSnapshot)){ showToast('已重新存進手機 ✓'); return; }
+  showConfirm(STORAGE_FULL_MSG, ()=>openExportModal(), {confirmLabel:'📤 匯出備份', cancelLabel:'關閉'});
+});
+/* v159：日期列改成「9月10日 週四／民國115年」兩行，再加上一整週的週條（點
+   一下直接跳到那天）。星期與假日對排班很重要，原本只顯示「民國115年9月
+   10日」，要自己換算星期幾、是不是假日。 */
+const DATE_WD_CH=['日','一','二','三','四','五','六'];
 function refreshGlobalDate(){
-  document.getElementById('globalDateLabel').textContent = minguoLabel(currentDate);
+  const label=document.getElementById('globalDateLabel');
+  const [y,m,d]=currentDate.split('-').map(Number);
+  const wd=new Date(y,m-1,d).getDay();
+  const hol=isHolidayDate(currentDate);
+  const isToday=currentDate===todayStr();
+  if(label.classList) label.classList.toggle('is-holiday', hol);
+  label.innerHTML = `<span class="dl-main">${m}月${d}日<span class="dl-wd">週${DATE_WD_CH[wd]}</span></span>`
+    + `<span class="dl-sub">民國${y-1911}年${isToday?'<span class="dl-chip">今天</span>':''}${hol?'<span class="dl-chip hol">假日</span>':''}</span>`;
+  renderWeekStrip();
 }
+function renderWeekStrip(){
+  const el=document.getElementById('weekStrip');
+  if(!el) return;
+  const [y,m,d]=currentDate.split('-').map(Number);
+  const start=new Date(y,m-1,d); start.setDate(start.getDate()-start.getDay());
+  const today=todayStr(); const p=n=>String(n).padStart(2,'0');
+  let html='';
+  for(let i=0;i<7;i++){
+    const dt=new Date(start); dt.setDate(start.getDate()+i);
+    const ds=`${dt.getFullYear()}-${p(dt.getMonth()+1)}-${p(dt.getDate())}`;
+    const cls=[ds===currentDate?'sel':'', ds===today?'today':'', isHolidayDate(ds)?'hol':''].filter(Boolean).join(' ');
+    html+=`<button type="button" class="${cls}" data-week-date="${ds}" aria-label="${dt.getMonth()+1}月${dt.getDate()}日 週${DATE_WD_CH[i]}"><span class="ws-wd">${DATE_WD_CH[i]}</span><span class="ws-d">${dt.getDate()}</span></button>`;
+  }
+  el.innerHTML=html;
+}
+document.getElementById('weekStrip').addEventListener('click', (e)=>{
+  const b = e.target && e.target.closest && e.target.closest('[data-week-date]');
+  if(!b) return;
+  currentDate = b.dataset.weekDate;
+  saveLastDate(currentDate);
+  refreshGlobalDate();
+  render();
+});
+/* 日間／夜間配色：只存在這支手機（localStorage），不進資料、不影響備份 */
+const THEME_LS_KEY='drs_theme_v1';
+function applyTheme(t){
+  const de=document.documentElement;
+  if(t==='night') de.dataset.theme='night'; else delete de.dataset.theme;
+  const b=document.getElementById('themeToggleBtn');
+  if(b){ b.innerHTML=ico(t==='night'?'sun':'moon'); b.title = t==='night'? '切換成日間配色' : '切換成夜間配色'; }
+}
+function currentTheme(){ return document.documentElement.dataset.theme==='night'? 'night' : 'day'; }
+document.getElementById('themeToggleBtn').addEventListener('click', ()=>{
+  const next = currentTheme()==='night'? 'day' : 'night';
+  try{ localStorage.setItem(THEME_LS_KEY, next); }catch(e){}
+  applyTheme(next);
+});
+applyTheme((()=>{ try{ return localStorage.getItem(THEME_LS_KEY)||'day'; }catch(e){ return 'day'; } })());
 document.getElementById('globalDatePrev').addEventListener('click', ()=>{
   currentDate = prevDateStr(currentDate);
   saveLastDate(currentDate);
@@ -2034,11 +2388,11 @@ function openDatePickerModal(){
   const [y,m,d] = currentDate.split('-').map(Number);
   const minguoYear = y-1911;
   const modal=document.createElement('div');
-  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:90;display:flex;align-items:center;justify-content:center;padding:20px;';
+  modal.style.cssText='position:fixed;inset:0;background:var(--scrim);z-index:90;display:flex;align-items:center;justify-content:center;padding:20px;';
   const yearOpts = []; for(let yy=minguoYear-3; yy<=minguoYear+3; yy++) yearOpts.push(yy);
   const daysInMonth = (yy,mm)=> new Date(yy+1911, mm, 0).getDate();
   modal.innerHTML = `
-    <div style="background:var(--panel);max-width:320px;width:100%;border-radius:10px;padding:16px;border:1px solid var(--line);">
+    <div class="dialog-box" style="background:var(--panel);max-width:320px;width:100%;border-radius:10px;padding:16px;border:1px solid var(--line);">
       <h2 style="margin:0 0 10px">選擇日期（民國）</h2>
       <div class="row wrap" style="margin-bottom:12px">
         <div class="grow"><label>年</label><select id="dpYear">${yearOpts.map(yy=>`<option value="${yy}" ${yy===minguoYear?'selected':''}>民國${yy}年</option>`).join('')}</select></div>
@@ -2085,11 +2439,11 @@ function openHolidayDateModal(onDone){
   const modal=document.createElement('div');
   // 是疊在openHolidaySettingsModal(z:150)上面開的，z-index要跟它一樣高或
   // 更高才不會被蓋住。
-  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:150;display:flex;align-items:center;justify-content:center;padding:20px;';
+  modal.style.cssText='position:fixed;inset:0;background:var(--scrim);z-index:150;display:flex;align-items:center;justify-content:center;padding:20px;';
   const yearOpts = []; for(let yy=minguoYear-1; yy<=minguoYear+3; yy++) yearOpts.push(yy);
   const daysInMonth = (yy,mm)=> new Date(yy+1911, mm, 0).getDate();
   modal.innerHTML = `
-    <div style="background:var(--panel);max-width:320px;width:100%;border-radius:10px;padding:16px;border:1px solid var(--line);">
+    <div class="dialog-box" style="background:var(--panel);max-width:320px;width:100%;border-radius:10px;padding:16px;border:1px solid var(--line);">
       <h2 style="margin:0 0 10px">新增國定假日（民國）</h2>
       <div class="row wrap" style="margin-bottom:12px">
         <div class="grow"><label>年</label><select id="hdYear">${yearOpts.map(yy=>`<option value="${yy}" ${yy===minguoYear?'selected':''}>民國${yy}年</option>`).join('')}</select></div>
@@ -3906,9 +4260,9 @@ function openStandbyOverrideEditor(plan, pid, onDone){
   const p=state.personnel.find(x=>x.id===pid);
   const ov=plan.overrides[pid]||{};
   const modal=document.createElement('div');
-  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:94;display:flex;align-items:center;justify-content:center;padding:20px;';
+  modal.style.cssText='position:fixed;inset:0;background:var(--scrim);z-index:94;display:flex;align-items:center;justify-content:center;padding:20px;';
   modal.innerHTML=`
-    <div style="background:var(--panel);max-width:360px;width:100%;border-radius:10px;padding:16px;border:1px solid var(--line);">
+    <div class="dialog-box" style="background:var(--panel);max-width:360px;width:100%;border-radius:10px;padding:16px;border:1px solid var(--line);">
       <h2 style="margin:0 0 10px">個別調整：${esc(p?p.name:'')}</h2>
       <div class="hint" style="margin-bottom:8px">用於這個人的留守時間跟大家不一樣的情況（例如隔天也放假，所以提早離營）。留白代表照整體設定。</div>
       <div class="row wrap" style="margin-bottom:8px">
@@ -6029,7 +6383,15 @@ function openExportModal(){
   const fileName = 'duty-roster-backup-'+todayStr()+'.json';
   const modal=document.createElement('div');
   // 同openAdhocQueryModal的z-index說明——這顆📤也是標題列常駐按鈕。
-  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:150;display:flex;align-items:flex-end;';
+  modal.style.cssText='position:fixed;inset:0;background:var(--scrim);z-index:150;display:flex;align-items:flex-end;';
+  /* 效能：原本一打開就把整份備份（目前真實資料約90萬字）塞進下面的文字方
+     塊，瀏覽器要排版這麼大一塊文字，中階手機實測要卡3秒多才打開，資料越
+     多越久。文字方塊只是「上面兩個按鈕都沒反應」時的備用方式，改成按了才
+     顯示——主要的分享/複製功能完全不受影響。
+     另外文字方塊的id原本叫exportText，跟排班頁「📋 轉出文字班表」按鈕同一
+     個id，在排班頁開這個視窗時document.getElementById抓到的是那顆按鈕而不
+     是文字方塊，「複製」的備用路徑因此一定失敗；改成不會撞名的id。 */
+  const used = storageUsage();
   modal.innerHTML=`
     <div class="sheet-inner">
       <div class="section-title"><h2 style="margin:0">匯出備份</h2><button class="ghost small" id="closeExport">關閉</button></div>
@@ -6037,13 +6399,20 @@ function openExportModal(){
         <button class="primary grow" id="shareExportBtn">📤 分享／儲存檔案</button>
         <button class="ghost grow" id="copyExportBtn">📋 複製全部文字</button>
       </div>
-      <div class="hint">若上面按鈕在你的瀏覽器沒有反應，可直接點下面文字方塊全選、複製，貼到備忘錄或傳給自己保存。</div>
-      <textarea id="exportText" readonly style="min-height:220px;font-family:monospace;font-size:11px;margin-top:8px;white-space:pre">${esc(dataStr)}</textarea>
+      <div class="hint">這個網頁在手機上已用約 ${Math.max(1,Math.round(used.total/10000))} 萬字（主資料約${Math.max(1,Math.round(used.main/10000))}萬${used.checkpoints? `、存檔點約${Math.max(1,Math.round(used.checkpoints/10000))}萬`:''}）${storageSaveFailed? '。⚠️ 手機儲存空間已滿，最近的修改還沒存進手機，請先把這份備份存好':''}。</div>
+      <div class="hint">若上面按鈕在你的瀏覽器沒有反應，按下面「顯示全部文字」，再全選、複製，貼到備忘錄或傳給自己保存。</div>
+      <button class="ghost small" id="showExportTextBtn" style="margin-top:6px">📄 顯示全部文字（備用方式）</button>
+      <textarea id="exportBackupText" readonly style="display:none;min-height:220px;font-family:monospace;font-size:11px;margin-top:8px;white-space:pre"></textarea>
     </div>
   `;
   document.body.appendChild(modal);
   document.getElementById('closeExport').onclick=()=>modal.remove();
-  const ta=document.getElementById('exportText');
+  const ta=document.getElementById('exportBackupText');
+  const revealText=()=>{
+    if(ta.style.display==='none'){ ta.value=dataStr; ta.style.display='block'; }
+    document.getElementById('showExportTextBtn').style.display='none';
+  };
+  document.getElementById('showExportTextBtn').onclick=()=>{ revealText(); try{ ta.focus(); ta.select(); }catch(e){} };
   document.getElementById('shareExportBtn').onclick=async()=>{
     try{
       if(navigator.canShare && window.File){
@@ -6072,7 +6441,7 @@ function openExportModal(){
       await navigator.clipboard.writeText(dataStr);
       btn.textContent='已複製 ✓';
     }catch(err){
-      try{ ta.focus(); ta.select(); document.execCommand('copy'); btn.textContent='已複製 ✓'; }
+      try{ revealText(); ta.focus(); ta.select(); if(!document.execCommand('copy')) throw new Error('copy failed'); btn.textContent='已複製 ✓'; }
       catch(err2){ showAlert('複製失敗，請手動選取文字方塊內容複製。'); }
     }
   };
@@ -6694,7 +7063,7 @@ function openPersonEditor(personId){
   const p = state.personnel.find(p=>p.id===personId);
   const lt = personLongTerm(p);
   const modal = document.createElement('div');
-  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:50;display:flex;align-items:flex-end;';
+  modal.style.cssText='position:fixed;inset:0;background:var(--scrim);z-index:50;display:flex;align-items:flex-end;';
   modal.innerHTML = `
     <div class="sheet-inner">
       <div class="section-title"><h2 style="margin:0">編輯人員</h2><button class="ghost small" id="closeModal">關閉</button></div>
@@ -7152,7 +7521,7 @@ function openQuickIncidentModal(personId, date, onDone){
   if(!person) return;
   const existing = (state.unavail[date]||[]).filter(u=>u.personId===personId && !u.leaveId && !isLeaveBufferEntry(u));
   const modal=document.createElement('div');
-  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:150;display:flex;align-items:flex-end;';
+  modal.style.cssText='position:fixed;inset:0;background:var(--scrim);z-index:150;display:flex;align-items:flex-end;';
   modal.innerHTML=`
     <div class="sheet-inner">
       <div class="section-title"><h2 style="margin:0">登記/編輯事故：${esc(person.name)}</h2><button class="ghost small" id="closeModal">關閉</button></div>
@@ -7885,6 +8254,7 @@ function wireGotoLeaveTableButtons(){
 }
 function personOptionsPrioritized(selected, eligibleFn){
   if(!state.personnel.length) return `<option value="">（尚無人員）</option>`;
+  eligibleFn = memoPersonFn(eligibleFn); // 效能：排序時同一人不重複判斷，結果不變
   const sorted=[...state.personnel].sort((a,b)=>{
     const pa=eligibleFn(a)?0:1, pb=eligibleFn(b)?0:1;
     if(pa!==pb) return pa-pb;
@@ -7997,6 +8367,16 @@ function wireReasonPoolDeleteButtons(){
    不打斷接下來的操作。跟showAlert/showConfirm不同，這裡故意不用
    document.getElementById抓id，直接對回傳的元素操作，避免同一瞬間疊
    出多個toast時互相干擾。 */
+/* 找「這個對話框自己裡面」的元素。showAlert/showConfirm/showPrompt每個對話框
+   都用固定的id（alertOk、confirmOk…），兩個對話框同時疊著開的時候（例如
+   存檔失敗的警告剛好跟「已清除N筆資料」一起跳出來），document.getElementById
+   只會拿到比較早開、被蓋在下面的那一個——結果最上面那個看得到的「確定」
+   根本沒有接上動作，怎麼按都關不掉，整個畫面卡死。實測真瀏覽器重現過。
+   改成先在自己的modal裡面找；（找不到時才退回全頁找，只是為了相容沒有真
+   實DOM解析的測試環境，瀏覽器裡一定是在自己的modal裡找到。） */
+function dialogEl(modal, id){
+  return (modal.querySelector && modal.querySelector('#'+id)) || document.getElementById(id);
+}
 function showToast(message){
   const el=document.createElement('div');
   el.style.cssText='position:fixed;left:50%;bottom:calc(24px + env(safe-area-inset-bottom));transform:translateX(-50%);background:var(--ok);color:var(--bg);padding:10px 18px;border-radius:20px;font-size:13px;font-weight:600;z-index:300;box-shadow:0 4px 14px rgba(0,0,0,.35);opacity:0;transition:opacity .2s ease;max-width:80vw;text-align:center;';
@@ -8010,14 +8390,14 @@ function showToast(message){
 }
 function showAlert(message){
   const modal=document.createElement('div');
-  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:200;display:flex;align-items:center;justify-content:center;padding:20px;';
+  modal.style.cssText='position:fixed;inset:0;background:var(--scrim);z-index:200;display:flex;align-items:center;justify-content:center;padding:20px;';
   modal.innerHTML=`
-    <div style="background:var(--panel);max-width:320px;width:100%;border-radius:10px;padding:16px;border:1px solid var(--line);">
+    <div class="dialog-box" style="background:var(--panel);max-width:320px;width:100%;border-radius:10px;padding:16px;border:1px solid var(--line);">
       <div style="margin-bottom:14px;font-size:14px;line-height:1.5;color:var(--text);white-space:pre-wrap">${esc(message)}</div>
       <button class="primary" id="alertOk" style="width:100%">確定</button>
     </div>`;
   document.body.appendChild(modal);
-  document.getElementById('alertOk').onclick=()=>modal.remove();
+  dialogEl(modal,'alertOk').onclick=()=>modal.remove();
 }
 function wireCloseConfirm(modal, closeBtn){
   let dirty = false;
@@ -8044,9 +8424,9 @@ function showConfirm(message, onConfirm, opts){
   const confirmLabel = opts.confirmLabel || '確定';
   const cancelLabel = opts.cancelLabel || '取消';
   const modal=document.createElement('div');
-  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:200;display:flex;align-items:center;justify-content:center;padding:20px;';
+  modal.style.cssText='position:fixed;inset:0;background:var(--scrim);z-index:200;display:flex;align-items:center;justify-content:center;padding:20px;';
   modal.innerHTML=`
-    <div style="background:var(--panel);max-width:320px;width:100%;border-radius:10px;padding:16px;border:1px solid var(--line);">
+    <div class="dialog-box" style="background:var(--panel);max-width:320px;width:100%;border-radius:10px;padding:16px;border:1px solid var(--line);">
       <div style="margin-bottom:14px;font-size:14px;line-height:1.5;color:var(--text);white-space:pre-wrap">${esc(message)}</div>
       <div class="row wrap">
         <button class="ghost grow" id="confirmCancel">${esc(cancelLabel)}</button>
@@ -8054,14 +8434,14 @@ function showConfirm(message, onConfirm, opts){
       </div>
     </div>`;
   document.body.appendChild(modal);
-  document.getElementById('confirmCancel').onclick=()=>modal.remove();
-  document.getElementById('confirmOk').onclick=()=>{ modal.remove(); onConfirm(); };
+  dialogEl(modal,'confirmCancel').onclick=()=>modal.remove();
+  dialogEl(modal,'confirmOk').onclick=()=>{ modal.remove(); onConfirm(); };
 }
 function showPrompt(message, defaultValue, onSubmit){
   const modal=document.createElement('div');
-  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:200;display:flex;align-items:center;justify-content:center;padding:20px;';
+  modal.style.cssText='position:fixed;inset:0;background:var(--scrim);z-index:200;display:flex;align-items:center;justify-content:center;padding:20px;';
   modal.innerHTML=`
-    <div style="background:var(--panel);max-width:320px;width:100%;border-radius:10px;padding:16px;border:1px solid var(--line);">
+    <div class="dialog-box" style="background:var(--panel);max-width:320px;width:100%;border-radius:10px;padding:16px;border:1px solid var(--line);">
       <div style="margin-bottom:8px;font-size:14px;line-height:1.5;color:var(--text)">${esc(message)}</div>
       <input type="text" id="promptInput" value="${esc(defaultValue||'')}" style="margin-bottom:12px">
       <div class="row wrap">
@@ -8070,10 +8450,10 @@ function showPrompt(message, defaultValue, onSubmit){
       </div>
     </div>`;
   document.body.appendChild(modal);
-  const input=document.getElementById('promptInput');
+  const input=dialogEl(modal,'promptInput');
   input.focus();
-  document.getElementById('promptCancel').onclick=()=>modal.remove();
-  document.getElementById('promptOk').onclick=()=>{
+  dialogEl(modal,'promptCancel').onclick=()=>modal.remove();
+  dialogEl(modal,'promptOk').onclick=()=>{
     const val=input.value.trim();
     modal.remove();
     if(val) onSubmit(val);
@@ -8102,15 +8482,23 @@ function wireDragReorder(containerId, arr, onReorder){
   if(!container) return;
   const rows = [...container.querySelectorAll('[data-drag-idx]')];
   if(!rows.length) return;
-  const rects = rows.map(r=>r.getBoundingClientRect());
-  const heights = rects.map(r=>r.height);
-  const tops = rects.map(r=>r.top);
+  // 效能：每一列的位置/高度原本是一接上拖曳功能就立刻量(getBoundingClientRect)，
+  // 等於每次render()畫完畫面都強制瀏覽器當場重算一次版面，不管使用者有沒有要
+  // 拖曳。改成真的按住⠿開始拖曳那一刻才量——所有列的位置都在同一個時間點量，
+  // 彼此之間的相對關係跟原本一模一樣，拖曳判斷的結果不變。
+  let heights = [], tops = [];
+  const measure = ()=>{
+    const rects = rows.map(r=>r.getBoundingClientRect());
+    heights = rects.map(r=>r.height);
+    tops = rects.map(r=>r.top);
+  };
   rows.forEach((row, originalIdx)=>{
     const handle = row.querySelector('[data-drag-handle]');
     if(!handle) return;
     handle.style.touchAction='none';
     let startY=0, dragging=false, currentSlot=originalIdx;
     handle.addEventListener('touchstart', (e)=>{
+      measure();
       dragging=true;
       startY = e.touches[0].clientY;
       currentSlot = originalIdx;
@@ -8156,16 +8544,32 @@ function wireDragReorder(containerId, arr, onReorder){
     handle.addEventListener('touchcancel', finish);
   });
 }
+/* innerHtml也可以傳「函式」：收合著的時候根本不去算裡面的內容。
+   效能：排班頁「🛡 衛哨」區塊跟每張衛哨類別卡片預設都是收合的（收合狀態
+   不存檔，每次打開都從收合開始），但原本就算收合，裡面29個下拉選單×91人
+   的選項（每一格都要逐人判斷能不能排）還是每次都整份算好、塞進一個看不見
+   的區塊。點「▼ 展開」本來就會整頁重畫(render())，到時候再算就好，看到的
+   內容一模一樣。只有內容裡沒有需要用getElementById另外接按鈕的區塊才適合
+   傳函式（目前只用在衛哨區塊/類別卡片，裡面全是querySelectorAll接的）。 */
 function collapsibleCardHTML(key, title, innerHtml, extraButtons){
   const expanded = isExpanded(key);
+  const body = (typeof innerHtml==='function')? (expanded? innerHtml() : '') : innerHtml;
   return `<div class="card">
-    <div class="section-title"><h2 style="margin:0">${title}</h2><div class="row" style="gap:4px">${extraButtons||''}<button class="ghost small" data-collapse-toggle="${esc(key)}">${expanded?'▲ 收合':'▼ 展開'}</button></div></div>
-    <div style="display:${expanded?'block':'none'};margin-top:8px">${innerHtml}</div>
+    <div class="section-title" data-collapse-row="${esc(key)}"><h2 style="margin:0">${title}</h2><div class="row" style="gap:4px">${extraButtons||''}<button class="ghost small collapse-btn" data-collapse-toggle="${esc(key)}" aria-expanded="${expanded}">${expanded?'收合':'展開'}${ico('chevD')}</button></div></div>
+    <div style="display:${expanded?'block':'none'};margin-top:8px">${body}</div>
   </div>`;
 }
 document.addEventListener('click', (e)=>{
   const btn = e.target.closest('[data-collapse-toggle]');
-  if(btn){ collapseState[btn.dataset.collapseToggle] = !collapseState[btn.dataset.collapseToggle]; render(); }
+  if(btn){ collapseState[btn.dataset.collapseToggle] = !collapseState[btn.dataset.collapseToggle]; render(); return; }
+  /* v159：整條標題列都可以點來展開/收合（原本只能點右邊那顆小按鈕）。只限
+     主畫面(#app)的卡片——彈窗裡的卡片各自有自己的重畫方式；點到標題列上
+     其他按鈕、勾選框、拖曳把手不算。 */
+  const row = e.target.closest('[data-collapse-row]');
+  if(row && row.closest('#app') && !e.target.closest('button,input,label,select,a,[data-drag-handle]')){
+    collapseState[row.dataset.collapseRow] = !collapseState[row.dataset.collapseRow];
+    render();
+  }
 });
 function renderGroupRankStats(){
   const activePersonnel = state.personnel.filter(p=>!isDeparted(p));
@@ -8455,9 +8859,9 @@ function openDutyChangeModal(personId){
   const slots = personTodaySlots(personId, currentDate);
   if(!slots.length){ showAlert(`${person.name} 今天沒有已排的班可以異動。`); return; }
   const modal=document.createElement('div');
-  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:70;display:flex;align-items:center;justify-content:center;padding:20px;';
+  modal.style.cssText='position:fixed;inset:0;background:var(--scrim);z-index:70;display:flex;align-items:center;justify-content:center;padding:20px;';
   modal.innerHTML=`
-    <div style="background:var(--panel);max-width:400px;width:100%;border-radius:10px;padding:16px;border:1px solid var(--line);max-height:88vh;overflow:auto;">
+    <div class="dialog-box" style="background:var(--panel);max-width:400px;width:100%;border-radius:10px;padding:16px;border:1px solid var(--line);max-height:88vh;overflow:auto;">
       <h2 style="margin:0 0 10px">⚡ ${esc(person.name)} 臨時異動</h2>
       <div class="hint" style="margin-bottom:8px">勾選要清空的班（不會自動找人遞補，留給你自己判斷），並登記原因；系統會保留一筆紀錄，之後有人補上這格時會自動標註「已由誰遞補」。</div>
       <div id="dcSlotList" style="margin-bottom:8px">
@@ -8539,20 +8943,24 @@ function dayProgressSummary(date){
   const pendingChanges = (state.dutyChanges[date]||[]).filter(ch=>ch.status!=='filled').length;
   return {catFilled, catTotal, otherCatFilled, otherCatTotal, miscFilled, miscTotal, pendingChanges};
 }
-function dayProgressBarHTML(){
+function dayProgressBarHTML(ctaHTML){
   const s = dayProgressSummary(currentDate);
-  const catShort = s.catFilled<s.catTotal;
-  const otherShort = s.otherCatFilled<s.otherCatTotal;
-  const miscShort = s.miscFilled<s.miscTotal;
-  const allDone = !catShort && !otherShort && !miscShort && !s.pendingChanges;
-  return `<div class="card" style="padding:8px 12px">
-    <div class="row wrap" style="gap:10px;align-items:center">
-      <span style="font-size:13px;font-weight:600">${allDone? '✅ 今日排班已完成' : '📋 今日進度'}</span>
-      ${s.catTotal? `<span class="${catShort?'warn':'muted'}" style="font-size:12px">衛哨 ${s.catFilled}/${s.catTotal}${catShort?' ⚠️':''}</span>`:''}
-      ${s.otherCatTotal? `<span class="${otherShort?'warn':'muted'}" style="font-size:12px">打飯班等 ${s.otherCatFilled}/${s.otherCatTotal}${otherShort?' ⚠️':''}</span>`:''}
-      ${s.miscTotal? `<span class="${miscShort?'warn':'muted'}" style="font-size:12px">其他勤務 ${s.miscFilled}/${s.miscTotal}${miscShort?' ⚠️':''}</span>`:''}
-      ${s.pendingChanges? `<span class="warn" style="font-size:12px">未遞補異動 ${s.pendingChanges} ⚠️</span>`:''}
-    </div>
+  const tile=(label,f,t)=>{
+    const short=f<t, pct=t? Math.round(Math.min(f,t)/t*100) : 100;
+    return `<div class="st-tile${short?' short':''}"><div class="st-label">${label}</div><div class="st-num">${f}<small>/${t}</small></div><div class="st-bar"><i style="width:${pct}%"></i></div></div>`;
+  };
+  const tiles=[];
+  if(s.catTotal) tiles.push(tile('衛哨', s.catFilled, s.catTotal));
+  if(s.otherCatTotal) tiles.push(tile('打飯班等', s.otherCatFilled, s.otherCatTotal));
+  if(s.miscTotal) tiles.push(tile('其他勤務', s.miscFilled, s.miscTotal));
+  const missing = Math.max(0,s.catTotal-s.catFilled) + Math.max(0,s.otherCatTotal-s.otherCatFilled) + Math.max(0,s.miscTotal-s.miscFilled);
+  const allDone = !missing && !s.pendingChanges;
+  const badge = allDone? '<span class="st-badge done">✓ 全部排好</span>' : (missing? `<span class="st-badge">還缺 ${missing} 格</span>` : '<span class="st-badge">有待處理異動</span>');
+  return `<div class="card status-card">
+    <div class="status-head"><span class="st-title">${allDone? '今日排班已完成' : '今日進度'}</span>${badge}</div>
+    ${tiles.length? `<div class="status-tiles">${tiles.join('')}</div>` : ''}
+    ${s.pendingChanges? `<div class="st-alert">${ico('alert')}未遞補異動 ${s.pendingChanges} 筆，請到下方異動紀錄處理</div>` : ''}
+    ${ctaHTML? `<div class="st-cta">${ctaHTML}</div>` : ''}
   </div>`;
 }
 /* ---------------- 找補位 ---------------- */
@@ -8703,7 +9111,7 @@ function openSubstituteModal(source){
   const grouped = {0:[],1:[],2:[],3:[]};
   results.forEach(r=>grouped[r.tier].push(r));
   const modal=document.createElement('div');
-  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:70;display:flex;align-items:flex-end;';
+  modal.style.cssText='position:fixed;inset:0;background:var(--scrim);z-index:70;display:flex;align-items:flex-end;';
   modal.innerHTML=`
     <div class="sheet-inner">
       <div class="section-title"><h2 style="margin:0">找補位：${esc(label)}</h2><button class="ghost small" id="closeModal">關閉</button></div>
@@ -8849,10 +9257,7 @@ function renderSchedule(){
   const defaults = defaultCategories();
   const missingDefaults = defaults.filter(d=>!state.categories.some(c=>c.id===d.id));
   app.innerHTML = `
-    ${dayProgressBarHTML()}
-    <div class="card">
-      <button class="primary" id="autoAssignBtn2" style="width:100%">🪄 自動補空缺（不覆蓋已排的）</button>
-    </div>
+    ${dayProgressBarHTML(`<button class="primary" id="autoAssignBtn2" style="width:100%">${ico('sparkles')}自動補空缺（不覆蓋已排的）</button>`)}
     ${dutyChangeCardHTML()}
     ${missingDefaults.length? collapsibleCardHTML('missingDefaults', `⚠️ 少了預設類別（${missingDefaults.length}）`, `
       <div class="muted" style="margin-bottom:8px">偵測到以下類別目前不在清單中（可能是被刪除了），可一鍵還原班別設定（該類別過去已排的內容無法救回，只能還原空白班表結構）：</div>
@@ -8862,11 +9267,12 @@ function renderSchedule(){
     `) : ''}
     ${renderScheduleCards()}
     <div class="card">
-      <button class="primary" id="exportText" style="width:100%;margin-bottom:6px">📋 轉出文字班表</button>
-      <button class="ghost" id="exportTextDiff" style="width:100%">🔍 比對上次發布版本再匯出</button>
-    </div>
-    <div class="card">
-      <button class="ghost" id="dailyCheck" style="width:100%">🔍 檢查當日所有規則</button>
+      <div class="section-title" style="margin-bottom:10px"><h2 style="margin:0">${ico('send')}發布與檢查</h2></div>
+      <button class="primary" id="exportText" style="width:100%;margin-bottom:8px">${ico('fileText')}轉出文字班表</button>
+      <div class="row" style="gap:8px">
+        <button class="ghost grow" id="exportTextDiff">${ico('compare')}比對上次版本</button>
+        <button class="ghost grow" id="dailyCheck">${ico('checkCircle')}檢查當日規則</button>
+      </div>
       <div id="dailyCheckOut"></div>
     </div>
   `;
@@ -9088,7 +9494,7 @@ function openDiffImportModal(newText){
 function openTextShareModal(title, text){
   const fileName = title.replace(/\s+/g,'')+'-'+todayStr()+'.txt';
   const modal=document.createElement('div');
-  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:180;display:flex;align-items:flex-end;';
+  modal.style.cssText='position:fixed;inset:0;background:var(--scrim);z-index:180;display:flex;align-items:flex-end;';
   modal.innerHTML=`
     <div class="sheet-inner">
       <div class="section-title"><h2 style="margin:0">${esc(title)}</h2><button class="ghost small" id="closeTextShare">關閉</button></div>
@@ -9179,8 +9585,9 @@ function renderScheduleCards(){
   // 排班頁三大區塊（衛哨/預排彙整卡/其他勤務卡）各自整塊可收合，各自獨立
   // 記在collapseState（schedblock-*鍵），互不影響彼此的展開/收合狀態，也
   // 不影響區塊1裡每個衛哨類別卡片自己原本就有的收合按鈕（cat-*鍵）。
-  const catInner = `<div id="scheduleCardsContainer">${catItems.map((item,i)=>renderCategoryCard(item.cat, i)).join('')}</div>`;
-  const catHTML = collapsibleCardHTML('schedblock-sentry', `🛡 衛哨（${catItems.length}）`, catInner);
+  // 收合時不算（見collapsibleCardHTML的說明）
+  const catInner = ()=>`<div id="scheduleCardsContainer">${catItems.map((item,i)=>renderCategoryCard(item.cat, i)).join('')}</div>`;
+  const catHTML = collapsibleCardHTML('schedblock-sentry', `${ico('shield')}衛哨（${catItems.length}）`, catInner);
   const preplanHTML = preplanEntries.length? renderPreplanBundleCard(preplanEntries) : '';
   const miscHTML = renderMiscBundleCard(miscRoleGroups);
   return catHTML + preplanHTML + miscHTML;
@@ -9260,7 +9667,7 @@ function renderPreplanBundleCard(entries){
     return renderMiscDutyCardInner(role, roleEntries, preset, false);
   }).join('<div class="divider"></div>');
   const innerWithHint = `<div class="hint" style="margin-bottom:8px">這些是從預排匯入的，要改直接在這裡改就是改班表本身，跟其他勤務分開顯示避免清單太長。</div>${inner}`;
-  return collapsibleCardHTML('schedblock-preplan', `📥 預排項目（${entries.length}筆）`, innerWithHint);
+  return collapsibleCardHTML('schedblock-preplan', `${ico('inbox')}預排項目（${entries.length}筆）`, innerWithHint);
 }
 /* 排班分頁第3區塊——其他勤務彙整卡（減法思維）：按「匯入預設」把「勤務
    設定」裡定義好的項目一次帶進今天，人選留空；不需要的項目當天直接刪
@@ -9273,8 +9680,8 @@ function renderMiscBundleCard(roleGroups){
   const entryCount = roleGroups.reduce((n,g)=>n+g.entries.length, 0);
   const inner = roleGroups.map((g,i)=>`<div data-drag-idx="${i}">${renderMiscDutyCardInner(g.role, g.entries, g.preset, true)}</div>`).join('<div class="divider"></div>');
   const innerWithHint = `<div class="hint" style="margin-bottom:8px">按「匯入預設」把「勤務設定」裡定義好的項目一次帶進今天（人選留空，自己排或按自動排班），今天不需要的項目直接刪除就好，不會自己跑回來。長按項目左邊的 ⠿ 可拖曳調整順序。</div><div id="miscBundleContainer">${roleGroups.length? inner : '<div class="empty">今天還沒有其他勤務項目。</div>'}</div>`;
-  const extraButtons = `<button class="ghost small" id="importDefaultMiscBtn">📥 匯入預設</button>`;
-  return collapsibleCardHTML('schedblock-misc', `🗂 其他勤務${entryCount? `（${entryCount}筆）`:''}`, innerWithHint, extraButtons);
+  const extraButtons = `<button class="ghost small" id="importDefaultMiscBtn">${ico('inbox')}匯入預設</button>`;
+  return collapsibleCardHTML('schedblock-misc', `${ico('layers')}其他勤務${entryCount? `（${entryCount}筆）`:''}`, innerWithHint, extraButtons);
 }
 /* 其他勤務卡片的實際內容（進度、標題、清單）——抽出來讓「預排項目」集中
    卡也可以重用同一份渲染邏輯，不用重複一次。standalone=true 才會在標題
@@ -9288,7 +9695,7 @@ function renderMiscDutyCardInner(role, entries, preset, standalone){
   const miscTotal = entries.reduce((n,m)=>n+(m.roles? m.roles.length : Math.max(preset&&preset.requiredCount||1,(m.personIds||[]).filter(Boolean).length)),0);
   const miscShort = miscFilled<miscTotal;
   const handle = standalone? `<span data-drag-handle style="cursor:grab;padding-right:6px;color:var(--dim)">⠿</span>` : '';
-  const title = `${handle}🗂 ${esc(role)}<span class="${miscShort?'warn':'muted'}" style="margin-left:6px">已排 ${miscFilled}/${miscTotal}${miscShort?' ⚠️':''}</span>`;
+  const title = `${handle}${esc(role)}<span class="stat${miscShort?' short':''}" title="已排 ${miscFilled}/${miscTotal}">${miscFilled}/${miscTotal}</span>`;
   const extraButtons = preset? `<label style="display:flex;align-items:center;gap:3px;font-size:11px"><input type="checkbox" class="card-exclude-cb" data-exclude-kind="misc" data-exclude-id="${esc(role)}" style="width:auto" ${preset.excludeFromExport?'checked':''}>不匯出</label><button class="ghost small" data-edit-misc-preset="${esc(role)}">設定</button><button class="ghost small" data-clear-misc-preset="${esc(role)}">清除</button><button class="ghost small danger" data-del-misc-preset="${esc(role)}">刪除此項目</button>` : '';
   const inner = entries.map(m=>{
     if(m.id===miscInlineEditId) return miscEntryEditorHTML(m);
@@ -9317,7 +9724,8 @@ function renderMiscDutyCardInner(role, entries, preset, standalone){
         ${(m.personIds||[]).map((pid,i)=>pid? overrideBadgeHTML(currentDate, pid, {kind:'misc', miscId:m.id, slotIdx:i}):'').join('')}
       </div>`;
   }).join('');
-  return collapsibleCardHTML('misccard-'+role, title, inner, extraButtons);
+  // 跟衛哨類別卡一樣，設定/清除/刪除等按鈕放進展開後的內容最上面
+  return collapsibleCardHTML('misccard-'+role, title, (extraButtons? `<div class="card-toolbar">${extraButtons}</div>` : '') + inner);
 }
 /* explains WHY a shift is still short of its "最少需要幾位士官" requirement —
    distinguishes "nobody at all is available for the empty slots" from
@@ -9372,8 +9780,7 @@ function renderCategoryCard(cat, dragIdx){
   const hasTodayOverride = !!((state.dailyShiftOverrides[currentDate]||{})[cat.id]);
   const filledCount = shifts.reduce((sum,s)=>sum+(dayAssign[s.id]||[]).filter(Boolean).length,0);
   const totalCount = shifts.reduce((sum,s)=>sum+s.count,0);
-  const title = `<span data-drag-handle style="cursor:grab;padding-right:6px;color:var(--dim)">⠿</span>${esc(cat.name)}
-        <span class="${filledCount<totalCount?'warn':'muted'}" style="margin-left:6px">已排 ${filledCount}/${totalCount}${filledCount<totalCount?' ⚠️':''}</span>`;
+  const title = `<span data-drag-handle style="cursor:grab;padding-right:8px;color:var(--dim)">⠿</span>${esc(cat.name)}<span class="stat${filledCount<totalCount?' short':''}" title="已排 ${filledCount}/${totalCount}">${filledCount}/${totalCount}</span>`;
   const tagsRow = `${cat.enforceRest?'<span class="tag" style="margin-right:4px">6hr規則</span>':''}
         ${cat.preferLowRank?'<span class="tag" style="margin-right:4px">建議低階</span>':''}
         ${cat.needsNCO?'<span class="tag" style="margin-right:4px">需士官帶隊</span>':''}
@@ -9381,8 +9788,12 @@ function renderCategoryCard(cat, dragIdx){
         ${(cat.avoidRanks||[]).length?`<span class="tag" style="margin-right:4px">盡量避免${esc((cat.avoidRanks||[]).join('、'))}</span>`:''}
         ${hasTodayOverride?'<span class="tag" style="margin-right:4px;color:var(--accent);border-color:var(--accent)">今日專屬設定</span>':''}`;
   const extraButtons = `<label style="display:flex;align-items:center;gap:3px;font-size:11px"><input type="checkbox" class="card-exclude-cb" data-exclude-kind="cat" data-exclude-id="${cat.id}" style="width:auto" ${cat.excludeFromExport?'checked':''}>不匯出</label><button class="ghost small" data-edit-cat="${cat.id}">編輯</button><button class="ghost small danger" data-clear-cat="${cat.id}">清空排班</button>`;
-  const inner = `
-    <div class="row wrap" style="gap:0;margin-bottom:8px">${tagsRow}</div>
+  // 收合時不算（見collapsibleCardHTML的說明）
+  // v159：「不匯出／編輯／清空排班」原本擠在收合的標題列上（窄螢幕會折成兩
+  // 三行），改放進展開後的內容最上面一列——要動這個類別本來就會先展開。
+  const inner = ()=>`
+    <div class="card-toolbar">${extraButtons}</div>
+    <div class="row wrap" style="gap:4px;margin-bottom:8px">${tagsRow}</div>
     <div class="hint" style="margin-bottom:8px">${esc(categoryPriorityLabel(cat))}</div>
     ${shifts.map(s=>{
       const assigned = dayAssign[s.id] || [];
@@ -9417,7 +9828,7 @@ function renderCategoryCard(cat, dragIdx){
       </div>`;
     }).join('')}
   `;
-  return `<div data-cat="${cat.id}" data-drag-idx="${dragIdx}">${collapsibleCardHTML('cat-'+cat.id, title, inner, extraButtons)}</div>`;
+  return `<div data-cat="${cat.id}" data-drag-idx="${dragIdx}">${collapsibleCardHTML('cat-'+cat.id, title, inner)}</div>`;
 }
 
 function assignableOptions(cat, shift, selectedId, slotIdx){
@@ -9431,13 +9842,21 @@ function assignableOptions(cat, shift, selectedId, slotIdx){
   // ones pushed to the bottom — matches the same "eligible people on top"
   // convention as the 其他勤務 picker, instead of mixing them in wherever
   // their rank/group would otherwise place them
+  // 效能：info()裡面的isPersonUnavailable是整個排班頁最貴的判斷，原本直接
+  // 寫在sort的比較函式裡，91人排序要比較約600次、每次算兩個人，等於每個
+  // 下拉選單把同一個人重算十幾次，最後map又再算一次。先每人只算一次存起
+  // 來，排序跟輸出都讀存好的結果——判斷邏輯、排序結果完全不變（Array.sort
+  // 是穩定排序，比較的值也一模一樣），只是不重複算。
+  const infoById = new Map(state.personnel.map(p=>[p.id, info(p)]));
+  const sortKey = new Map(state.personnel.map(p=>[p.id, [dutySortIndex(p.rank,cat,slotIdx,shift), groupIndex(p.group)]]));
   const sorted=[...state.personnel].sort((a,b)=>{
-    const ia=info(a), ib=info(b);
+    const ia=infoById.get(a.id), ib=infoById.get(b.id);
     if(ia.unavailable!==ib.unavailable) return ia.unavailable? 1 : -1;
-    return dutySortIndex(a.rank,cat,slotIdx,shift)-dutySortIndex(b.rank,cat,slotIdx,shift) || groupIndex(a.group)-groupIndex(b.group);
+    const ka=sortKey.get(a.id), kb=sortKey.get(b.id);
+    return ka[0]-kb[0] || ka[1]-kb[1];
   });
   return sorted.map(p=>{
-    const {unavailable} = info(p);
+    const {unavailable} = infoById.get(p.id);
     return `<option value="${p.id}" ${p.id===selectedId?'selected':''}>${unavailable?'❗ ':''}${esc(p.name)}（${p.group||'未分組'}·${p.rank}${p.license? '·🚗'+esc(p.license):''}）</option>`;
   }).join('');
 }
@@ -9484,7 +9903,7 @@ function openCategoryEditor(catId, initialScope, onDone){
   // 設定畫面底下會整個被蓋住、看起來像「點下去沒反應」，只有z:200的
   // showConfirm能穿出來。比照openQuickIncidentModal同樣「可能疊在別的
   // fullscreen-modal上面開」的做法，統一用150。
-  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:150;display:flex;align-items:flex-end;';
+  modal.style.cssText='position:fixed;inset:0;background:var(--scrim);z-index:150;display:flex;align-items:flex-end;';
   modal.innerHTML = `
     <div class="sheet-inner">
       <div class="section-title"><h2 style="margin:0">編輯：${esc(cat.name)}</h2><div class="row" style="gap:4px"><button class="ghost small" id="duplicateCatBtn">📋 複製此類別</button><button class="ghost small" id="closeModal">關閉</button></div></div>
@@ -9953,9 +10372,9 @@ function openAdhocAddModal(personId, defaultStart, defaultEnd){
   const modal=document.createElement('div');
   // 這個是疊在openAdhocQueryModal(z:150)上面開的，z-index要比它高，不然
   // 會被蓋住(跟openAdhocQueryModal那邊的說明是同一組問題)。
-  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:160;display:flex;align-items:center;justify-content:center;padding:20px;';
+  modal.style.cssText='position:fixed;inset:0;background:var(--scrim);z-index:160;display:flex;align-items:center;justify-content:center;padding:20px;';
   modal.innerHTML=`
-    <div style="background:var(--panel);max-width:360px;width:100%;border-radius:10px;padding:16px;border:1px solid var(--line);">
+    <div class="dialog-box" style="background:var(--panel);max-width:360px;width:100%;border-radius:10px;padding:16px;border:1px solid var(--line);">
       <h2 style="margin:0 0 10px">將 ${esc(person.name)} 加入其他勤務</h2>
       <label>加入方式</label>
       <select id="adhocTarget" style="margin-bottom:8px">
@@ -10009,7 +10428,7 @@ function openAdhocQueryModal(){
   // 低，疊上去會整個被蓋住、看起來像「點下去/查詢完沒反應」。凡是從標題
   // 列常駐按鈕開出來的畫面都比照辦理，統一用150(參考openCategoryEditor/
   // openQuickIncidentModal同樣的處理)。
-  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:150;display:flex;align-items:flex-end;';
+  modal.style.cssText='position:fixed;inset:0;background:var(--scrim);z-index:150;display:flex;align-items:flex-end;';
   modal.innerHTML=`
     <div class="sheet-inner">
       <div class="section-title"><h2 style="margin:0">🚨 臨時任務查詢</h2><button class="ghost small" id="closeAdhocQueryModal">關閉</button></div>
@@ -10114,7 +10533,7 @@ function openMiscPresetModal(editIndex){
   const existing = editing? state.miscPresets[editIndex] : null;
   let timesDraft = existing? presetTimes(existing).map(t=>({...t})) : [{start:'06:00',end:'07:00'}];
   const modal=document.createElement('div');
-  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:60;display:flex;align-items:flex-end;';
+  modal.style.cssText='position:fixed;inset:0;background:var(--scrim);z-index:60;display:flex;align-items:flex-end;';
   modal.innerHTML=`
     <div class="sheet-inner">
       <div class="section-title"><h2 style="margin:0">${editing? '編輯常用項目' : '新增常用項目'}</h2><button class="ghost small" id="closeMiscPresetModal">關閉</button></div>
@@ -10525,7 +10944,19 @@ function roleIneligibilityReasons(person, role, preset, driver, date, s, eRaw, e
    Keeps a hidden input with `idPrefix` as its id holding the chosen
    person id, so every existing call site that reads
    `document.getElementById(idPrefix).value` keeps working unchanged. */
+/* 效能：排序的比較函式會對同一個人反覆呼叫reasonsFn（91人排序約600次比較，
+   每次問兩個人），而不可排原因的判斷（isPersonUnavailable等）很貴。同一次
+   畫面裡人員資料不會變，所以同一個人只算一次、之後直接讀存好的結果——判斷
+   內容跟排序結果完全不變，只是不重複算。 */
+function memoPersonFn(fn){
+  const cache=new Map();
+  return p=>{
+    if(cache.has(p.id)) return cache.get(p.id);
+    const v=fn(p); cache.set(p.id, v); return v;
+  };
+}
 function rolePickerHTML(idPrefix, selectedId, reasonsFn){
+  reasonsFn = memoPersonFn(reasonsFn);
   const list=state.personnel.filter(p=>!isDeparted(p)).sort((a,b)=>{
     const ra=reasonsFn(a), rb=reasonsFn(b);
     const pa=ra.length?1:0, pb=rb.length?1:0;
@@ -10624,7 +11055,7 @@ function wireMiscInlineEditors(){
             const otherInput = document.getElementById('inlineRoleSel-'+m.id+'-'+idx);
             return otherInput? otherInput.value : null;
           }).filter(Boolean);
-          const reasonsFn = p=>roleIneligibilityReasons(p, r, preset, driver, currentDate, sMin, eMinRaw, m.id, otherSelectedIds);
+          const reasonsFn = memoPersonFn(p=>roleIneligibilityReasons(p, r, preset, driver, currentDate, sMin, eMinRaw, m.id, otherSelectedIds));
           const sorted=[...state.personnel].sort((a,b)=>{
             const ra=reasonsFn(a), rb=reasonsFn(b);
             const pa=ra.length?1:0, pb=rb.length?1:0;
