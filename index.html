@@ -151,8 +151,9 @@ textarea{min-height:50px;resize:vertical;}
   <div class="topbar-main" style="flex-direction:column;align-items:stretch;gap:6px">
     <div class="row" style="gap:4px;align-items:center">
       <button class="ghost small" id="preplanDrawerBtn" title="預排">☰</button>
-      <h1 id="pageTitle" class="grow" style="margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">🌟 衛哨排班系統 <span class="muted" style="font-size:10px;font-weight:400">v153</span></h1>
+      <h1 id="pageTitle" class="grow" style="margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">🌟 衛哨排班系統 <span class="muted" style="font-size:10px;font-weight:400">v156</span></h1>
       <button class="ghost small" id="adhocQueryTopBtn" title="臨時任務查詢">🚨</button>
+      <button class="ghost small" id="quickLeaveTopBtn" title="快速登記休假/事故">⚡</button>
       <button class="ghost small" id="clearRangeBtn" title="清除一段時間">🧹</button>
       <button class="ghost small" id="exportBtn" title="匯出">📤</button>
     </div>
@@ -2082,7 +2083,9 @@ function openHolidayDateModal(onDone){
   const [y,m,d] = currentDate.split('-').map(Number);
   const minguoYear = y-1911;
   const modal=document.createElement('div');
-  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:90;display:flex;align-items:center;justify-content:center;padding:20px;';
+  // 是疊在openHolidaySettingsModal(z:150)上面開的，z-index要跟它一樣高或
+  // 更高才不會被蓋住。
+  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:150;display:flex;align-items:center;justify-content:center;padding:20px;';
   const yearOpts = []; for(let yy=minguoYear-1; yy<=minguoYear+3; yy++) yearOpts.push(yy);
   const daysInMonth = (yy,mm)=> new Date(yy+1911, mm, 0).getDate();
   modal.innerHTML = `
@@ -2141,6 +2144,7 @@ refreshUndoButton();
 document.getElementById('clearRangeBtn').addEventListener('click', (e)=>{ flashPressed(e.currentTarget); openClearRangeModal(); });
 document.getElementById('preplanDrawerBtn').addEventListener('click', (e)=>{ flashPressed(e.currentTarget); openPreplanDrawer(); });
 document.getElementById('adhocQueryTopBtn').addEventListener('click', (e)=>{ flashPressed(e.currentTarget); openAdhocQueryModal(); });
+document.getElementById('quickLeaveTopBtn').addEventListener('click', (e)=>{ flashPressed(e.currentTarget); openQuickLeaveModal(); });
 /* two levels of "start this date over", both scoped to currentDate only:
    level 1 keeps the day's structural setup (per-day 班別 overrides, 其他
    勤務 item definitions) and just clears who's assigned / what's
@@ -2317,7 +2321,12 @@ function dutyDefPreviewLabel(d){
 }
 function openUnitRulesModal(){
   const modal=document.createElement('div');
-  modal.className='fullscreen-modal'; modal.style.zIndex='94';
+  // ⚙️「我們的規則」的按鈕在.unit-banner裡（position:fixed, z-index:999），
+  // 不像其他一般按鈕會被開著的彈窗蓋住——不管當下已經開著哪個彈窗，這顆都
+  // 按得到。所以這個彈窗自己也要跟🚨🧹📤⚡等「標題列常駐按鈕」開出來的彈
+  // 窗一樣用150這一層z-index，不然在別的彈窗已經開著時按⚙️，這個彈窗會
+  // 開在下面被蓋住，看起來像卡住沒反應。
+  modal.className='fullscreen-modal'; modal.style.zIndex='150';
   let section=null; // null = 主列表；否則是分類的 key
   let editingDutyKey=null; // 崗位定義畫面：null = 清單，否則是正在編輯的 dutyDefinitions.key
   const drawMain=()=>{
@@ -2806,7 +2815,9 @@ function openUnitRulesModal(){
 }
 function openHolidaySettingsModal(){
   const modal=document.createElement('div');
-  modal.className='sheet-modal'; modal.style.zIndex='94';
+  // 是疊在openUnitRulesModal(z:150)上面開的（開的時候「我們的規則」那個
+  // 彈窗還在，沒有先關掉），z-index要跟它一樣高或更高才不會被蓋住。
+  modal.className='sheet-modal'; modal.style.zIndex='150';
   const draw=()=>{
     modal.innerHTML=`
       <div class="sheet-inner">
@@ -5323,6 +5334,200 @@ function openLeaveTableEditor(date, onSaved, presetPid){
   document.body.appendChild(modal);
   draw();
 }
+/* 快速登記休假/事故——「簡化流程」需求：休假暨事故大表原本的流程是先進畫
+   面、在90多人的清單裡滑/搜尋找到人、點月曆逐天點選、按「確認」存進規劃
+   record，還要「另外」再按一次「匯入本月到實際班表」才會真的生效（漏按
+   這一步，班表其實完全沒變，很忙的時候特別容易忘記）。這個快速版本：只
+   搜尋、選類型、填一段開始/結束日期（不用逐天點），按「登記」就直接呼叫
+   createLeaveSegment() 立即寫進 state.unavail 生效，同時也同步寫回
+   state.preplan.leave，讓休假暨事故大表之後打開來看不會不一致（不是只靠
+   scanForOrphaned() 事後補回來）。不做部分時段（不到一天）——那種比較細
+   的情況本來就少見，需要的話用下面「開啟完整休假暨事故大表」。
+   新增前會先檢查這段期間（含緩衝日）這個人是不是已經有其他記錄，有的話
+   先跳出來給使用者確認要不要繼續（不會擋死，也不會自動取代，兩者並
+   存）——這正是為了避免像先前「統計內事故重複出現」那種情況，在來源頭
+   就先提醒，而不是事後才發現重複。 */
+/* 快速登記休假/事故的核心動作，特意抽成獨立、可以直接呼叫的頂層函式，不
+   包在openQuickLeaveModal的closure裡：一來測試可以直接呼叫驗證效果（測
+   試用的DOM mock沒辦法還原getElementById抓到的元素，沒辦法真的模擬點擊
+   qlSave送出，只能測試被closure包住的邏輯的原始碼字串，沒辦法驗證實際
+   效果）；二來以後別的地方如果也想要「選人+選類型+一段日期就立即生
+   效」，可以直接重用，不用整包複製一份邏輯。
+   直接呼叫createLeaveSegment()寫進state.unavail立即生效（不用像休假暨
+   事故大表那樣還要另外按「匯入」），同時把state.preplan.leave也同步合
+   併更新（日期/榮譽假/已同意天數/備註），這樣之後打開完整的休假暨事故
+   大表來看，資料本來就是一致的，不是只能靠它自己的scanForOrphaned()事
+   後補回來。approved是呼叫端（qlSave的送出流程）先確認過5天規則之後才
+   決定的，這裡單純照做，語意跟createLeaveSegment()自己的approved參數一
+   致。回傳createLeaveSegment()的結果，呼叫端可以用honorDowngraded等資
+   訊組訊息。 */
+function commitQuickLeave(pid, catName, s, e, honor, note, approved){
+  const category = state.leaveCategories.find(c=>c.name===catName);
+  const newDates = dateRangeList(s,e);
+  const r = createLeaveSegment(pid, s, e, category, honor?'honor':'normal', approved, note);
+  if(!state.preplan.leave) state.preplan.leave={};
+  if(!state.preplan.leave[pid]) state.preplan.leave[pid]={};
+  const rec = state.preplan.leave[pid][catName]||{dates:[],honorDates:[],approvedRuns:[],partialTimes:{},note:''};
+  const mergedDates=[...new Set([...(rec.dates||[]), ...newDates])].sort();
+  const mergedHonor=new Set(rec.honorDates||[]);
+  if(r.tierApplied==='honor') mergedHonor.add(s);
+  const mergedApproved=[...(rec.approvedRuns||[])];
+  if(approved && !mergedApproved.some(x=>x.start===s&&x.end===e)) mergedApproved.push({start:s,end:e});
+  state.preplan.leave[pid][catName]={
+    dates:mergedDates, honorDates:[...mergedHonor].sort(), approvedRuns:mergedApproved,
+    partialTimes:rec.partialTimes||{}, note:(note||rec.note||''),
+  };
+  saveState();
+  return r;
+}
+/* 這段期間（有緩衝的類型，含前後各一天緩衝）這個人是不是已經有其他不在
+   營記錄——快速登記略過休假暨事故大表逐天點選看月曆的過程，比較容易看
+   漏已經有的記錄，送出前先查一次，交給呼叫端決定要不要提示使用者確
+   認。回傳依日期排序的[{date, reasons:[...]}]，沒有就回傳空陣列。*/
+function quickLeaveExistingInRange(pid, s, e, category){
+  const newDates = dateRangeList(s,e);
+  const checkDates = category&&category.buffer? [prevDateStr(s), ...newDates, nextDateStr(e)] : newDates;
+  const byDate={};
+  checkDates.forEach(d=>{
+    (state.unavail[d]||[]).forEach(u=>{
+      if(u.personId===pid){ if(!byDate[d]) byDate[d]=new Set(); byDate[d].add(u.reason||'（未指定原因）'); }
+    });
+  });
+  return Object.keys(byDate).sort().map(d=>({date:d, reasons:[...byDate[d]]}));
+}
+/* 這段（不含緩衝，就是實際勾選/填的天數）換算下來的有效天數跟是不是需
+   要另外確認同意——邏輯跟analyzeLeaveRuns()裡單一段的判斷一致，只是快速
+   登記只有一段（不用像休假暨事故大表那樣要考慮跟月曆上其他段合併），
+   直接算這一段自己的天數就好。*/
+function quickLeaveNeedsApproval(category, s, e, honor){
+  const actualDays=daysBetweenInclusive(s,e);
+  const effectiveDays=actualDays + (honor?0.5:0);
+  return {effectiveDays, needsApproval: !!(category&&category.fiveDayRule) && effectiveDays>5};
+}
+function openQuickLeaveModal(presetPid){
+  let selectedPid = presetPid || null;
+  let selectedCat = '休假';
+  let honorVal = false;
+  let noteDraft = '';
+  let startVal = currentDate;
+  let endVal = currentDate;
+  const modal=document.createElement('div');
+  // 這顆從標題列常駐按鈕直接開，比照openAdhocQueryModal/openClearRangeModal
+  // 等其他標題列按鈕，用150這一層z-index，才不會被同時開著的其他全螢幕
+  // 彈窗擋住。
+  modal.className='fullscreen-modal'; modal.style.zIndex='150';
+  const loadDraftForSelection=()=>{
+    honorVal=false; startVal=currentDate; endVal=currentDate;
+    if(!selectedPid){ noteDraft=''; return; }
+    const rec=((state.preplan.leave&&state.preplan.leave[selectedPid])||{})[selectedCat];
+    noteDraft = (rec&&rec.note)||'';
+  };
+  if(selectedPid) loadDraftForSelection();
+  const draw=()=>{
+    const person = selectedPid? state.personnel.find(p=>p.id===selectedPid) : null;
+    const category = state.leaveCategories.find(c=>c.name===selectedCat);
+    const prominentCats=state.leaveCategories.filter(c=>c.prominent);
+    const otherCats=state.leaveCategories.filter(c=>!c.prominent);
+    modal.innerHTML=`
+      <div class="section-title"><h2 style="margin:0">⚡ 快速登記休假/事故</h2><button class="ghost small" id="qlClose">關閉</button></div>
+      <div class="hint" style="margin-bottom:8px">搜尋選人、選類型、填一段開始~結束日期，按「登記」立即生效——不用逐天點月曆，也不用再另外匯入。需要部分時段或更細部調整，用最下面「開啟完整休假暨事故大表」。</div>
+      <div class="row wrap" style="margin-bottom:6px">
+        <div class="grow"><label>搜尋姓名</label><input type="text" id="qlSearch" placeholder="輸入姓名關鍵字" autofocus></div>
+      </div>
+      <div id="qlPeople" style="max-height:24vh;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:8px;margin-bottom:8px">
+        ${state.personnel.slice().sort((a,b)=>groupIndex(a.group)-groupIndex(b.group)||rankIndex(a.rank)-rankIndex(b.rank))
+          .map(p=>{
+            const catCounts = state.leaveCategories.map(c=>{
+              const rec=((state.preplan.leave&&state.preplan.leave[p.id])||{})[c.name]||{dates:[]};
+              return {name:c.name, cnt:(rec.dates||[]).length};
+            }).filter(x=>x.cnt>0);
+            const summary = catCounts.length? ` <span class="ok">${catCounts.map(x=>`${x.name.slice(0,1)}${x.cnt}`).join('・')}</span>` : '';
+            return `<label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0">
+              <input type="radio" name="qlp" class="ql-person" value="${p.id}" style="width:auto" ${p.id===selectedPid?'checked':''}>
+              ${esc(p.name)}（${p.group||'未分組'}·${p.rank}）${summary}
+            </label>`;
+          }).join('')}
+      </div>
+      ${person? `
+        <div class="hint" style="margin-bottom:4px">類型（${esc(person.name)}）</div>
+        <div class="row wrap" style="gap:6px;margin-bottom:8px">
+          ${prominentCats.map(c=>`<button class="${c.name===selectedCat?'primary':'ghost'} small ql-cat-btn" data-ql-cat="${esc(c.name)}">${esc(c.name)}</button>`).join('')}
+          ${otherCats.map(c=>`<button class="${c.name===selectedCat?'primary':'ghost'} small ql-cat-btn" data-ql-cat="${esc(c.name)}" style="opacity:.75">${esc(c.name)}</button>`).join('')}
+        </div>
+        <div class="row wrap" style="margin-bottom:6px">
+          <div class="grow"><label>開始日期</label><input type="date" id="qlStart" value="${startVal}"></div>
+          <div class="grow"><label>結束日期</label><input type="date" id="qlEnd" value="${endVal}"></div>
+        </div>
+        ${category&&category.honorOption? `<label style="display:flex;align-items:center;gap:6px;font-size:13px;margin-bottom:6px">
+          <input type="checkbox" id="qlHonor" style="width:auto" ${honorVal?'checked':''}> 榮譽假（前一天12:00起，比一般多算0.5天）
+        </label>` : ''}
+        <div class="row wrap" style="margin-bottom:8px">
+          <div class="grow"><label>備註（選填）</label><input type="text" id="qlNote" value="${esc(noteDraft)}" placeholder="例：體檢、出車支援○○任務"></div>
+        </div>
+        <div class="hint" style="margin-bottom:8px">
+          ${category&&category.buffer? `這個類型有前後緩衝：登記後系統會自動加上前一天18:00起（榮譽假12:00起）、隔天07:30前的緩衝時段，範圍內每一天整天不可排。` : `這個類型沒有前後緩衝，範圍內每一天整天不可排。`}
+          ${category&&category.fiveDayRule? ' 超過5天（含緩衝的有效天數）會再跳出來確認是否已經同意保留。':''}
+        </div>
+        <button class="primary" id="qlSave" style="width:100%;margin-bottom:6px">✅ 登記（立即生效）</button>
+      ` : `<div class="empty">請先搜尋並選擇一位人員</div>`}
+      <div class="divider"></div>
+      <button class="ghost" id="qlOpenFull" style="width:100%">📋 開啟完整休假暨事故大表（部分時段/更細部調整）</button>
+    `;
+    document.getElementById('qlClose').onclick=()=>modal.remove();
+    document.getElementById('qlOpenFull').onclick=()=>{
+      const pid=selectedPid; modal.remove(); openLeaveTableEditor(currentDate, ()=>{}, pid);
+    };
+    const se=document.getElementById('qlSearch'), le=document.getElementById('qlPeople');
+    se.oninput=()=>{
+      const term=se.value.trim();
+      le.querySelectorAll('label').forEach(l=>{ l.style.display=(!term||l.textContent.includes(term))?'flex':'none'; });
+    };
+    keepSearchFocusOnPick(le, se);
+    document.querySelectorAll('.ql-person').forEach(r=>{
+      r.onchange=()=>{ selectedPid=r.value; loadDraftForSelection(); draw(); };
+    });
+    if(person){
+      document.querySelectorAll('.ql-cat-btn').forEach(b=>{
+        b.onclick=()=>{ selectedCat=b.dataset.qlCat; loadDraftForSelection(); draw(); };
+      });
+      document.getElementById('qlStart').oninput=(e)=>{ startVal=e.target.value; };
+      document.getElementById('qlEnd').oninput=(e)=>{ endVal=e.target.value; };
+      { const noteEl=document.getElementById('qlNote'); if(noteEl) noteEl.oninput=(e)=>{ noteDraft=e.target.value; }; }
+      { const honorEl=document.getElementById('qlHonor'); if(honorEl) honorEl.onchange=(e)=>{ honorVal=e.target.checked; }; }
+      document.getElementById('qlSave').onclick=()=>{
+        const s=document.getElementById('qlStart').value, e=document.getElementById('qlEnd').value;
+        if(!s || !e || s>e){ showAlert('請確認日期範圍正確（開始日期不能晚於結束日期）'); return; }
+        const proceedToApprovalCheck=()=>{
+          const {effectiveDays, needsApproval} = quickLeaveNeedsApproval(category, s, e, honorVal);
+          const doCreate=(approved)=>{
+            const note=(document.getElementById('qlNote').value||'').trim();
+            const r=commitQuickLeave(selectedPid, selectedCat, s, e, honorVal, note, approved);
+            let msg=`已登記 ${person.name} 的${selectedCat}：${minguoLabel(s)}~${minguoLabel(e)}，立即生效。`;
+            if(r.honorDowngraded) msg+=`\n\n⚠️ 超過5天，榮譽假已自動退回一般休假（18:00起）。`;
+            showToast(msg.split('\n')[0]);
+            if(r.honorDowngraded) showAlert(msg);
+            render();
+            loadDraftForSelection(); draw();
+          };
+          if(needsApproval){
+            showConfirm(`這段共 ${effectiveDays} 天，超過5天上限，需要同意才能保留。確定已經過同意，要保留這個天數嗎？不同意的話請先縮短日期範圍。`, ()=>doCreate(true));
+          } else {
+            doCreate(false);
+          }
+        };
+        const existing = quickLeaveExistingInRange(selectedPid, s, e, category);
+        if(existing.length){
+          const lines=existing.map(({date:d, reasons})=>{ const [,m,dd]=d.split('-').map(Number); return `${m}/${dd}（${reasons.join('、')}）`; });
+          showConfirm(`${person.name} 在這段期間（含緩衝日）已經有以下記錄，新增後兩邊會並存、不會取代：\n${lines.slice(0,10).join('\n')}${lines.length>10?`\n…還有 ${lines.length-10} 天`:''}\n\n確定要繼續新增嗎？`, proceedToApprovalCheck);
+        } else {
+          proceedToApprovalCheck();
+        }
+      };
+    }
+  };
+  document.body.appendChild(modal);
+  draw();
+}
 /* writes one day's plan for one duty type into the real schedule, replacing
    whatever that same duty currently holds on that date (other duties on
    that date are untouched). Returns true if anything was written. */
@@ -6000,6 +6205,13 @@ function purgePersonEverywhere(personId){
       });
     });
   });
+  // 查哨候選名單範圍——不清的話，這個人被刪除後這裡還會留著他的id，雖然
+  // 實際排班邏輯本來就只認state.personnel裡真的存在的人（不會排錯人、不
+  // 會拋錯），但畫面上顯示的「候選範圍共X人」會因此多算，一直到下次重新
+  // 存這個設定才會自動修正——順手在這裡也清掉。
+  if(Array.isArray(state.patrolCandidateIds)){
+    state.patrolCandidateIds = state.patrolCandidateIds.filter(id=>id!==personId);
+  }
 }
 
 function renderPeople(){
@@ -8191,6 +8403,7 @@ function reconcileDutyChanges(date){
     if(currentPid && currentPid!==ch.personId){
       ch.status='filled';
       ch.filledPersonId=currentPid;
+      ch.filledPersonName=personName(currentPid); // 存快照，之後就算這個人被刪除，異動紀錄的「已由X遞補」還是讀得到名字（跟ch.personName同樣的做法）
       changed=true;
     }
   });
@@ -8557,7 +8770,7 @@ function openSubstituteModal(source){
           state.dutyChanges[date].push({
             id:uid(), personId:replaced||pid, personName:personName(replaced||pid), label,
             source, reason: replaced? `與 ${personName(pid)} 互換位置（原${swapTarget.label}）` : `由 ${swapTarget.label} 調來`,
-            status:'filled', filledPersonId:pid
+            status:'filled', filledPersonId:pid, filledPersonName:personName(pid)
           });
           saveState(); modal.remove(); render();
           if(!replaced){
@@ -8574,7 +8787,7 @@ function openSubstituteModal(source){
         if(replaced){
           state.dutyChanges[date].push({
             id:uid(), personId:replaced, personName:personName(replaced), label,
-            source, reason:'臨時換手', status:'filled', filledPersonId:pid,
+            source, reason:'臨時換手', status:'filled', filledPersonId:pid, filledPersonName:personName(pid),
             override: tier===3? (btn.dataset.subNote||'') : undefined
           });
         } else if(tier===3){
@@ -8582,7 +8795,7 @@ function openSubstituteModal(source){
           // so the exception is visible afterwards rather than silently applied
           state.dutyChanges[date].push({
             id:uid(), personId:pid, personName:personName(pid), label,
-            source, reason:'例外指派', status:'filled', filledPersonId:pid,
+            source, reason:'例外指派', status:'filled', filledPersonId:pid, filledPersonName:personName(pid),
             override: btn.dataset.subNote||''
           });
         }
@@ -8614,8 +8827,11 @@ function dutyChangeCardHTML(){
   const list = state.dutyChanges[currentDate]||[];
   if(!list.length) return '';
   const rows = list.map(ch=>{
+    // filledPersonName是寫入當下存的快照——遞補的人之後如果被刪除，這裡
+    // 還是讀得到名字；沒有快照(舊資料，這次修正之前寫入的)才退回即時查
+    // (那種情況下如果那個人已經被刪除，就會顯示「—」)。
     const statusHtml = ch.status==='filled'
-      ? `<span class="ok">✅ 已由 ${esc(personName(ch.filledPersonId))} 遞補</span>`
+      ? `<span class="ok">✅ 已由 ${esc(ch.filledPersonName||personName(ch.filledPersonId))} 遞補</span>`
       : `<span class="warn">⚠️ 尚未遞補</span>`;
     const headline = ch.reason==='例外指派'
       ? `${esc(ch.label)}：例外指派 ${esc(ch.personName)}`
