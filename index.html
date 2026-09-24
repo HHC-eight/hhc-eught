@@ -338,7 +338,7 @@ select[data-assign-cat]:has(option[value=""]:checked){background-color:var(--war
       <span class="unit-banner-badge"><i data-ico="star"></i></span>
       <span class="unit-banner-titles">
         <span class="unit-banner-text">陸軍第八軍團 本部連</span>
-        <h1 id="pageTitle">衛哨排班系統 <span class="muted">v161</span></h1>
+        <h1 id="pageTitle">衛哨排班系統 <span class="muted">v162</span></h1>
       </span>
     </span>
     <span class="banner-side right">
@@ -2363,13 +2363,13 @@ function computePlanDrift(){
       const type=planTypeByRole(role);
       items.push({kind:'misc', key:`m|${d}|${role}`, date:d, role, standby, typeKey:type?type.key:null,
         title:`${shortDateLabel(d)} ${role}${standby?'（留守）':''}`, actualText:planEntriesText(ra), planText:planEntriesText(rb),
-        canKeep: !standby && !!type});
+        canKeep: !standby && !!type, additive: entriesContained(ra, rb)});
     });
   });
   // 休假/事故：大表產生的段落，跟留守產生的「非留守人員放假」
   const pick=arr=>(arr||[]).filter(u=>u.leaveId || STANDBY_TAGS.includes(u.reason));
   const usig=u=>`${u.reason}${u.allDay?'':` ${u.start}-${u.end}`}`;
-  const perPerson={};
+  const perPerson={}, notAdditive=new Set();
   [...new Set([...Object.keys(real.unavail||{}), ...Object.keys(synced.unavail||{})])].filter(d=>d>=today).forEach(d=>{
     const A=pick(real.unavail[d]), B=pick(synced.unavail[d]);
     const pids=new Set([...A,...B].map(u=>u.personId));
@@ -2377,6 +2377,9 @@ function computePlanDrift(){
       const ta=A.filter(u=>u.personId===pid).map(usig).sort().join('、')||'（無）';
       const tb=B.filter(u=>u.personId===pid).map(usig).sort().join('、')||'（無）';
       if(ta===tb) return;
+      // 班表上這天有的，預排都還蓋得住（只是預排多了、班表還沒排）→ 不算不一致
+      const bp=B.filter(u=>u.personId===pid);
+      if(!A.filter(u=>u.personId===pid).every(u=>bp.some(v=>unavailCovers(v, u)))) notAdditive.add(pid);
       const standby=[...A,...B].some(u=>u.personId===pid && STANDBY_TAGS.includes(u.reason));
       const cats=new Set([...A,...B].filter(u=>u.personId===pid && u.leaveId).map(u=>u.reason==='榮譽假'?'休假':u.reason));
       const k=pid+'|'+ta+'|'+tb;
@@ -2395,9 +2398,71 @@ function computePlanDrift(){
     items.push({kind:'leave', key:`l|${pid}`, pid, standby, cats, date:list[0].dates[0],
       title:`${personName(pid)}（休假/事故）`,
       lines:list.map(x=>`${compressDates(x.dates)}：班表「${x.ta}」→ 預排「${x.tb}」`),
-      canKeep: !standby && cats.length>0});
+      canKeep: !standby && cats.length>0, additive: !notAdditive.has(pid)});
   });
   return {items, synced};
+}
+/* 班表上的每一筆，預排都有一模一樣的（預排只是多了幾筆）＝班表還沒排完，不是不一致 */
+function entriesContained(actual, plan){
+  const left=plan.filter(m=>!isEmptyPlanEntry(m));
+  return actual.filter(m=>!isEmptyPlanEntry(m)).every(m=>{ const i=left.findIndex(p=>entryCoveredBy(m, p)); if(i<0) return false; left.splice(i,1); return true; });
+}
+/* 班表上的這一筆 a，預排的 p 是「同一筆、只是人比較齊」：時間、補休、說明都
+   一樣，班表上排了的人預排都有（空著的位置預排可以有人） */
+function entryCoveredBy(a, p){
+  const key=m=>JSON.stringify([m.role||'', m.start||'', m.end||'', planShiftLabelOf(m), m.roles||null, m.restUntil||'', m.standbyAnchor||'']);
+  if(key(a)!==key(p)) return false;
+  if(a.support && a.support!==(p.support||'')) return false;
+  const ai=a.personIds||[], pi=p.personIds||[];
+  const nomA=(a.nominalIds||[]).filter(id=>ai.includes(id)), nomP=p.nominalIds||[];
+  if(!nomA.every(id=>nomP.includes(id))) return false;
+  if(a.roles) return a.roles.every((_,i)=>!ai[i] || ai[i]===pi[i]);
+  return ai.filter(Boolean).every(id=>pi.includes(id));
+}
+/* 預排的這筆 v 蓋得住班表上的那筆 u：同一種假（榮譽假算休假），時間包得住 */
+function unavailCovers(v, u){
+  const fam=r=>r==='榮譽假'? '休假' : r;
+  if(v.personId!==u.personId || fam(v.reason)!==fam(u.reason)) return false;
+  if(v.allDay) return true;
+  if(u.allDay || !v.start || !v.end || !u.start || !u.end) return false;
+  return toMin(v.start)<=toMin(u.start) && toMin(u.end)<=toMin(v.end);
+}
+/* 某一項照預排：把這一項在「全部照預排」算出來的結果搬回班表（只動這一項） */
+function adoptDriftItem(it, synced){
+  const roles=planOwnedRoleSet();
+  if(it.kind==='misc'){
+    const d=it.date;
+    const own=m=>m.role===it.role && isPlanOwnedEntry(m, roles);
+    const next=(state.misc[d]||[]).filter(m=>!own(m)).concat(JSON.parse(JSON.stringify((synced.misc[d]||[]).filter(own))));
+    if(next.length) state.misc[d]=next; else delete state.misc[d];
+  } else if(it.kind==='leave'){
+    const mine=u=>u.personId===it.pid && (u.leaveId || STANDBY_TAGS.includes(u.reason));
+    [...new Set([...Object.keys(state.unavail||{}), ...Object.keys(synced.unavail||{})])].forEach(d=>{
+      const a=(state.unavail[d]||[]).filter(mine), b=(synced.unavail[d]||[]).filter(mine);
+      if(JSON.stringify(a)===JSON.stringify(b)) return;
+      const next=(state.unavail[d]||[]).filter(u=>!mine(u)).concat(JSON.parse(JSON.stringify(b)));
+      if(next.length) state.unavail[d]=next; else delete state.unavail[d];
+    });
+  }
+}
+/* 某一項以班表為準：寫回預排。回傳 {ok, msg} */
+function keepDriftItem(it){
+  if(!it.canKeep) return {ok:false, msg:it.standby? '留守相關的請到留守預排調整。' : '這一項沒辦法寫回預排。'};
+  if(it.kind==='misc'){
+    const type=PREPLAN_TYPES.find(t=>t.key===it.typeKey);
+    const backup=JSON.stringify(state.preplan);
+    const r=writeBackTypeDate(type, it.date, state.misc[it.date]||[]);
+    if(!r.ok) state.preplan=JSON.parse(backup);
+    return r;
+  }
+  it.cats.forEach(c=>leavePlanFromActual(it.pid, c));
+  return {ok:true};
+}
+/* 班表還沒排、預排已經有的：直接照預排補上（不用問）。回傳補了幾項。 */
+function fillNotYetScheduled(drift){
+  const add=drift.items.filter(it=>it.additive);
+  add.forEach(it=>adoptDriftItem(it, drift.synced));
+  return add.length;
 }
 /* 大表「以班表為準」：這個人這幾個類型，今天以後的部分改成跟班表現在一樣
    （整天的日期、榮譽假、部分時段），今天以前的不動 */
@@ -2453,17 +2518,33 @@ function applyPlanDriftChoices(drift, keepKeys){
   saveState();
   return failed;
 }
-function openPlanDriftModal(drift, reason){
+function openPlanDriftModal(drift, reason, filledCount){
   const modal=document.createElement('div');
   modal.className='sheet-modal'; modal.style.zIndex='160';
-  const keep=new Set();
+  let filled=filledCount||0;
   const intro = reason==='migrate'
-    ? '從這一版開始<b>以預排為準</b>：預排存檔後，今天以後的班表會自動跟著更新，不用再按「匯入」；在排班頁改了預排來的格子，會問你要不要一起更新預排。已經過去的日期不會再被改動。<br><br>下面是目前（今天以後）班表跟預排不一樣的地方，按「套用」會照你的選擇讓兩邊一致。'
+    ? '從這一版開始<b>以預排為準</b>：預排存檔後，今天以後的班表會自動跟著更新，不用再按「匯入」；在排班頁改了預排來的格子，會問你要不要一起更新預排。已經過去的日期不會再被改動。<br><br>下面是目前（今天以後）班表跟預排不一樣的地方。'
     : reason==='import'
-      ? '剛匯入的備份裡，今天以後有些班表跟預排不一樣。按「套用」會照你的選擇讓兩邊一致。'
-      : '今天以後班表跟預排不一樣的地方如下，按「套用」會照你的選擇讓兩邊一致。';
+      ? '剛匯入的備份裡，今天以後有些班表跟預排不一樣。'
+      : '今天以後班表跟預排不一樣的地方如下。';
+  const how='每一項按「照預排」（班表改成跟預排一樣）或「以班表為準」（預排改成跟班表一樣），按了就處理完、從清單拿掉。';
+  const refresh=()=>{
+    drift=computePlanDrift();
+    for(let round=0; round<3; round++){
+      const n=fillNotYetScheduled(drift);
+      if(!n) break;
+      filled+=n; markPlanSystemChange(); saveState(); drift=computePlanDrift();
+    }
+  };
+  const commit=()=>{ markPlanSystemChange(); saveState(); render(); };
   const draw=()=>{
-    const miscItems=drift.items.filter(i=>i.kind==='misc'), leaveItems=drift.items.filter(i=>i.kind==='leave');
+    const items=drift.items.filter(i=>!i.additive);
+    if(!items.length){
+      modal.remove();
+      showToast(filled? `班表跟預排已一致（還沒排的 ${filled} 項已照預排補上）` : '班表跟預排已一致');
+      return;
+    }
+    const miscItems=items.filter(i=>i.kind==='misc'), leaveItems=items.filter(i=>i.kind==='leave');
     const row=it=>`
       <div class="card" style="padding:10px;margin-bottom:8px">
         <div style="font-weight:600;margin-bottom:4px">${esc(it.title)}</div>
@@ -2471,45 +2552,55 @@ function openPlanDriftModal(drift, reason){
           ? `<div class="muted">班表：${esc(it.actualText)}</div><div class="muted">預排：${esc(it.planText)}</div>`
           : it.lines.map(l=>`<div class="muted">${esc(l)}</div>`).join('')}
         <div class="row wrap" style="margin-top:6px;gap:6px">
-          <button class="small ${keep.has(it.key)?'ghost':'primary'}" data-drift-plan="${esc(it.key)}">照預排</button>
-          ${it.canKeep? `<button class="small ${keep.has(it.key)?'primary':'ghost'}" data-drift-keep="${esc(it.key)}">${it.kind==='misc' && it.actualText==='（無）'? '以班表為準（預排刪掉這項）' : it.kind==='leave'? '以班表為準（大表改成跟班表一樣）' : '以班表為準（寫回預排）'}</button>`
+          <button class="small primary" data-drift-plan="${esc(it.key)}">照預排</button>
+          ${it.canKeep? `<button class="small ghost" data-drift-keep="${esc(it.key)}">${it.kind==='misc' && it.planText==='（無）'? '以班表為準（預排加上這項）' : it.kind==='leave'? '以班表為準（大表改成跟班表一樣）' : '以班表為準（寫回預排）'}</button>`
             : `<span class="hint">${it.standby?'留守相關的請到留守預排調整':''}</span>`}
         </div>
       </div>`;
     modal.innerHTML=`
       <div class="sheet-inner">
         <div class="section-title"><h2 style="margin:0">班表跟預排不一致</h2><button class="ghost small" id="pdLater">稍後再說</button></div>
-        <div class="hint" style="margin-bottom:10px">${intro}</div>
+        <div class="hint" style="margin-bottom:6px">${intro}</div>
+        <div class="hint" style="margin-bottom:10px">${how}${filled? `<br>✅ 班表還沒排、預排已經有的 ${filled} 項，已經直接照預排補上（不算不一致）。`:''}</div>
         ${miscItems.length? `<h3>勤務（${miscItems.length}項）</h3>${miscItems.map(row).join('')}` : ''}
         ${leaveItems.length? `<h3>休假／事故（${leaveItems.length}人）</h3>${leaveItems.map(row).join('')}` : ''}
-        <div class="row wrap" style="margin-top:8px">
-          <button class="ghost grow" id="pdAllPlan">全部照預排</button>
-          <button class="primary grow" id="pdApply">套用</button>
-        </div>
+        <button class="primary" id="pdAllPlan" style="width:100%;margin-top:8px">剩下的全部照預排</button>
       </div>`;
     modal.querySelector('#pdLater').onclick=()=>modal.remove();
-    modal.querySelectorAll('[data-drift-plan]').forEach(b=>{ b.onclick=()=>{ keep.delete(b.dataset.driftPlan); draw(); }; });
-    modal.querySelectorAll('[data-drift-keep]').forEach(b=>{ b.onclick=()=>{ keep.add(b.dataset.driftKeep); draw(); }; });
-    modal.querySelector('#pdAllPlan').onclick=()=>{ keep.clear(); draw(); };
-    modal.querySelector('#pdApply').onclick=()=>{
-      const failed=applyPlanDriftChoices(drift, keep);
-      modal.remove();
-      render();
-      if(failed.length) showAlert(`以下幾項沒辦法寫回預排，已改成照預排：\n${failed.map(f=>'・'+f).join('\n')}`);
-      else showToast('班表跟預排已一致');
+    const find=k=>drift.items.find(i=>i.key===k);
+    modal.querySelectorAll('[data-drift-plan]').forEach(b=>{ b.onclick=()=>{
+      const it=find(b.dataset.driftPlan); if(!it) return;
+      adoptDriftItem(it, drift.synced);
+      commit(); refresh(); draw();
+    }; });
+    modal.querySelectorAll('[data-drift-keep]').forEach(b=>{ b.onclick=()=>{
+      const it=find(b.dataset.driftKeep); if(!it) return;
+      const r=keepDriftItem(it);
+      if(!r.ok){ showAlert(`沒辦法寫回預排：\n${r.msg}`); return; }
+      commit(); refresh(); draw();
+    }; });
+    modal.querySelector('#pdAllPlan').onclick=()=>{
+      applyPlanDriftChoices(drift, new Set());
+      render(); refresh(); draw();
     };
   };
   document.body.appendChild(modal);
   draw();
 }
+/* 檢查班表跟預排：班表還沒排的直接照預排補上（不用問），真的不一樣的才列
+   出來讓使用者決定 */
 function maybeShowPlanDrift(reason){
   const drift=computePlanDrift();
-  if(!drift.items.length){
-    if(reason==='check') showAlert('今天以後的班表跟預排完全一致。');
-    return drift;
+  const filled=fillNotYetScheduled(drift);
+  if(filled){ markPlanSystemChange(); saveState(); render(); }
+  const rest=filled? computePlanDrift() : drift;
+  if(!rest.items.some(i=>!i.additive)){
+    if(reason==='check') showAlert(filled? `今天以後的班表跟預排一致（還沒排的 ${filled} 項已照預排補上）。` : '今天以後的班表跟預排完全一致。');
+    else if(filled) showToast(`還沒排的 ${filled} 項已照預排補上`);
+    return rest;
   }
-  openPlanDriftModal(drift, reason);
-  return drift;
+  openPlanDriftModal(rest, reason, filled);
+  return rest;
 }
 /* 某一天的勤務跟預排不一致的角色（排班頁概況卡用，只看勤務、不看休假） */
 function dayPlanDriftRoles(date){
@@ -2518,7 +2609,9 @@ function dayPlanDriftRoles(date){
   planDayTypes().forEach(t=>{
     const role=planRoleName(t);
     const actual=(state.misc[date]||[]).filter(m=>m.role===role && !m.standbyAnchor);
-    if(!sameEntrySet(actual, simulatePlanEntries(t, date))) out.push(role);
+    const want=simulatePlanEntries(t, date);
+    // 班表只是還沒排（預排比較多）不算不一致；開 App 時會自動照預排補上
+    if(!sameEntrySet(actual, want) && !entriesContained(actual, want)) out.push(role);
   });
   Object.entries((state.preplan||{}).standby||{}).forEach(([anchor,p])=>{
     Object.entries(p.subDuties||{}).forEach(([role, byDate])=>{
@@ -2526,7 +2619,7 @@ function dayPlanDriftRoles(date){
       const cfg=standbySubActive(p, date)? (byDate||{})[date] : null;
       const want=makeStandbySubEntry(anchor, role, cfg);
       const have=(state.misc[date]||[]).filter(m=>m.standbyAnchor===anchor && m.role===role);
-      if(!sameEntrySet(have, want? [want] : [])) out.push(role+'（留守）');
+      if(!sameEntrySet(have, want? [want] : []) && !entriesContained(have, want? [want] : [])) out.push(role+'（留守）');
     });
   });
   const anchors=new Set(Object.keys((state.preplan||{}).standby||{}));
@@ -4272,6 +4365,108 @@ function autoAssignMiscForDate(date, opts){
     document.body.style.overflow = hasModal? 'hidden' : '';
   }
   if(typeof MutationObserver!=='undefined') new MutationObserver(refreshBodyScrollLock).observe(document.body, {childList:true});
+})();
+
+/* ---------------- 滑動關閉選單（v162） ----------------
+   底部選單（.sheet-inner）往下拉、全螢幕頁面往右滑或在最上面往下拉、左邊的
+   預排抽屜往左滑，都可以關閉，不用一定要按「關閉」。
+   關閉時一律代按那個選單自己的「關閉／稍後再說／取消」按鈕，所以選單原本關
+   閉時要做的事（例如還有沒存的修改要先確認）照樣會發生；確認之後沒關掉，選
+   單就彈回原位。確認框、提醒框這種要你做決定的小視窗不適用。
+   內容還沒捲到最上面時往下拉是捲動內容，不會關閉；可以左右捲的表格上左右
+   滑也不會關閉。 */
+(function(){
+  const CLOSE_TEXT=/^(關閉|稍後再說|取消)$/;
+  // 拖曳排序的把手、確認框上開始的手勢不管；正在打字的欄位（游標在裡面）也不管
+  const IGNORE='[data-pp-handle],[data-drag-handle],[data-no-swipe],.dialog-box';
+  const EDITABLE='textarea,select,[contenteditable],input:not([type=checkbox]):not([type=radio]):not([type=button]):not([type=submit])';
+  function closeButtonOf(root){
+    const header=root.querySelector('.section-title');
+    const hb=header? [...header.querySelectorAll('button')] : [];
+    return hb.find(b=>CLOSE_TEXT.test(b.textContent.trim()))
+      || [...root.querySelectorAll('button[id]')].find(b=>/(Close|Later|Cancel)$/.test(b.id) && CLOSE_TEXT.test(b.textContent.trim()))
+      || null;
+  }
+  function scrollsY(el){ const o=getComputedStyle(el).overflowY; return (o==='auto'||o==='scroll') && el.scrollHeight>el.clientHeight+1; }
+  function scrollsX(el){ const o=getComputedStyle(el).overflowX; return (o==='auto'||o==='scroll') && el.scrollWidth>el.clientWidth+1; }
+  function atTop(target, root){
+    for(let el=target; el; el=el.parentElement){ if(scrollsY(el) && el.scrollTop>0) return false; if(el===root) break; }
+    return true;
+  }
+  // 手指下面有可以左右捲、而且往這個方向還捲得動的內容 → 讓它捲，不當成關閉
+  function xScrollable(target, root, dir){
+    for(let el=target; el; el=el.parentElement){
+      if(scrollsX(el) && (dir>0? el.scrollLeft>0 : el.scrollLeft+el.clientWidth<el.scrollWidth-1)) return true;
+      if(el===root) break;
+    }
+    return false;
+  }
+  let g=null;
+  document.addEventListener('touchstart', e=>{
+    g=null;
+    if(e.touches.length!==1) return;
+    const t=e.target;
+    if(!(t instanceof Element) || t.closest(IGNORE)) return;
+    const ed=t.closest(EDITABLE);
+    if(ed && ed===document.activeElement) return;
+    let kind=null, panel=null, container=null;
+    const sheet=t.closest('.sheet-inner');
+    if(sheet){ kind='sheet'; panel=sheet; container=sheet.parentElement; }
+    else if(t.closest('.fullscreen-modal')){ kind='page'; panel=container=t.closest('.fullscreen-modal'); }
+    else if(t.closest('.drawer')){ kind='drawer'; panel=container=t.closest('.drawer'); }
+    else {
+      // 按在底部選單上方的半透明背景上往下拉也可以
+      const inner=[...(t.children||[])].find(c=>c.classList && c.classList.contains('sheet-inner'));
+      if(inner && getComputedStyle(t).position==='fixed'){ kind='sheet'; panel=inner; container=t; }
+    }
+    if(!kind || !container || container===document.body) return;
+    const p=e.touches[0];
+    g={kind, panel, container, target:t, x0:p.clientX, y0:p.clientY, t0:Date.now(), mode:null, dx:0, dy:0};
+  }, {passive:true, capture:true});
+  document.addEventListener('touchmove', e=>{
+    if(!g) return;
+    const p=e.touches[0]; const dx=p.clientX-g.x0, dy=p.clientY-g.y0;
+    if(!g.mode){
+      if(Math.abs(dx)<3 && Math.abs(dy)<3) return;
+      const down = dy>0 && dy>=Math.abs(dx)*1.2 && atTop(g.target, g.panel);
+      if(g.kind==='sheet' && down) g.mode='down';
+      else if(g.kind==='page' && down) g.mode='down';
+      else if(g.kind==='page' && dx>0 && dx>Math.abs(dy)*1.5 && !xScrollable(g.target, g.panel, 1)) g.mode='right';
+      else if(g.kind==='drawer' && dx<0 && -dx>Math.abs(dy)*1.2 && !xScrollable(g.target, g.panel, -1)) g.mode='left';
+      else { g=null; return; }
+      if(!e.cancelable){ g=null; return; }
+      g.panel.style.transition='none';
+      g.panel.style.willChange='transform';
+    }
+    if(e.cancelable) e.preventDefault();
+    g.dx=dx; g.dy=dy;
+    g.panel.style.transform = g.mode==='down'? `translateY(${Math.max(0,dy)}px)` : g.mode==='right'? `translateX(${Math.max(0,dx)}px)` : `translateX(${Math.min(0,dx)}px)`;
+    if(g.kind==='drawer'){ const bd=document.querySelector('.drawer-backdrop'); if(bd) bd.style.opacity=String(Math.max(0.2, 1+Math.min(0,dx)/g.panel.offsetWidth)); }
+  }, {passive:false, capture:true});
+  const end=()=>{
+    if(!g || !g.mode){ g=null; return; }
+    const {panel, container, mode, kind}=g;
+    const dist = mode==='down'? g.dy : mode==='right'? g.dx : -g.dx;
+    const size = mode==='down'? panel.offsetHeight : panel.offsetWidth;
+    const v = dist/Math.max(1, Date.now()-g.t0);
+    const shouldClose = dist > Math.min(150, size*0.3) || (v>0.5 && dist>50);
+    g=null;
+    const bd = kind==='drawer'? document.querySelector('.drawer-backdrop') : null;
+    const settle=()=>setTimeout(()=>{ panel.style.transition=''; panel.style.willChange=''; if(bd) bd.style.transition=''; }, 220);
+    panel.style.transition='transform .18s ease-out';
+    if(bd) bd.style.transition='opacity .18s ease-out';
+    if(!shouldClose){ panel.style.transform=''; if(bd) bd.style.opacity=''; settle(); return; }
+    panel.style.transform = mode==='down'? 'translateY(110%)' : mode==='right'? 'translateX(110%)' : 'translateX(-110%)';
+    setTimeout(()=>{
+      const btn=closeButtonOf(panel);
+      if(btn) btn.click(); else container.remove();
+      // 沒有真的關掉（例如跳出「還有沒存的修改」確認）→ 彈回原位
+      if(container.isConnected){ panel.style.transform=''; if(bd) bd.style.opacity=''; }
+      settle();
+    }, 170);
+  };
+  document.addEventListener('touchend', end, {capture:true});
+  document.addEventListener('touchcancel', ()=>{ if(g && g.mode){ g.panel.style.transform=''; g.panel.style.transition=''; } g=null; }, {capture:true});
 })();
 
 /* ---------------- rendering ---------------- */
@@ -13503,18 +13698,34 @@ function wireMiscCardEvents(){
 }
 /* ---------------- init ---------------- */
 render();
+/* 開 App 時：預排已經有、班表還沒排的（例如舊版留下來還沒匯入的），直接照
+   預排補上。這不是使用者的修改，不放進復原紀錄。 */
+function commitWithoutUndo(){
+  lastSavedSnapshot=JSON.stringify(state);
+  writeStateToStorage(lastSavedSnapshot);
+  initPlanSync();
+  render();
+}
+function fillNotYetScheduledOnOpen(){
+  try{
+    const n=fillNotYetScheduled(computePlanDrift());
+    if(n){ commitWithoutUndo(); showToast(`預排已經有、班表還沒排的 ${n} 項，已照預排補上`); }
+  }catch(e){ console.error(e); }
+}
 /* v160 第一次開啟：說明「以預排為準」的新做法，並列出目前今天以後班表跟預排
    不一樣的地方讓使用者決定（只在這支手機第一次開這版時跳一次）。 */
 const PLAN_SYNC_INTRO_KEY='drs_plansync_intro_v160';
 setTimeout(()=>{
   let seen=false;
   try{ seen = localStorage.getItem(PLAN_SYNC_INTRO_KEY)==='1'; }catch(e){}
-  if(seen) return;
+  if(seen){ fillNotYetScheduledOnOpen(); return; }
   try{ localStorage.setItem(PLAN_SYNC_INTRO_KEY,'1'); }catch(e){}
   try{
-  const drift=computePlanDrift();
-  if(drift.items.length) openPlanDriftModal(drift, 'migrate');
-  else showAlert('這一版開始「以預排為準」：\n・預排存檔就直接生效，今天以後的班表會自動跟著更新，不用再按「匯入」。\n・在排班頁改了預排來的格子（值星、查哨、督伙、救護車等），會問你要不要一起更新預排；不更新的話這次修改會取消。\n・已經過去的日期不會再被預排改動。\n\n目前今天以後的班表跟預排完全一致。');
+  let drift=computePlanDrift();
+  const filled=fillNotYetScheduled(drift);
+  if(filled){ commitWithoutUndo(); drift=computePlanDrift(); }
+  if(drift.items.some(i=>!i.additive)) openPlanDriftModal(drift, 'migrate', filled);
+  else showAlert('這一版開始「以預排為準」：\n・預排存檔就直接生效，今天以後的班表會自動跟著更新，不用再按「匯入」。\n・在排班頁改了預排來的格子（值星、查哨、督伙、救護車等），會問你要不要一起更新預排；不更新的話這次修改會取消。\n・已經過去的日期不會再被預排改動。\n\n'+(filled? `預排已經有、班表還沒排的 ${filled} 項，已經照預排補上；現在今天以後的班表跟預排一致。` : '目前今天以後的班表跟預排完全一致。'));
   }catch(e){ console.error(e); }
 }, 400);
 /* 標題區的實際高度量出來寫進 --banner-h，這樣彈窗/抽屜/內容區要讓出的空間
