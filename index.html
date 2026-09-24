@@ -241,6 +241,7 @@ select[data-assign-cat]:has(option[value=""]:checked){background-color:var(--war
 .rule-flag.lv-remind{color:var(--dim);background:var(--btn-bg);font-weight:500;}
 .rule-flag.ex-serious{color:var(--danger);background:var(--danger-soft);border:1.5px solid var(--danger);}
 .rule-flag.ex-normal{color:var(--warn);background:var(--warn-soft);border:1.5px dashed var(--warn);}
+.rule-flag.ex-ignored{color:var(--dim);background:var(--btn-bg);border:1.5px dashed var(--line-strong);font-weight:600;}
 .rule-lv{display:inline-block;font-size:11px;font-weight:800;padding:1px 7px;border-radius:999px;white-space:nowrap;vertical-align:1px;}
 .rule-lv.lv-fact{background:var(--danger);color:var(--bg);}
 .rule-lv.lv-serious{background:var(--danger-soft);color:var(--danger);}
@@ -338,7 +339,7 @@ select[data-assign-cat]:has(option[value=""]:checked){background-color:var(--war
       <span class="unit-banner-badge"><i data-ico="star"></i></span>
       <span class="unit-banner-titles">
         <span class="unit-banner-text">陸軍第八軍團 本部連</span>
-        <h1 id="pageTitle">衛哨排班系統 <span class="muted">v162</span></h1>
+        <h1 id="pageTitle">衛哨排班系統 <span class="muted">v163</span></h1>
       </span>
     </span>
     <span class="banner-side right">
@@ -561,6 +562,7 @@ function commitSave(prevSnapshot){
   }
   redoStack=[]; // a fresh change invalidates whatever "future" redo had
   if(typeof pruneRuleExceptions==='function' && state.ruleExceptions) pruneRuleExceptions();
+  if(typeof pruneAutoMarks==='function') pruneAutoMarks();
   lastSavedSnapshot = JSON.stringify(state);
   writeStateToStorage(lastSavedSnapshot);
   maybeWarnStorageGrowing();
@@ -2631,8 +2633,9 @@ function dayPlanDriftRoles(date){
    v160 規則分級與破例紀錄
    ----------------------------------------------------------------
    19條規則分成四級（使用者定的）：
-     事實（1休假/事故/長期事故、2已離退、3同時段已有勤務）：永遠不能排，
-       要先改事實（提早收假、從另一個勤務撤下來…）。
+     事實（1休假/事故/長期事故、2已離退、3同時段已有勤務）：v163 起 1、3（以及
+       4補休、8準備時間）算「衝突」，可以換人、掛名，或忽略一次（只記錄有衝突，
+       reason='ignored'）；2已離退、同一人排兩格仍然不能排。
      嚴重：還有其他符合規則的人→不讓排，直接列出那些人；系統確認真的沒人→
        可以排，但要寫一句原因，那一格一直標紅。
      一般：可以排，點一個原因就好；真的沒人→自動記「人力不足（系統判定）」。
@@ -2679,7 +2682,12 @@ function ruleLevel(key){
   const custom=((state.unitRules||{}).ruleLevels||{})[key];
   return RULE_LEVEL_RANK[custom]!==undefined && custom!=='fact'? custom : r.level;
 }
-function exceptionReasonLabel(key){ const r=EXCEPTION_REASONS.find(x=>x.key===key); return r? r.label : key; }
+function exceptionReasonLabel(key){ if(key==='ignored') return '忽略一次（有衝突）'; const r=EXCEPTION_REASONS.find(x=>x.key===key); return r? r.label : key; }
+/* 可以「忽略一次」的衝突（v163）：休假／事故、同時段、補休、準備時間。已離
+   退不行。忽略一次＝照排，只記錄這一天、這一格、這個人有衝突（換人或重排就
+   不算了）。 */
+var IGNORABLE_RULES=new Set(['leave','overlap','comprest','prep']);
+function isIgnorableConflict(v){ return IGNORABLE_RULES.has(v.key) && !v.hard; }  // 同一人排兩格這種不能忽略
 if(!state.ruleExceptions) state.ruleExceptions={};
 
 /* ---------- 格子（slot）與對象（subject） ---------- */
@@ -2705,7 +2713,7 @@ function isNCOorOfficer(p){ return !!p && ['士官','軍官'].includes(rankCateg
    不管pid現在是不是已經在這一格都可以問（在的話會排除這一格自己）。 */
 function personalViolations(ctx, pid){
   const out=[];
-  const add=(key,msg)=>out.push({key, level:ruleLevel(key), msg});
+  const add=(key,msg,extra)=>out.push(Object.assign({key, level:ruleLevel(key), msg}, extra||{}));
   const date=ctx.date;
   const person=state.personnel.find(p=>p.id===pid);
   if(!person) return out;
@@ -2721,10 +2729,10 @@ function personalViolations(ctx, pid){
     (state.unavail[date]||[]).forEach(u=>{ if(u.personId===pid && u.allDay) add('leave', `全天${u.reason?`（${u.reason}）`:'（事故）'}`); });
   }
   // 3 同一班（或同一個多人項目）重複排了同一個人；車長＋駕駛同一人由規則16管
-  if(ctx.kind==='cat' && ((((state.assign[date]||{})[ctx.cat.id])||{})[ctx.shift.id]||[]).some((id,i)=>id===pid && i!==ctx.idx && i<ctx.shift.count)) add('overlap', '這一班已經排了他（同一人排兩格）');
+  if(ctx.kind==='cat' && ((((state.assign[date]||{})[ctx.cat.id])||{})[ctx.shift.id]||[]).some((id,i)=>id===pid && i!==ctx.idx && i<ctx.shift.count)) add('overlap', '這一班已經排了他（同一人排兩格）', {hard:true});
   if(ctx.kind==='misc'){
     const m=ctx.entry, pair=new Set(['車長','駕駛']);
-    if((m.personIds||[]).some((id,i)=>id===pid && i!==ctx.idx && !(m.roles && pair.has(m.roles[i]) && pair.has(m.roles[ctx.idx]) && m.roles[i]!==m.roles[ctx.idx]))) add('overlap', '這個項目已經排了他（同一人排兩次）');
+    if((m.personIds||[]).some((id,i)=>id===pid && i!==ctx.idx && !(m.roles && pair.has(m.roles[i]) && pair.has(m.roles[ctx.idx]) && m.roles[i]!==m.roles[ctx.idx]))) add('overlap', '這個項目已經排了他（同一人排兩次）', {hard:true});
   }
   if(win){
     const {s,e}=win;
@@ -2985,7 +2993,10 @@ function dayRuleStatus(date){
   const recs=(state.ruleExceptions||{})[date]||[];
   const facts=[], open=[], covered=[], reminders=[];
   all.forEach(v=>{
-    if(v.level==='fact') facts.push(v);
+    if(v.level==='fact'){
+      const rec=isIgnorableConflict(v) && recs.find(r=>r.reason==='ignored' && exceptionCovers(r, v));
+      if(rec){ v.record=rec; covered.push(v); } else facts.push(v);
+    }
     else if(v.level==='remind') reminders.push(v);
     else { const rec=recs.find(r=>exceptionCovers(r, v)); if(rec){ v.record=rec; covered.push(v); } else open.push(v); }
   });
@@ -3155,29 +3166,101 @@ function violationCmpKey(v){
 /* 指派會影響到的日期：當天，加上隔天（「昨天同一時段又排」是記在隔天那一格） */
 function gateDates(date){ return [date, nextDateStr(date)]; }
 function gateViolations(date){ return gateDates(date).flatMap(d=>dayRuleViolations(d)); }
+/* 掛名可以解掉的衝突：這一格本身是其他勤務的話，他在這一格只掛名；或是跟
+   這一格同時段、他也排在上面的其他勤務，他在那一項只掛名。回傳可以選的項目。 */
+function nominalOptionsFor(date, ctx, pid){
+  const out=[];
+  if(!ctx || !pid) return out;
+  const win=ctxWindow(ctx);
+  (state.misc[date]||[]).forEach(m=>{
+    if(!(m.personIds||[]).includes(pid) || (m.nominalIds||[]).includes(pid)) return;
+    const self = ctx.kind==='misc' && m.id===ctx.entry.id;
+    let overl=false;
+    if(!self && win && m.start && m.end){ const ms=toMin(m.start); overl=windowsOverlapRecurring(win.s, win.e, ms, wrapEndMin(ms, toMin(m.end))); }
+    if(self || overl) out.push({date, entryId:m.id, pid, label:`${m.role}${m.start&&m.end?` ${m.start}-${m.end}`:''}`});
+  });
+  return out;
+}
+/* 這條違規可以用「掛名」解掉的項目：
+   衝突類（休假事故、同時段、補休、準備）→ 這一格本身／同時段的其他勤務；
+   6 只能待命 → 他排的待命勤務（或這一格本身就是待命勤務）；5 今日值星 → 值星那一項 */
+function nominalOptionsForViolation(v){
+  if(!v.ctx || !v.pid || v.hard) return [];
+  const date=v.ctx.date, pid=v.pid;
+  if(isIgnorableConflict(v)) return nominalOptionsFor(date, v.ctx, pid);
+  const live=m=>(m.personIds||[]).includes(pid) && !(m.nominalIds||[]).includes(pid);
+  const opt=m=>({date, entryId:m.id, pid, label:`${m.role}${m.start&&m.end?` ${m.start}-${m.end}`:''}`});
+  if(v.key==='standby') return (state.misc[date]||[]).filter(m=>live(m) && ['exclusive','flexible'].includes((presetForEntry(m)||{}).standbyMode)).map(opt);
+  if(v.key==='dutyOfficer') return (state.misc[date]||[]).filter(m=>m.role==='值星' && live(m)).map(opt);
+  return [];
+}
+function conflictNominalOptions(vs){
+  const seen=new Set(), out=[];
+  vs.forEach(v=>nominalOptionsForViolation(v).forEach(o=>{ const k=o.date+'|'+o.entryId+'|'+o.pid; if(!seen.has(k)){ seen.add(k); out.push(o); } }));
+  return out;
+}
+function nominalButtonsHTML(nomOpts, attr){
+  return nomOpts.length? `<h3 style="margin:10px 0 4px">掛名</h3>`+nomOpts.map((o,i)=>`<button class="ghost" ${attr}="${i}" style="width:100%;margin-bottom:6px;text-align:left">${esc(personName(o.pid))} 在「${esc(o.label)}」只掛名（不用真的出勤）</button>`).join('') : '';
+}
+function applyNominal(opt){
+  const m=(state.misc[opt.date]||[]).find(x=>x.id===opt.entryId);
+  if(!m) return false;
+  m.nominalIds=[...new Set([...(m.nominalIds||[]), opt.pid])];
+  return true;
+}
+/* 衝突（可以忽略一次的那幾種）：換人／掛名／忽略一次／取消 */
+function openConflictDialog(date, conflicts, altInfo, nomOpts, h){
+  const modal=document.createElement('div');
+  modal.style.cssText='position:fixed;inset:0;background:var(--scrim);z-index:1100;display:flex;align-items:flex-end;';
+  const alts=altInfo.filter(a=>a.alts.length);
+  modal.innerHTML=`
+    <div class="sheet-inner">
+      <div class="section-title"><h2 style="margin:0">這樣排有衝突</h2><button class="ghost small" id="cfCancel">取消</button></div>
+      ${violationLinesHTML(conflicts)}
+      <div class="hint" style="margin:8px 0">可以換人${nomOpts.length? '、把他在其他勤務上改成掛名':''}，或是忽略這一次（照排，只記錄有衝突）。</div>
+      ${alts.length? `<h3 style="margin:8px 0 4px">換人</h3>`+alts.map((a,ai)=>`
+        <div style="font-weight:600;margin:6px 0 4px">${esc(ctxLabel(a.ctx))}（符合規則 ${a.alts.length} 位）</div>
+        ${a.alts.slice(0,6).map(p=>`<div class="list-item"><span class="grow">${esc(p.name)}（${esc(p.group||'未分組')}·${esc(p.rank)}${personBadges(p)}）<br><span class="hint">${esc(personDutySummary(p.id, date).join('、')||'今天沒有其他任務')}</span></span><button class="primary small" data-cf-pick="${ai}|${p.id}">排他</button></div>`).join('')}
+        ${a.alts.length>6? `<div class="hint">…還有 ${a.alts.length-6} 位</div>`:''}`).join('') : `<div class="hint">符合規則、可以換上來的人：0 位。</div>`}
+      ${nominalButtonsHTML(nomOpts, 'data-cf-nom')}
+      <h3 style="margin:10px 0 4px">忽略一次</h3>
+      <button class="ghost" id="cfIgnore" style="width:100%">照排，只記錄有衝突</button>
+    </div>`;
+  document.body.appendChild(modal);
+  const close=()=>modal.remove();
+  dialogEl(modal,'cfCancel').onclick=()=>{ close(); h.onCancel(); };
+  dialogEl(modal,'cfIgnore').onclick=()=>{ close(); h.onIgnore(); };
+  modal.querySelectorAll('[data-cf-pick]').forEach(b=>{ b.onclick=()=>{ const [ai,pid]=b.dataset.cfPick.split('|'); close(); h.onSwap(alts[Number(ai)].ctx, pid); }; });
+  modal.querySelectorAll('[data-cf-nom]').forEach(b=>{ b.onclick=()=>{ close(); h.onNominal(nomOpts[Number(b.dataset.cfNom)]); }; });
+}
 function gateAssignment(date, mutate, focus, onDone, onRevert, opts){
   opts=opts||{};
   const before=new Set(gateViolations(date).map(violationCmpKey));
   // 指派動作可能動到：這一天的衛哨、其他勤務、異動紀錄（找補位會留紀錄），取消時全部還原
   const snapA=JSON.stringify(state.assign[date]||null), snapM=JSON.stringify(state.misc[date]||null), snapC=JSON.stringify((state.dutyChanges||{})[date]||null);
   const hadA=Object.prototype.hasOwnProperty.call(state.assign, date), hadM=Object.prototype.hasOwnProperty.call(state.misc, date), hadC=Object.prototype.hasOwnProperty.call(state.dutyChanges||{}, date);
+  // 忽略一次的衝突紀錄也可能寫在這兩天，取消時一起還原
+  if(!state.ruleExceptions) state.ruleExceptions={};
+  const exDates=gateDates(date), snapX=exDates.map(d=>JSON.stringify(state.ruleExceptions[d]||null));
   mutate();
   const fresh=gateViolations(date).filter(v=>!before.has(violationCmpKey(v)));
   const restore=()=>{
     if(hadA) state.assign[date]=JSON.parse(snapA); else delete state.assign[date];
     if(hadM) state.misc[date]=JSON.parse(snapM); else delete state.misc[date];
     if(state.dutyChanges){ if(hadC) state.dutyChanges[date]=JSON.parse(snapC); else delete state.dutyChanges[date]; }
+    exDates.forEach((d,i)=>{ const v=JSON.parse(snapX[i]); if(v) state.ruleExceptions[d]=v; else delete state.ruleExceptions[d]; });
   };
   const revert=()=>{ restore(); if(onRevert) onRevert(); else render(); };
   const commit=()=>{ saveState(); if(onDone) onDone(); };
-  const facts=fresh.filter(v=>v.level==='fact');
-  if(facts.length){
+  const hardFacts=fresh.filter(v=>v.level==='fact' && !isIgnorableConflict(v));
+  if(hardFacts.length){
     revert();
-    showAlert(`不能這樣排（事實上做不到）：\n${[...new Set(facts.map(v=>`・${v.pid? personName(v.pid)+'：' : ''}${v.msg}`))].join('\n')}\n\n要先改事實，例如提早收假、把他從另一個勤務撤下來，再回來排。`);
+    showAlert(`不能這樣排：\n${[...new Set(hardFacts.map(v=>`・${v.pid? personName(v.pid)+'：' : ''}${v.msg}`))].join('\n')}\n\n請換人。`);
     return;
   }
-  const breaking=fresh.filter(v=>v.level==='serious' || v.level==='normal');
-  if(!breaking.length){ commit(); return; }
+  const conflicts=fresh.filter(isIgnorableConflict);
+  const breaking=fresh.filter(v=>!isIgnorableConflict(v) && (v.level==='serious' || v.level==='normal'));
+  if(!conflicts.length && !breaking.length){ commit(); return; }
   // 符合規則的其他人：這次新放進去的每一格；再加上這次改動造成違規、但不是
   // 新放人的那幾格（例如只改時段、只對調駕駛車長），看那一格（或那一組）能換誰
   const focusKeys=new Set((focus||[]).map(f=>f.ctx.kind==='cat'? catSlotSubject(f.ctx.cat.id, f.ctx.shift.id, f.ctx.idx)+'#'+f.pid : 'mid:'+f.ctx.entry.id+'#'+f.pid));
@@ -3199,9 +3282,29 @@ function gateAssignment(date, mutate, focus, onDone, onRevert, opts){
   const anyAlts=altInfo.some(a=>a.alts.length);
   // 選了清單上的其他人：同一個動作重做一次，只是那一格換成他
   const retry = opts.retry || ((ctx, altPid)=>gateAssignment(date, ()=>{ mutate(); placeInSlot(Object.assign({}, ctx), altPid); }, [{ctx, pid:altPid}], onDone, onRevert, opts));
+  // 掛名：改成掛名之後再過一次關卡（同一個動作＋掛名）
+  const nomAll=conflictNominalOptions(conflicts.concat(breaking));
+  const redoWithNominal=(o)=>{ restore(); gateAssignment(date, ()=>{ mutate(); applyNominal(o); }, focus, onDone, onRevert, opts); };
+  if(conflicts.length){
+    // 衝突先處理：換人／掛名／忽略一次；忽略之後其他規則照原本的方式處理
+    const altCount=altInfo.reduce((n,a)=>n+a.alts.length,0);
+    openConflictDialog(date, conflicts, altInfo, nomAll, {
+      onCancel: revert,
+      onSwap: (ctx, altPid)=>{ restore(); retry(ctx, altPid); },
+      onNominal: redoWithNominal,
+      onIgnore: ()=>{
+        conflicts.forEach(v=>addRuleException((v.ctx && v.ctx.date) || date, v, 'ignored', '', altCount, false));
+        gateContinue();
+      },
+    });
+    return;
+  }
+  gateContinue();
+  function gateContinue(){
+  if(!breaking.length){ commit(); showToast('已照排，記錄有衝突'); return; }
   if(serious.length && anyAlts){
     revert();
-    openRuleAlternativesDialog(date, serious, altInfo, retry);
+    openRuleAlternativesDialog(date, serious, altInfo, retry, {opts:nomAll, onPick:(o)=>gateAssignment(date, ()=>{ mutate(); applyNominal(o); }, focus, onDone, onRevert, opts)});
     return;
   }
   const record=(reason, note, altCount, auto)=>breaking.forEach(v=>addRuleException((v.ctx && v.ctx.date) || date, v, reason, note, altCount, auto));
@@ -3212,10 +3315,11 @@ function gateAssignment(date, mutate, focus, onDone, onRevert, opts){
     showToast('已記錄破例：人力不足（系統判定）');
     return;
   }
-  openRuleExceptionDialog(date, breaking, altInfo, {mustWrite: serious.length>0, noAlternatives: !anyAlts}, (reason, note)=>{
+  openRuleExceptionDialog(date, breaking, altInfo, {mustWrite: serious.length>0, noAlternatives: !anyAlts, nomOpts:nomAll, onNominal:redoWithNominal}, (reason, note)=>{
     record(reason, note, altInfo.reduce((n,a)=>n+a.alts.length,0), false);
     commit();
   }, revert);
+  }
 }
 function violationLinesHTML(vs){
   const seen=new Set();
@@ -3224,7 +3328,8 @@ function violationLinesHTML(vs){
 }
 /* 嚴重規則、還有符合規則的人：不能破例，直接挑別人（retry(ctx, 人)：同一個
    動作重做一次，只是那一格換成挑的人） */
-function openRuleAlternativesDialog(date, serious, altInfo, retry){
+function openRuleAlternativesDialog(date, serious, altInfo, retry, nom){
+  nom=nom||{opts:[]};
   const modal=document.createElement('div');
   modal.style.cssText='position:fixed;inset:0;background:var(--scrim);z-index:210;display:flex;align-items:flex-end;';
   modal.innerHTML=`
@@ -3236,9 +3341,11 @@ function openRuleAlternativesDialog(date, serious, altInfo, retry){
         <div style="font-weight:600;margin:6px 0 4px">${esc(ctxLabel(a.ctx))}（符合規則 ${a.alts.length} 位）</div>
         ${a.alts.slice(0,12).map(p=>`<div class="list-item"><span class="grow">${esc(p.name)}（${esc(p.group||'未分組')}·${esc(p.rank)}${personBadges(p)}）<br><span class="hint">${esc(personDutySummary(p.id, date).join('、')||'今天沒有其他任務')}</span></span><button class="primary small" data-ra-pick="${ai}|${p.id}">排他</button></div>`).join('')}
         ${a.alts.length>12? `<div class="hint">…還有 ${a.alts.length-12} 位</div>`:''}`).join('')}
+      ${nominalButtonsHTML(nom.opts||[], 'data-ra-nom')}
     </div>`;
   document.body.appendChild(modal);
   dialogEl(modal,'raClose').onclick=()=>modal.remove();
+  modal.querySelectorAll('[data-ra-nom]').forEach(b=>{ b.onclick=()=>{ modal.remove(); nom.onPick(nom.opts[Number(b.dataset.raNom)]); }; });
   modal.querySelectorAll('[data-ra-pick]').forEach(b=>{
     b.onclick=()=>{
       const [ai,pid]=b.dataset.raPick.split('|');
@@ -3273,10 +3380,12 @@ function openRuleExceptionDialog(date, breaking, altInfo, opts, onConfirm, onCan
           <button class="ghost grow" id="reCancel2">取消</button>
           <button class="primary grow" id="reOk">確定排入並記錄</button>
         </div>
+        ${nominalButtonsHTML(opts.nomOpts||[], 'data-re-nom')}
       </div>`;
     const cancel=()=>{ modal.remove(); if(onCancel) onCancel(); };
     dialogEl(modal,'reCancel').onclick=cancel;
     dialogEl(modal,'reCancel2').onclick=cancel;
+    modal.querySelectorAll('[data-re-nom]').forEach(b=>{ b.onclick=()=>{ modal.remove(); opts.onNominal(opts.nomOpts[Number(b.dataset.reNom)]); }; });
     modal.querySelectorAll('[data-re-reason]').forEach(b=>{ b.onclick=()=>{ modal._note=dialogEl(modal,'reNote').value; chosen=b.dataset.reReason; draw(); }; });
     dialogEl(modal,'reOk').onclick=()=>{
       const note=dialogEl(modal,'reNote').value.trim();
@@ -3306,16 +3415,23 @@ function ruleFlagsHTML(date, subject, pid, opts){
   opts=opts||{};
   const st=ruleStatusFor(date);
   const mine=v=>v.subject===subject && (v.pid||'')===(pid||'');
-  const facts=st.facts.filter(mine), open=st.open.filter(mine), covered=st.covered.filter(mine), rem=st.reminders.filter(mine);
+  const facts=st.facts.filter(mine), open=st.open.filter(mine), rem=st.reminders.filter(mine);
+  let covered=st.covered.filter(mine);
   const who=pid? `${esc(personName(pid))}：` : '';
   const out=[];
   if(facts.length){
-    out.push(`<div class="rule-flag lv-fact"><span class="grow">⛔ ${who}${esc([...new Set(facts.map(v=>v.msg))].join('・'))}<br><span class="rule-sub">事實上做不到，要換人或先改事實</span></span><button class="ghost small" data-rule-fix="${ruleFixToken(facts[0])}">處理</button>${opts.nominalBtn||''}</div>`);
+    const canIgnore=facts.every(isIgnorableConflict);
+    out.push(`<div class="rule-flag lv-fact"><span class="grow">⛔ ${who}${esc([...new Set(facts.map(v=>v.msg))].join('・'))}<br><span class="rule-sub">${canIgnore? '衝突：可以換人、掛名，或忽略一次（只記錄有衝突）' : '事實上做不到，要換人或先改事實'}</span></span><button class="ghost small" data-rule-fix="${ruleFixToken(facts[0])}">處理</button>${opts.nominalBtn||''}</div>`);
   }
   if(open.length){
     const lv=open.some(v=>v.level==='serious')? 'serious':'normal';
     out.push(`<div class="rule-flag lv-${lv}"><span class="grow">⚠️ ${who}${esc([...new Set(open.map(v=>v.msg))].join('；'))}<br><span class="rule-sub">${lv==='serious'?'嚴重':'一般'}規則（${esc([...new Set(open.map(v=>ruleDef(v.key).no))].sort((a,b)=>a-b).map(n=>'#'+n).join(' '))}），還沒記錄原因</span></span><button class="ghost small" data-rule-fix="${ruleFixToken(open[0])}">處理</button></div>`);
   }
+  const ignoredCov=covered.filter(v=>v.record.reason==='ignored');
+  if(ignoredCov.length){
+    out.push(`<div class="rule-flag ex-ignored"><span class="grow">⚪ ${who}衝突忽略一次：${esc([...new Set(ignoredCov.map(v=>v.msg))].join('・'))}<br><span class="rule-sub">照排，只記錄有衝突（${esc([...new Set(ignoredCov.map(v=>ruleDef(v.key).name))].join('、'))}）</span></span></div>`);
+  }
+  covered=covered.filter(v=>v.record.reason!=='ignored');
   if(covered.length){
     const recs=[...new Map(covered.map(v=>[v.record.id, v.record])).values()];
     const lv=covered.some(v=>v.level==='serious')? 'serious':'normal';
@@ -3334,7 +3450,7 @@ function ruleSummaryCounts(date){
 }
 function ruleStatusLineHTML(date){
   const c=ruleSummaryCounts(date);
-  if(!c.facts && !c.open) return c.covered? `<div class="st-note">${ico('shield')}<span class="grow">已記錄破例 ${c.covered} 筆</span><button class="ghost small" data-open-rule-issues="1">查看</button></div>` : '';
+  if(!c.facts && !c.open) return c.covered? `<div class="st-note">${ico('shield')}<span class="grow">已記錄破例／衝突 ${c.covered} 筆</span><button class="ghost small" data-open-rule-issues="1">查看</button></div>` : '';
   const parts=[];
   if(c.facts) parts.push(`事實衝突 ${c.facts}`);
   if(c.open) parts.push(`待記原因 ${c.open}`);
@@ -3391,27 +3507,38 @@ function openRuleFixDialog(date, subject, pid, memberSig){
   if(!facts.length && !open.length){ render(); return; }
   const alts=subjectAlternatives(subject, pid, date);
   const altTotal=alts.reduce((n,a)=>n+a.alts.length,0);
-  const canRecord = !facts.length && open.length && !(open.some(v=>v.level==='serious') && altTotal>0);
+  // 衝突（休假事故、同時段、補休、準備時間）另外可以掛名或忽略一次；其他規則照原本記原因
+  const conflicts=facts.concat(open).filter(isIgnorableConflict);
+  const hardFacts=facts.filter(v=>!isIgnorableConflict(v));
+  const openRules=open.filter(v=>!isIgnorableConflict(v));
+  const nomOpts=conflictNominalOptions(facts.concat(open));
+  const canRecord = !hardFacts.length && openRules.length && !(openRules.some(v=>v.level==='serious') && altTotal>0);
   const modal=document.createElement('div');
   modal.style.cssText='position:fixed;inset:0;background:var(--scrim);z-index:210;display:flex;align-items:flex-end;';
   const label=(facts[0]||open[0]).label;
   let chosen = altTotal===0? 'shortage' : '';
-  const mustWrite=open.some(v=>v.level==='serious');
+  const mustWrite=openRules.some(v=>v.level==='serious');
   const draw=()=>{
     modal.innerHTML=`
       <div class="sheet-inner">
         <div class="section-title"><h2 style="margin:0">${esc(label)}</h2><button class="ghost small" id="rfClose">關閉</button></div>
         ${violationLinesHTML(facts.concat(open))}
-        <div class="hint" style="margin:8px 0">${facts.length
-          ? '「事實」上做不到（休假、事故、已離退、同時段已有勤務），不能用記原因的方式處理：請換人，或先改事實（例如提早收假、把他從另一個勤務撤下來）。'
-          : (altTotal? `符合規則、可以換上來的人共 ${altTotal} 位。${mustWrite?'違反的是嚴重規則，還有人可以換，所以不能破例。':'也可以不換，選一個原因記錄破例。'}` : '系統確認：<b>符合規則的人 0 位</b>（人力不足），可以記錄破例。')}</div>
+        <div class="hint" style="margin:8px 0">${hardFacts.length
+          ? '這一格不能這樣排（已離退，或同一個人排了兩格），請換人。'
+          : [
+              `符合規則、可以換上來的人${altTotal? `共 ${altTotal} 位`:'：<b>0 位</b>（人力不足）'}。`,
+              conflicts.length? `「${esc([...new Set(conflicts.map(v=>ruleDef(v.key).name))].join('、'))}」這類衝突，可以${nomOpts.length?'改成掛名或':''}忽略一次（照排，只記錄有衝突）。` : (nomOpts.length? '也可以改成掛名。' : ''),
+              openRules.length? (mustWrite && altTotal? '另外違反嚴重規則，還有人可以換，這一格不能破例、要換人。' : '另外違反的規則可以選一個原因記錄破例。') : '',
+            ].join('')}</div>
         ${alts.filter(a=>a.alts.length).map((a,ai)=>`
           <div style="font-weight:600;margin:6px 0 4px">${a.pid? `把 ${esc(personName(a.pid))} 換成：` : ''}（${esc(ctxLabel(a.ctx))}）</div>
           ${a.alts.slice(0,8).map(p=>`<div class="list-item"><span class="grow">${esc(p.name)}（${esc(p.group||'未分組')}·${esc(p.rank)}${personBadges(p)}）<br><span class="hint">${esc(personDutySummary(p.id, date).join('、')||'今天沒有其他任務')}</span></span><button class="primary small" data-rf-swap="${alts.indexOf(a)}|${p.id}">換他</button></div>`).join('')}
           ${a.alts.length>8? `<div class="hint">…還有 ${a.alts.length-8} 位，可以用「找補位」看全部</div>`:''}`).join('')}
+        ${!hardFacts.length && nomOpts.length? `<div class="divider"></div><div class="hint" style="margin-bottom:6px">掛名（不用真的出勤，這個問題就解掉）：</div>`+nomOpts.map((o,i)=>`<button class="ghost" data-rf-nom="${i}" style="width:100%;margin-bottom:6px;text-align:left">${esc(personName(o.pid))} 在「${esc(o.label)}」只掛名</button>`).join('') : ''}
+        ${!hardFacts.length && conflicts.length? `<div class="divider"></div><button class="ghost" id="rfIgnore" style="width:100%">忽略一次：照排，只記錄有衝突</button>` : ''}
         ${canRecord? `
           <div class="divider"></div>
-          <div class="hint" style="margin-bottom:6px">不換人、記錄破例原因${mustWrite?'（嚴重規則要寫一句原因，這一格會一直標紅）':''}：</div>
+          <div class="hint" style="margin-bottom:6px">${conflicts.length? '其他規則：':''}不換人、記錄破例原因${mustWrite?'（嚴重規則要寫一句原因，這一格會一直標紅）':''}：</div>
           <div class="row wrap" style="gap:6px;margin-bottom:8px">
             ${EXCEPTION_REASONS.filter(r=>r.key!=='shortage' || altTotal===0).map(r=>`<button class="small ${chosen===r.key?'primary':'ghost'}" data-rf-reason="${r.key}">${esc(r.label)}</button>`).join('')}
           </div>
@@ -3434,10 +3561,24 @@ function openRuleFixDialog(date, subject, pid, memberSig){
       const note=(dialogEl(modal,'rfNote').value||'').trim();
       if(!chosen){ showAlert('請先選一個原因。'); return; }
       if((mustWrite || chosen==='other') && !note){ showAlert(mustWrite? '違反嚴重規則要寫一句原因。' : '選「其他」要寫原因。'); return; }
-      open.forEach(v=>addRuleException(date, v, chosen, note, altTotal, false));
+      openRules.forEach(v=>addRuleException(date, v, chosen, note, altTotal, false));
       modal.remove();
       saveState(); render();
       showToast('已記錄破例');
+    };
+    modal.querySelectorAll('[data-rf-nom]').forEach(b=>{ b.onclick=()=>{
+      const o=nomOpts[Number(b.dataset.rfNom)];
+      modal.remove();
+      if(applyNominal(o)){ saveState(); render(); showToast(`已改成掛名：${personName(o.pid)}（${o.label}）`); }
+    }; });
+    const ign=dialogEl(modal,'rfIgnore');
+    if(ign) ign.onclick=()=>{
+      conflicts.forEach(v=>addRuleException(date, v, 'ignored', '', altTotal, false));
+      modal.remove();
+      saveState(); render();
+      showToast('已照排，記錄有衝突');
+      // 同一格還有其他規則沒記原因的話，接著處理
+      if(openRules.length) openRuleFixDialog(date, subject, pid, memberSig);
     };
     const sub=dialogEl(modal,'rfSub');
     if(sub) sub.onclick=()=>{
@@ -3469,7 +3610,7 @@ function openDayRuleIssuesModal(date){
     modal.innerHTML=`
       <div class="sheet-inner">
         <div class="section-title"><h2 style="margin:0">${esc(minguoLabel(date))} 規則檢查</h2><button class="ghost small" id="riClose">關閉</button></div>
-        <div class="hint" style="margin-bottom:8px">事實（休假、事故、已離退、同時段已有勤務）一定要換人或先改事實；嚴重／一般規則破例要記原因（等級可以在右上角⚙️「我們的規則→規則等級」調整）；提醒不用記。</div>
+        <div class="hint" style="margin-bottom:8px">衝突（休假事故、同時段、補休、準備時間）可以換人、掛名，或忽略一次（只記錄有衝突）；已離退、同一人排兩格一定要換人；其他嚴重／一般規則破例要記原因（等級可以在右上角⚙️「我們的規則→規則等級」調整）；提醒不用記。</div>
         ${!facts.length && !open.length? `<div class="ok" style="margin-bottom:8px">✅ 沒有待處理的規則問題</div>`:''}
         ${facts.length? `<h3>⛔ 事實衝突（${facts.length}）</h3>${facts.map(vs=>itemHTML(vs, v=>`<button class="ghost small" data-ri-fix="${ruleFixToken(v)}">處理</button>`)).join('')}`:''}
         ${open.length? `<h3>⚠️ 待記原因（${open.length}）</h3>${open.map(vs=>itemHTML(vs, v=>`<button class="ghost small" data-ri-fix="${ruleFixToken(v)}">處理</button>`)).join('')}`:''}
@@ -3528,7 +3669,7 @@ function monthExceptionStatsHTML(ym){
 }
 /* ⚙️ 規則等級設定 */
 function ruleLevelsSettingsHTML(){
-  return `<div class="hint" style="margin-bottom:8px">每條規則違反時怎麼處理：<br>・<b>事實</b>：永遠不能排（固定，不能改）<br>・<b>嚴重</b>：還有其他符合規則的人就不讓排；真的沒人才可以排，要寫一句原因，那一格一直標紅<br>・<b>一般</b>：可以排，點一個原因；真的沒人就自動記「人力不足」<br>・<b>提醒</b>：可以排，不用記<br>自動排班任何等級的規則都不會破（提醒除外）。</div>
+  return `<div class="hint" style="margin-bottom:8px">每條規則違反時怎麼處理：<br>・<b>事實</b>：休假／事故、同時段已有勤務算「衝突」，可以換人、掛名，或忽略一次（照排，只記錄有衝突）；已離退、同一人排兩格不能排（固定，不能改）<br>・<b>補休、準備時間</b>：也算衝突，一樣可以忽略一次<br>・<b>嚴重</b>：還有其他符合規則的人就不讓排；真的沒人才可以排，要寫一句原因，那一格一直標紅<br>・<b>一般</b>：可以排，點一個原因；真的沒人就自動記「人力不足」<br>・<b>提醒</b>：可以排，不用記<br>自動排班任何等級的規則都不會破（提醒除外）。</div>
     ${RULE_CATALOG.map(r=>`<div class="list-item"><span class="grow">${r.no}. ${esc(r.name)}${r.note?`<br><span class="hint">${esc(r.note)}</span>`:''}</span>${r.fixed? `<span class="rule-lv lv-${r.level}">${RULE_LEVEL_LABEL[r.level]}</span>` : `<select data-rule-level="${r.key}" style="width:auto">${['serious','normal','remind'].map(l=>`<option value="${l}" ${ruleLevel(r.key)===l?'selected':''}>${RULE_LEVEL_LABEL[l]}</option>`).join('')}</select>`}</div>`).join('')}
     <button class="ghost small" id="ruleLevelsReset" style="margin-top:8px">恢復預設等級</button>`;
 }
@@ -3854,8 +3995,16 @@ function personCompRestWindows(personId, date){
    allday還是range無關。 */
 function effectiveLongTerm(person, date){
   const lt = personLongTerm(person);
-  if(lt.mode!=='off' && lt.weekdayOnly && isHolidayDate(date)) return {mode:'off'};
+  if(lt.mode!=='off' && lt.weekdayOnly && (isHolidayDate(date) || isStandbyHoliday(date))) return {mode:'off'};
   return lt;
+}
+/* 留守區塊的「例假日第一天～最後一天」本來就是放假日（例如中秋＋教師節連
+   假，就算假日設定裡沒有把那幾天標成國定假日）——「僅平日不可排」的人這幾
+   天照假日算，可以排。 */
+function isStandbyHoliday(date){
+  const store=(state.preplan||{}).standby||{};
+  for(const k in store){ const p=store[k]; if(p && p.startDate && p.endDate && date>=p.startDate && date<=p.endDate) return true; }
+  return false;
 }
 /* ---------------- availability ---------------- */
 /* excludeCatShift: {catId,shiftId} — skip this exact shift when checking for
@@ -4125,7 +4274,53 @@ function wouldBreakOutrankRule(person, cat, shift, date, arr, idx){
   // ordinary post — must not outrank whoever holds a supervising post
   return overlappingAssigned.some(a=>a.cat.mustOutrankOthers && rankIndex(person.rank) < rankIndex(a.person.rank));
 }
+/* ---------- 自動排的記號（v163）----------
+   state.autoPlaced[日期][格子]=人：這一格的這個人是自動排班／自動補空缺放
+   進去的。之後手動改過那一格（換成別人、清掉），記號就不算數。清除資料預設
+   只清有這個記號的。這版以前排的沒有記號，一律當成手動排的。 */
+function slotOccupancy(date){
+  const occ={};
+  Object.entries(state.assign[date]||{}).forEach(([cid,byS])=>Object.entries(byS||{}).forEach(([sid,arr])=>(arr||[]).forEach((pid,i)=>{ if(pid) occ[`c|${cid}|${sid}|${i}`]=pid; })));
+  (state.misc[date]||[]).forEach(m=>(m.personIds||[]).forEach((pid,i)=>{ if(pid) occ[`m|${m.id}|${i}`]=pid; }));
+  return occ;
+}
+function markAutoPlaced(date, before){
+  const after=slotOccupancy(date);
+  if(!state.autoPlaced) state.autoPlaced={};
+  const marks=Object.assign({}, state.autoPlaced[date]||{});
+  Object.entries(after).forEach(([k,pid])=>{ if(before[k]!==pid) marks[k]=pid; });
+  Object.keys(marks).forEach(k=>{ if(after[k]!==marks[k]) delete marks[k]; });
+  if(Object.keys(marks).length) state.autoPlaced[date]=marks; else delete state.autoPlaced[date];
+}
+function pruneAutoMarks(){
+  if(!state.autoPlaced) return;
+  Object.keys(state.autoPlaced).forEach(d=>{
+    const occ=slotOccupancy(d), marks=state.autoPlaced[d]||{};
+    Object.keys(marks).forEach(k=>{ if(occ[k]!==marks[k]) delete marks[k]; });
+    if(!Object.keys(marks).length) delete state.autoPlaced[d];
+  });
+}
+function clearAutoMark(date, key){
+  const m=state.autoPlaced && state.autoPlaced[date];
+  if(m && m[key]!==undefined){ delete m[key]; if(!Object.keys(m).length) delete state.autoPlaced[date]; }
+}
+/* 範圍內「自動排的」格子（預排管的項目不算，那些以預排為準） */
+function autoPlacedInRange(from, to){
+  const out=[], roles=planOwnedRoleSet();
+  dateRangeList(from, to).forEach(d=>{
+    const marks=(state.autoPlaced||{})[d]; if(!marks) return;
+    const occ=slotOccupancy(d);
+    Object.entries(marks).forEach(([k,pid])=>{
+      if(occ[k]!==pid) return;
+      const p=k.split('|');
+      if(p[0]==='m'){ const m=(state.misc[d]||[]).find(x=>x.id===p[1]); if(!m || isPlanOwnedEntry(m, roles)) return; out.push({date:d, key:k, kind:'misc', entryId:p[1], idx:Number(p[2]), pid}); }
+      else out.push({date:d, key:k, kind:'cat', catId:p[1], shiftId:p[2], idx:Number(p[3]), pid});
+    });
+  });
+  return out;
+}
 function autoAssignDay(date){
+  const __occ=slotOccupancy(date);
   if(!state.assign[date]) state.assign[date]={};
   const assignCount={};
   const allSlots=[];
@@ -4181,6 +4376,7 @@ function autoAssignDay(date){
       }
     }
   });
+  markAutoPlaced(date, __occ);
   saveState();
 }
 
@@ -4190,6 +4386,7 @@ const MISC_SIBLING_ROLE={'採買':'愛心便當','愛心便當':'採買'};
    傳true一起補，存檔時再問要不要一起更新預排（不要的話只還原那幾格）。 */
 function autoAssignMiscForDate(date, opts){
   opts=opts||{};
+  const __occ=slotOccupancy(date);
   if(!state.misc[date]) state.misc[date]=[];
   const skipPlanOwned = !opts.includePlanOwned && date>=todayStr();
   const planRoles = planOwnedRoleSet();
@@ -4337,6 +4534,7 @@ function autoAssignMiscForDate(date, opts){
       }
     });
   });
+  markAutoPlaced(date, __occ);
   saveState();
 }
 
@@ -6364,6 +6562,7 @@ function openStandbyEditor(date, onSaved){
         <div class="grow"><label>結束（${nextDateStr(plan.endDate)}）</label>${timeSelectHTML('sbEnd', plan.endTime)}</div>
       </div>
       <div class="hint" style="margin-bottom:10px">目前設定：留守 ${prevDateStr(plan.startDate)} ${plan.startTime} → ${nextDateStr(plan.endDate)} ${plan.endTime}；其餘人員 ${prevDateStr(plan.startDate)} ${plan.leaveStartTime} 起放假。</div>
+      ${(()=>{ const notHol=blockDates.filter(d=>!isHolidayDate(d)); return notHol.length? `<div class="badge-issue" style="margin-bottom:10px">📅 ${notHol.map(shortDateLabel).join('、')} 在「假日設定」裡不是假日。留守期間「僅平日不可排」的人一律照假日算；但查哨的平日／假日輪值、外散宿還是照假日設定。如果這幾天是國定假日（例如中秋），建議設為假日。<button class="ghost small" id="sbMarkHoliday" style="margin-top:6px">把 ${notHol.map(shortDateLabel).join('、')} 設為假日</button></div>` : ''; })()}
       <div class="divider"></div>
       <div class="section-title"><h3 style="margin:0">留守名單（${staying.length}人）</h3><button class="ghost small" id="sbPickPeople">選擇人員</button></div>
       <div id="sbPeopleList" style="margin-bottom:8px">
@@ -6426,6 +6625,18 @@ function openStandbyEditor(date, onSaved){
       plan.endTime=getTimeSelectValue('sbEnd')||plan.endTime;
     };
     ['sbStartDate','sbEndDate'].forEach(id=>{ document.getElementById(id).onchange=()=>{ sync(); draw(); }; });
+    const mh=document.getElementById('sbMarkHoliday');
+    if(mh) mh.onclick=()=>{
+      sync();
+      const bd=(plan.startDate<=plan.endDate)? dateRangeList(plan.startDate, plan.endDate) : [plan.startDate];
+      const add=bd.filter(d=>!isHolidayDate(d));
+      if(!state.holidayDates) state.holidayDates=[];
+      add.forEach(d=>{ if(!state.holidayDates.includes(d)) state.holidayDates.push(d); });
+      state.holidayDates.sort();
+      markPlanSystemChange(); saveState();
+      showToast(`已把 ${add.map(shortDateLabel).join('、')} 設為假日`);
+      draw();
+    };
     ['sbStart__h','sbStart__m','sbLeave__h','sbLeave__m','sbEnd__h','sbEnd__m'].forEach(id=>{
       const el=document.getElementById(id); if(el) el.onchange=()=>{ sync(); draw(); };
     });
@@ -8616,6 +8827,21 @@ function previewClearRange(from, to, opts){
   });
   return counts;
 }
+/* 清掉自動排的那幾格（格子留著、人拿掉） */
+function clearAutoPlaced(list){
+  let n=0;
+  list.forEach(x=>{
+    if(x.kind==='cat'){
+      const arr=(((state.assign[x.date]||{})[x.catId])||{})[x.shiftId];
+      if(arr && arr[x.idx]===x.pid){ arr[x.idx]=undefined; n++; }
+    } else {
+      const m=(state.misc[x.date]||[]).find(e=>e.id===x.entryId);
+      if(m && (m.personIds||[])[x.idx]===x.pid){ m.personIds[x.idx]=m.roles? null : undefined; if(m.nominalIds) m.nominalIds=m.nominalIds.filter(id=>id!==x.pid); n++; }
+    }
+    clearAutoMark(x.date, x.key);
+  });
+  return n;
+}
 function openClearRangeModal(){
   const modal=document.createElement('div');
   // 同openAdhocQueryModal的z-index說明——這顆🧹也是標題列常駐按鈕。
@@ -8628,11 +8854,21 @@ function openClearRangeModal(){
   modal.innerHTML=`
     <div class="sheet-inner">
       <div class="section-title"><h2 style="margin:0">清除一段時間的資料</h2><button class="ghost small" id="crClose">關閉</button></div>
-      <div class="hint" style="margin-bottom:8px">選日期範圍，勾選要清除的項目，可以只選其中幾項（例如只清查哨跟督伙的預排）。範圍預設是今天，也可以改成一整段。</div>
+      <div class="hint" style="margin-bottom:8px">範圍預設是今天，也可以改成一整段。</div>
       <div class="row wrap" style="margin-bottom:8px">
         <div class="grow"><label>從</label><input type="date" id="crFrom" value="${currentDate}"></div>
         <div class="grow"><label>到</label><input type="date" id="crTo" value="${currentDate}"></div>
       </div>
+      <div class="hint" style="margin-bottom:4px"><b>要清哪些</b></div>
+      <label style="display:flex;align-items:flex-start;gap:6px;font-size:13px;margin-bottom:6px">
+        <input type="radio" name="crMode" value="auto" style="width:auto;margin-top:3px" checked>
+        <span><b>只清自動排的</b>（預設）<br><span class="hint">「自動補空缺」放進去的人拿掉，格子留著；手動排的、預排來的、休假事故都不動。這版以前排的分不出來，一律當成手動、不會清。</span></span>
+      </label>
+      <label style="display:flex;align-items:flex-start;gap:6px;font-size:13px;margin-bottom:8px">
+        <input type="radio" name="crMode" value="custom" style="width:auto;margin-top:3px">
+        <span><b>自己選要清的項目</b>（進階）</span>
+      </label>
+      <div id="crCustom" style="display:none">
       <div class="hint" style="margin-bottom:4px"><b>排班/其他勤務</b></div>
       <div class="row wrap" style="margin-bottom:8px">
         ${scheduleItems.map(([k,label])=>`<label style="display:flex;align-items:center;gap:4px;font-size:12px">
@@ -8659,6 +8895,7 @@ function openClearRangeModal(){
         <button class="ghost small" id="crPreplanAll">全選</button>
         <button class="ghost small" id="crPreplanNone">全部取消</button>
       </div>
+      </div>
       <button class="ghost small danger" id="crGo" style="width:100%">清除</button>
       <div id="crPreview" style="margin-top:10px"></div>
     </div>`;
@@ -8668,9 +8905,33 @@ function openClearRangeModal(){
   document.getElementById('crSchedNone').onclick=()=>modal.querySelectorAll('.cr-schedule').forEach(cb=>cb.checked=false);
   document.getElementById('crPreplanAll').onclick=()=>modal.querySelectorAll('.cr-preplan').forEach(cb=>cb.checked=true);
   document.getElementById('crPreplanNone').onclick=()=>modal.querySelectorAll('.cr-preplan').forEach(cb=>cb.checked=false);
+  const modeOf=()=>{ const r=modal.querySelector('input[name="crMode"]:checked'); return r? r.value : 'auto'; };
+  modal.querySelectorAll('input[name="crMode"]').forEach(r=>{ r.onchange=()=>{ document.getElementById('crCustom').style.display = modeOf()==='custom'? 'block':'none'; document.getElementById('crPreview').innerHTML=''; }; });
   document.getElementById('crGo').onclick=()=>{
     const from=document.getElementById('crFrom').value, to=document.getElementById('crTo').value;
     if(!from||!to||from>to){ showAlert('請確認日期範圍正確'); return; }
+    if(modeOf()==='auto'){
+      const list=autoPlacedInRange(from, to);
+      const box=document.getElementById('crPreview');
+      if(!list.length){ box.innerHTML=`<div class="hint">這段期間沒有自動排的人（手動排的、預排來的不會清）。這版以前排的分不出來，都當成手動；要清的話選「自己選要清的項目」。</div>`; return; }
+      const nCat=list.filter(x=>x.kind==='cat').length, nMisc=list.length-nCat;
+      box.innerHTML=`
+        <div class="card" style="padding:10px">
+          <div style="font-weight:600;margin-bottom:6px">要清掉的自動排：</div>
+          ${nCat? `<div class="muted">・衛哨：${nCat} 格</div>`:''}
+          ${nMisc? `<div class="muted">・其他勤務：${nMisc} 格</div>`:''}
+          <div class="hint" style="margin-top:4px">格子會留著變成空的；手動排的、預排來的都不動。可以用左上角復原鍵還原。</div>
+          <button class="ghost small danger" id="crAutoGo" style="width:100%;margin-top:8px">確定清除</button>
+        </div>`;
+      document.getElementById('crAutoGo').onclick=()=>{
+        const n=clearAutoPlaced(list);
+        saveState();
+        showAlert(`已清掉自動排的 ${n} 格。`);
+        modal.remove();
+        render();
+      };
+      return;
+    }
     const opts={preplanKeys:[...modal.querySelectorAll('.cr-preplan:checked')].map(cb=>cb.value)};
     scheduleItems.forEach(([k])=>{ opts[k]=!!modal.querySelector(`.cr-schedule[value="${k}"]`).checked; });
     opts.excludeFromPreplan = document.getElementById('crExcludeFromPreplan').checked;
@@ -9023,7 +9284,7 @@ function renderPeople(){
           <input type="checkbox" id="npLTInCamp" style="width:auto" checked> 在營
         </label>
       </div>
-      <div class="hint" style="margin-bottom:8px">「在營」只代表人physically在營區，不代表能不能被排勤務——同樣在營，可能是：一般人員（其餘時段正常可排）、消防車/救護車待命駕駛（其餘時段可站哨/勤務，但不能再排另一個需要駕照的任務，這由「全天待命」項目設定另外控制）、或像主官這種完全不排勤務的人。取消勾選才代表這天實際不在營區（例如受訓）。
+      <div class="hint" style="margin-bottom:8px">「在營」只代表人實際在營區，不代表能不能被排勤務——同樣在營，可能是：一般人員（其餘時段正常可排）、消防車/救護車待命駕駛（其餘時段可站哨/勤務，但不能再排另一個需要駕照的任務，這由「全天待命」項目設定另外控制）、或像主官這種完全不排勤務的人。取消勾選才代表這天實際不在營區（例如受訓）。
       </div>
       <div class="row wrap" id="npLTWeekdayOnlyRow" style="margin-bottom:8px;display:none">
         <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text)">
@@ -9172,8 +9433,11 @@ function renderPeople(){
         <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text)">
           <input type="checkbox" id="batchLtInCamp" style="width:auto" checked> 在營
         </label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text)">
+          <input type="checkbox" id="batchLtWeekdayOnly" style="width:auto"> 僅平日不可排（假日仍可正常排班）
+        </label>
       </div>
-      <div class="hint" style="margin-bottom:8px">「在營」只代表人physically在營區，不代表能不能被排勤務——同樣在營，可能是：一般人員（其餘時段正常可排）、消防車/救護車待命駕駛（其餘時段可站哨/勤務，但不能再排另一個需要駕照的任務，這由「全天待命」項目設定另外控制）、或像主官這種完全不排勤務的人。取消勾選才代表這天實際不在營區。
+      <div class="hint" style="margin-bottom:8px">「在營」只代表人實際在營區，不代表能不能被排勤務——同樣在營，可能是：一般人員（其餘時段正常可排）、消防車/救護車待命駕駛（其餘時段可站哨/勤務，但不能再排另一個需要駕照的任務，這由「全天待命」項目設定另外控制）、或像主官這種完全不排勤務的人。取消勾選才代表這天實際不在營區。
       </div>
       <div class="row wrap" id="batchLtRange" style="margin-bottom:8px;display:none">
         <div class="grow"><label>每天開始</label>${timeSelectHTML('batchLtStart','18:00')}</div>
@@ -9188,7 +9452,7 @@ function renderPeople(){
     {key:'departedPeople', html:departedHTML},
     {key:'batchLt', html:batchLtHTML},
   ].filter(c=>c.html);
-  app.innerHTML = `<div class="card"><div class="section-title"><h2 style="margin:0">👤 人員名冊</h2><button class="ghost small" id="closePeoplePage">← 返回</button></div></div>`
+  app.innerHTML = `<div class="card"><div class="section-title"><h2 style="margin:0">👤 人員名冊</h2></div></div>`
     + renderCardList('peopleCardsContainer', 'people', cardDefs) + `
     <div class="hint">💡 名單一次輸入後會持續保留在此裝置（localStorage）；用右上角「匯出」可備份，之後可再匯入。</div>
     <div class="card">
@@ -9199,7 +9463,6 @@ function renderPeople(){
   document.getElementById('pplCheckpoint').onclick=()=>openCheckpointModal('personnel', '人員名冊',
     ()=>state.personnel,
     (data)=>{ state.personnel=data; render(); });
-  document.getElementById('closePeoplePage').onclick=()=>{ currentTab='schedule'; render(); };
 function wirePeopleListButtons(){
     document.querySelectorAll('[data-del-person]').forEach(b=>{
       b.onclick=()=>{
@@ -9402,7 +9665,8 @@ function wirePeopleListButtons(){
       const reasonSel = document.getElementById('batchLtReason').value;
       const reason = reasonSel==='__custom'? document.getElementById('batchLtReasonCustom').value.trim() : reasonSel;
       const inCamp = document.getElementById('batchLtInCamp').checked;
-      newLongTerm = {mode, reason, inCamp};
+      const wEl = document.getElementById('batchLtWeekdayOnly');
+      newLongTerm = {mode, reason, inCamp, weekdayOnly: !!(wEl && wEl.checked)};
       if(mode==='range'){ newLongTerm.start=getTimeSelectValue('batchLtStart'); newLongTerm.end=getTimeSelectValue('batchLtEnd'); }
       if(reasonSel==='__custom' && reason && document.getElementById('batchLtReasonAddToPreset').checked && !state.longtermReasonOptions.includes(reason)){
         state.longtermReasonOptions.push(reason);
@@ -9486,7 +9750,7 @@ function openPersonEditor(personId){
           <input type="checkbox" id="epLTInCamp" style="width:auto" ${lt.inCamp?'checked':''}> 在營
         </label>
       </div>
-      <div class="hint" style="margin-bottom:8px">「在營」只代表人physically在營區，不代表能不能被排勤務——同樣在營，可能是：一般人員（其餘時段正常可排）、消防車/救護車待命駕駛（其餘時段可站哨/勤務，但不能再排另一個需要駕照的任務，這由「全天待命」項目設定另外控制）、或像主官這種完全不排勤務的人。取消勾選才代表這天實際不在營區（例如受訓）。
+      <div class="hint" style="margin-bottom:8px">「在營」只代表人實際在營區，不代表能不能被排勤務——同樣在營，可能是：一般人員（其餘時段正常可排）、消防車/救護車待命駕駛（其餘時段可站哨/勤務，但不能再排另一個需要駕照的任務，這由「全天待命」項目設定另外控制）、或像主官這種完全不排勤務的人。取消勾選才代表這天實際不在營區（例如受訓）。
       </div>
       <div class="row wrap" id="epLTWeekdayOnlyRow" style="margin-bottom:8px;display:${lt.mode!=='off'?'flex':'none'}">
         <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text)">
@@ -9942,7 +10206,7 @@ function openQuickIncidentModal(personId, date, onDone){
       <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text);margin-bottom:8px">
         <input type="checkbox" id="qiInCamp" style="width:auto"> 在營
       </label>
-      <div class="hint" style="margin-bottom:8px">「在營」只代表人physically在營區，不代表能不能被排勤務——同樣在營，可能是：一般人員（其餘時段正常可排）、消防車/救護車待命駕駛（其餘時段可站哨/勤務，但不能再排另一個需要駕照的任務，這由「全天待命」項目設定另外控制）、或像主官這種完全不排勤務的人。取消勾選才代表這天實際不在營區。
+      <div class="hint" style="margin-bottom:8px">「在營」只代表人實際在營區，不代表能不能被排勤務——同樣在營，可能是：一般人員（其餘時段正常可排）、消防車/救護車待命駕駛（其餘時段可站哨/勤務，但不能再排另一個需要駕照的任務，這由「全天待命」項目設定另外控制）、或像主官這種完全不排勤務的人。取消勾選才代表這天實際不在營區。
       </div>
       <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text);margin-bottom:8px">
         <input type="checkbox" id="qiSyncRosterDefault" style="width:auto"> 同時更新到人員名冊預設（不論名冊本來有無設定，都以這次填的為準）
@@ -10406,7 +10670,7 @@ function isEligibleForOuting(personId, date){
 }
 const COMMON_HOLIDAYS_FIXED = [
   {m:1,d:1,name:'元旦'}, {m:2,d:28,name:'和平紀念日'}, {m:4,d:4,name:'兒童節'},
-  {m:5,d:1,name:'勞動節'}, {m:9,d:3,name:'軍人節'}, {m:10,d:10,name:'國慶日'},
+  {m:5,d:1,name:'勞動節'}, {m:9,d:3,name:'軍人節'}, {m:9,d:28,name:'教師節'}, {m:10,d:10,name:'國慶日'},
   {m:10,d:25,name:'台灣光復節'}, {m:12,d:25,name:'行憲紀念日'}
 ];
 let outingFilterState={search:'',group:''};
@@ -11480,17 +11744,19 @@ function findSubstitutes(date, opts){
          還有別人可以排就不讓排，按下去會列出來）；只有提醒的照常。 */
       if(isDeparted(p)) return;
       const vs=placementViolations(ctx, p.id);
-      const facts=vs.filter(v=>v.level==='fact' && v.key!=='overlap');
+      // v163：休假／事故這種「衝突」可以忽略一次，放在「違反規則，仍要排」那一層；只有同一人排兩格這種才完全不能排
+      const facts=vs.filter(v=>v.level==='fact' && v.key!=='overlap' && !isIgnorableConflict(v));
       if(facts.length){ out.push({person:p, tier:4, note:[...new Set(facts.map(v=>v.msg))].join('・'), blockers:[]}); return; }
+      const conflictFacts=vs.filter(v=>v.level==='fact' && isIgnorableConflict(v));
       // 值星、只能待命的勤務不當成「可以互換的位置」（那是規則5、6的事）
       const blockers = personDutiesInWindow(p.id, date, sMin, eMin, {catId, shiftId, miscId:ctx.kind==='misc'? ctx.entry.id : null})
         .filter(bk=>{ if(bk.kind!=='misc') return true; const m=(state.misc[date]||[]).find(x=>x.id===bk.miscId); return !(m && miscGovernedElsewhere(m, p.id)); });
       const rules=vs.filter(v=>(v.level==='serious' || v.level==='normal') && v.key!=='prep');
-      const ruleNote=rules.length? `違反：${[...new Set(rules.map(v=>`${ruleDef(v.key).name}（${v.msg}）`))].join('；')}` : '';
+      const ruleNote=[conflictFacts.length? `衝突：${[...new Set(conflictFacts.map(v=>v.msg))].join('・')}（可以忽略一次）` : '', rules.length? `違反：${[...new Set(rules.map(v=>`${ruleDef(v.key).name}（${v.msg}）`))].join('；')}` : ''].filter(Boolean).join('；');
       const dutiesToday = personDutySummary(p.id, date);
       if(blockers.length) out.push({person:p, tier:2, note:'目前在：'+blockers.map(b=>b.label).join('、')+(ruleNote?`；${ruleNote}`:''), blockers, rules});
-      else if(vs.some(v=>v.level==='fact')) out.push({person:p, tier:4, note:[...new Set(vs.filter(v=>v.level==='fact').map(v=>v.msg))].join('・'), blockers:[]});
-      else if(rules.length) out.push({person:p, tier:3, note:ruleNote, blockers:[], rules});
+      else if(vs.some(v=>v.level==='fact' && !isIgnorableConflict(v))) out.push({person:p, tier:4, note:[...new Set(vs.filter(v=>v.level==='fact').map(v=>v.msg))].join('・'), blockers:[]});
+      else if(rules.length || conflictFacts.length) out.push({person:p, tier:3, note:ruleNote, blockers:[], rules});
       else if(dutiesToday.length) out.push({person:p, tier:1, note:'今日已有：'+dutiesToday.join('、'), blockers:[]});
       else out.push({person:p, tier:0, note:'今日完全沒有任務', blockers:[]});
       return;
@@ -11606,8 +11872,8 @@ function openSubstituteModal(source){
     0:{icon:'🟢', title:'完全有空（補進來不影響任何人）'},
     1:{icon:'🟡', title:'有空，但今天已有其他勤務'},
     2:{icon:'🔄', title:'同時段在別的位置（會互換，不會多補人力）'},
-    3:{icon:'⚠️', title:'違反規則（要記原因才能排；嚴重規則還有別人可排時不能破例）'},
-    4:{icon:'⛔', title:'不可排（休假、事故、已離退）'},
+    3:{icon:'⚠️', title:'有衝突或違反規則（休假事故等衝突可以掛名或忽略一次；其他規則要記原因，嚴重規則還有別人可排時不能破例）'},
+    4:{icon:'⛔', title:'不能排（同一個人已經排在這一格）'},
   };
   const grouped = {0:[],1:[],2:[],3:[],4:[]};
   results.forEach(r=>grouped[r.tier].push(r));
