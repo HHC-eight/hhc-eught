@@ -242,6 +242,14 @@ select[data-assign-cat]:has(option[value=""]:checked){background-color:var(--war
 .rule-flag.ex-serious{color:var(--danger);background:var(--danger-soft);border:1.5px solid var(--danger);}
 .rule-flag.ex-normal{color:var(--warn);background:var(--warn-soft);border:1.5px dashed var(--warn);}
 .rule-flag.ex-ignored{color:var(--dim);background:var(--btn-bg);border:1.5px dashed var(--line-strong);font-weight:600;}
+.hour-counts{width:50px;flex-shrink:0;display:flex;flex-direction:column;align-items:flex-end;font-size:12px;line-height:1.2;}
+.hour-counts .hint{font-size:10.5px;margin-top:0;line-height:1.2;}
+.hour-sec-title{margin-bottom:4px;}
+.hour-duty-row{margin:3px 0;line-height:1.5;}
+.pp-bundle-empty{align-items:center;gap:8px;padding:2px 0;}
+.pp-bundle-empty .pp-bundle-name{font-weight:600;}
+.pp-bundle-empty .hint{margin-top:0;}
+.sub-support-box label{font-size:12.5px;}
 .rule-lv{display:inline-block;font-size:11px;font-weight:800;padding:1px 7px;border-radius:999px;white-space:nowrap;vertical-align:1px;}
 .rule-lv.lv-fact{background:var(--danger);color:var(--bg);}
 .rule-lv.lv-serious{background:var(--danger-soft);color:var(--danger);}
@@ -339,7 +347,7 @@ select[data-assign-cat]:has(option[value=""]:checked){background-color:var(--war
       <span class="unit-banner-badge"><i data-ico="star"></i></span>
       <span class="unit-banner-titles">
         <span class="unit-banner-text">陸軍第八軍團 本部連</span>
-        <h1 id="pageTitle">衛哨排班系統 <span class="muted">v163</span></h1>
+        <h1 id="pageTitle">衛哨排班系統 <span class="muted">v164</span></h1>
       </span>
     </span>
     <span class="banner-side right">
@@ -1003,7 +1011,7 @@ function miscEntryConflicts(entry, date){
 }
 function validateMiscEntry(entry){
   if(!entry.roles){
-    if(!(entry.personIds&&entry.personIds.length) && !entry.skipAutoFill){
+    if(!(entry.personIds&&entry.personIds.some(Boolean)) && !entry.skipAutoFill && !supportOnlyEntry(entry)){
       const preset = presetForEntry(entry);
       const sMin = entry.start? toMin(entry.start) : null;
       const eMinRaw = entry.end? toMin(entry.end) : null;
@@ -1051,7 +1059,7 @@ function validateMiscEntry(entry){
       const p=state.personnel.find(pp=>pp.id===entry.personIds[i]);
       if(p && !p.license) issues.push(`${p.name}：話務需至少小型車駕照`);
     }
-    if(!entry.personIds[i] && !(entry.lockedSlots && entry.lockedSlots[i])){
+    if(!entry.personIds[i] && !(entry.lockedSlots && entry.lockedSlots[i]) && !supportOnlyEntry(entry)){
       issues.push(`${r}：目前未指派（自動排班找不到符合資格且有空的人，可能都在忙其他勤務或休假，可手動指定或稍後再試）`);
     }
   });
@@ -2028,20 +2036,11 @@ function writeBackTypeDate(type, date, prevList){
   const store=state.preplan[type.key] || (state.preplan[type.key]={});
   const plan=store[date]? JSON.parse(JSON.stringify(store[date])) : null;
   const live=actual.filter(m=>!isEmptyPlanEntry(m));
-  const idsOf=a=>(a.personIds||[]).filter(Boolean);
+  // 我們的人記在 personIds；佔位置的支援人員（sup:姓名）記回預排的「支援人員」欄（note／notes）
+  const idsOf=a=>(a.personIds||[]).filter(id=>id && !isSupportId(id));
+  const supOf=a=>(a.personIds||[]).filter(isSupportId).map(supportNameOf);
   const nomOf=a=>(a.nominalIds||[]).filter(id=>idsOf(a).includes(id));
-  // 班表上顯示的支援文字＝預排整天的支援說明＋這一格的備註（用「、」接起來）；
-  // 回寫時照班表上的文字倒推這一格的備註，倒推不出來（例如改到整天共用的那
-  // 一段）就回傳 null
-  const mergedText=(...parts)=>parts.filter(Boolean).join('、');
-  const noteFor=(planSupport, text)=>{
-    text=text||''; planSupport=planSupport||'';
-    // 沒填＝沿用整天共用的說明（存檔後班表這一筆會帶上那段說明）
-    if(!text || text===planSupport) return '';
-    if(!planSupport) return text;
-    return text.startsWith(planSupport+'、')? text.slice(planSupport.length+1) : null;
-  };
-  const supportMsg=`「${role}」${minguoLabel(date)}的支援/備註文字跟預排整天共用的說明不一致，請到預排修改。`;
+  const supportMsg=`「${role}」${minguoLabel(date)}的支援說明是整天共用的，請到預排修改。`;
   let next=null;
   if(type.mode==='people'){
     const origGroups=peopleGroupsOf(plan);
@@ -2051,16 +2050,16 @@ function writeBackTypeDate(type, date, prevList){
     const groups=keptGroups.concat(live.map(a=>{
       const g=hitById[a.id];
       let base=(g && g.pp && origGroups[g.pp.gi]) || null;
-      // 對不到原本那一組（例如那一組先前就跟預排不一致）：用支援文字找回原本那一組
+      // 對不到原本那一組（例如那一組先前就跟預排不一致）：用支援說明找回原本那一組
       if(!base && a.support){
-        const gi=origGroups.findIndex((og,i)=>!usedG.has(i) && mergedText(og.support, og.note)===a.support);
+        const gi=origGroups.findIndex((og,i)=>!usedG.has(i) && (og.support||'')===a.support);
         if(gi>-1){ usedG.add(gi); base=origGroups[gi]; }
       }
       base=base||{};
       const out={personIds:idsOf(a), nominalIds:nomOf(a), support:base.support||'', start:a.start||'', end:a.end||'', restUntil:a.restUntil||''};
-      if(base.note) out.note=base.note;
-      // 班表上的支援文字跟原本那一組不一樣＝在班表上改過，照班表記
-      if(mergedText(out.support, out.note)!==(a.support||'')){ out.support=a.support||''; delete out.note; }
+      const sn=supOf(a); if(sn.length) out.note=sn.join('、');
+      // 班表上的支援說明跟原本那一組不一樣＝在班表上改過，照班表記
+      if((out.support||'')!==(a.support||'')) out.support=a.support||'';
       return out;
     }));
     next = groups.length? {groups} : null;
@@ -2069,11 +2068,13 @@ function writeBackTypeDate(type, date, prevList){
     if(live.length){
       const a=live[0];
       next=Object.assign({}, plan||{});
-      next.personIds=type.roles.map((_,i)=>(a.personIds||[])[i]||null);
+      const at=i=>(a.personIds||[])[i];
+      next.personIds=type.roles.map((_,i)=>at(i) && !isSupportId(at(i))? at(i) : null);
+      next.notes=type.roles.map((_,i)=>isSupportId(at(i))? supportNameOf(at(i)) : '');
       next.nominalIds=(a.nominalIds||[]).filter(id=>next.personIds.includes(id));
       next.start=a.start||''; next.end=a.end||''; next.restUntil=a.restUntil||'';
       // 這種預排一天只有一筆，整天的支援說明就是這一筆的，可以直接照班表記
-      if(mergedText(next.support, (next.notes||[]).filter(Boolean).join('、'))!==(a.support||'')){ next.support=a.support||''; next.notes=[]; }
+      if((next.support||'')!==(a.support||'')) next.support=a.support||'';
     }
   } else if(type.mode==='dayNight'){
     const by={};
@@ -2087,9 +2088,9 @@ function writeBackTypeDate(type, date, prevList){
         const a=by[label];
         delete next[k+'PersonId'];
         if(a){
-          const note=noteFor(next.support, a.support);
-          if(note===null) return {ok:false, msg:supportMsg};
-          next[k+'PersonIds']=idsOf(a); next[k+'NominalIds']=nomOf(a); next[k+'Start']=a.start||''; next[k+'End']=a.end||''; next[k+'RestUntil']=a.restUntil||''; next[k+'Note']=note;
+          // 沒填＝沿用整天共用的說明；填了不一樣的＝改到整天共用的，要到預排改
+          if(a.support && a.support!==(next.support||'')) return {ok:false, msg:supportMsg};
+          next[k+'PersonIds']=idsOf(a); next[k+'NominalIds']=nomOf(a); next[k+'Start']=a.start||''; next[k+'End']=a.end||''; next[k+'RestUntil']=a.restUntil||''; next[k+'Note']=supOf(a).join('、');
         }
         else { next[k+'PersonIds']=[]; next[k+'NominalIds']=[]; next[k+'Note']=''; }
       }
@@ -2107,13 +2108,12 @@ function writeBackTypeDate(type, date, prevList){
       const idx=type.slots.indexOf(`${a.start}-${a.end}`);
       if(idx<0) return {ok:false, msg:`「${role}」的時段固定是 ${fixedSlotOrder(type).map(i=>type.slots[i]).join('、')}，${a.start}-${a.end} 預排沒辦法記，請到預排修改。`};
       if(slots[idx]) return {ok:false, msg:`「${role}」${type.slots[idx]} 這一班只能有一筆，請合併後再存。`};
+      if(a.support && a.support!==((plan&&plan.support)||'')) return {ok:false, msg:supportMsg};
       const g=hitById[a.id];
       const base=(g && g.pp && plan && plan.slots && plan.slots[g.pp.si]) || (plan && plan.slots && plan.slots[idx]) || {};
-      const note=noteFor(plan && plan.support, a.support);
-      if(note===null) return {ok:false, msg:supportMsg};
       const cfg=Object.assign({}, base, {personIds:idsOf(a), nominalIds:nomOf(a), restUntil:a.restUntil||''});
       delete cfg.personId; delete cfg.otherUnit;
-      if(note) cfg.note=note; else delete cfg.note;
+      const sn=supOf(a); if(sn.length) cfg.note=sn.join('、'); else delete cfg.note;
       slots[idx]=cfg;
     }
     if(Object.keys(slots).length) next=Object.assign({}, plan||{}, {slots});
@@ -2148,6 +2148,7 @@ function writeBackStandbyEntry(before, after, date){
   const cfg=byDate && byDate[date];
   if(!cfg) return {ok:false, msg:`留守的「${role}」${minguoLabel(date)}找不到對應的留守預排，請到留守預排修改。`};
   if(after && before && (after.support||'')!==(before.support||'')) return {ok:false, msg:'留守子勤務的支援說明請到留守預排修改。'};
+  if(after && (after.personIds||[]).some(isSupportId)) return {ok:false, msg:`留守的「${role}」只能排留守名單上的人；別單位支援的人請寫在留守預排的支援說明。`};
   if(!after){ delete byDate[date]; return {ok:true}; }
   cfg.personIds=(after.roles? after.roles.map((_,i)=>(after.personIds||[])[i]||null) : (after.personIds||[]).filter(Boolean));
   if(isEmptyPlanEntry(after)) return {ok:true};
@@ -2926,7 +2927,7 @@ function catGroupViolations(date, cat, sft){
   const ids=arr.slice(0, sft.count).filter(Boolean);
   // 12 最少士官數：整班排滿了才算（還有空格就還能補士官）
   if(sft.minNCO && ids.length>=sft.count){
-    const nco=ids.filter(id=>isNCOorOfficer(state.personnel.find(p=>p.id===id))).length;
+    const nco=shiftNCOCount(ids);
     if(nco<sft.minNCO) out.push({key:'minNCO', level:ruleLevel('minNCO'), msg:`這班需至少 ${sft.minNCO} 位士官(含)以上，目前 ${nco} 位`, members:ids});
   }
   return out;
@@ -2948,7 +2949,7 @@ function miscGroupViolations(date, m){
   if(m.role.startsWith('查哨') && people.length>=2){
     const genders=new Set(people.map(p=>p.gender).filter(Boolean));
     if(genders.size>1) out.push({key:'patrolPair', level:ruleLevel('patrolPair'), msg:'查哨要同性別配對', members});
-    if(!people.some(isNCOorOfficer)) out.push({key:'patrolPair', level:ruleLevel('patrolPair'), msg:'查哨每組至少要有1名士官', members});
+    if(!people.some(isNCOorOfficer) && !members.some(isSupportId)) out.push({key:'patrolPair', level:ruleLevel('patrolPair'), msg:'查哨每組至少要有1名士官', members});
   }
   return out;
 }
@@ -3045,7 +3046,7 @@ function placementViolations(ctx, pid){
     if(ctx.shift.minNCO){
       arr[ctx.idx]=pid;
       const ids=arr.slice(0, ctx.shift.count).filter(Boolean);
-      if(ids.length>=ctx.shift.count && ids.filter(id=>isNCOorOfficer(state.personnel.find(p=>p.id===id))).length<ctx.shift.minNCO) out.push({key:'minNCO', level:ruleLevel('minNCO'), msg:`這班需至少 ${ctx.shift.minNCO} 位士官(含)以上`});
+      if(ids.length>=ctx.shift.count && shiftNCOCount(ids)<ctx.shift.minNCO) out.push({key:'minNCO', level:ruleLevel('minNCO'), msg:`這班需至少 ${ctx.shift.minNCO} 位士官(含)以上`});
     }
   } else {
     const m=ctx.entry;
@@ -3702,6 +3703,7 @@ function autoAssignLeftoverSlots(date){
     });
   });
   (state.misc[date]||[]).forEach(m=>{
+    if(supportOnlyEntry(m)) return; // 由支援負責
     if(m.roles){
       m.roles.forEach((r,idx)=>{
         if((m.personIds||[])[idx] || (m.lockedSlots&&m.lockedSlots[idx])) return;
@@ -3750,6 +3752,7 @@ function openAutoAssignLeftoverModal(date, leftovers){
 // "fully-formed" initial state — snapshot it as the undo baseline so
 // undoing all the way back never lands on a state missing required fields
 cleanupOtherUnitPatrolEntries();
+migrateSupportOccupants();
 lastSavedSnapshot = JSON.stringify(state);
 initPlanSync();
 /* 事故/請假 (uses a preset reason list or a custom typed one) */
@@ -4022,7 +4025,7 @@ function incidentBlocksWindow(u, s, e, spillover){
   if(spillover) return ue>0 && windowsOverlapOnce(s,e,0,ue);
   return windowsOverlapOnce(s,e,us,1440);
 }
-function isPersonUnavailable(personId, date, s, e, excludeCatShift){
+function isPersonUnavailable(personId, date, s, e, excludeCatShift, opts){
   // s,e in minutes-of-day (0-1440-ish), plain (not absolute-unwrapped)
   const person = state.personnel.find(p=>p.id===personId);
   if(person){
@@ -4052,6 +4055,8 @@ function isPersonUnavailable(personId, date, s, e, excludeCatShift){
   for(const w of personCompRestWindows(personId, date)){
     if(windowsOverlapRecurring(s,e,toMin(w.start),toMin(w.end))) return true;
   }
+  // 統計每時段：勤務本身跟勤務後的補休另外照實際時間算（dayDutyIntervals）
+  if(opts && opts.skipDuties) return false;
   /* avoid double-booking against the person's other current assignments.
      The busy window runs from the (possibly prep-time-shifted) start to the
      wrapped end; both ends can fall outside 0-1440 — a sentry shift starting
@@ -4077,7 +4082,40 @@ function isPersonUnavailable(personId, date, s, e, excludeCatShift){
   return false;
 }
 
-function personName(id){ const p=state.personnel.find(p=>p.id===id); return p?p.name:'—'; }
+/* 支援人員（別單位、名冊裡沒有的人）也可以佔一個位置：id 寫成「sup:姓名」。
+   佔了位置就算有人，自動排班不會再補；規則只管名冊裡的人，支援的不檢查。 */
+/* 只有支援說明、沒有排任何人的項目＝這一項由支援負責（例如「營部連支援」），
+   不算空缺，自動排班也不補 */
+function supportOnlyEntry(m){ return !!(m && String(m.support||'').trim() && !(m.personIds||[]).some(Boolean)); }
+/* 一筆其他勤務的「已排／應排」：由支援負責的（只有支援說明、沒排人）整筆算排滿 */
+function miscEntryProgress(m, preset){
+  if(m.roles){
+    const total=m.roles.length;
+    if(supportOnlyEntry(m)) return {filled:total, total};
+    return {filled:(m.personIds||[]).filter((pid,i)=>pid || (m.lockedSlots&&m.lockedSlots[i])).length, total};
+  }
+  const n=(m.personIds||[]).filter(Boolean).length;
+  const total=Math.max((preset&&preset.requiredCount)||1, n);
+  // 有寫支援說明的：剩下的名額由支援補（自動排班也不會再加人）
+  return {filled: String(m.support||'').trim()? total : n, total};
+}
+function isSupportId(id){ return typeof id==='string' && id.startsWith('sup:'); }
+function supportIdOf(name){ return 'sup:'+String(name||'').trim(); }
+function supportNameOf(id){ return isSupportId(id)? id.slice(4) : ''; }
+/* 預排上記的支援姓名（文字匯入找不到的名字、角色欄位手打的支援）拆成一個一個人 */
+/* 手打的支援人員姓名如果就是名冊上的人，要他直接從名單選（不然同一個人會
+   變成「支援」、規則也檢查不到他） */
+/* 最少士官人數：支援的人（別單位）階級不明，先算他是士官——不會因為他報
+   「士官不足」，自動排班也不會因為他硬要再找士官 */
+function shiftNCOCount(ids){ return (ids||[]).filter(id=>id && (isSupportId(id) || isNCOorOfficer(state.personnel.find(p=>p.id===id)))).length; }
+function rosterNameClash(names){
+  const roster=new Set((state.personnel||[]).filter(p=>!isDeparted(p)).map(p=>p.name));
+  return [...new Set(names)].filter(n=>roster.has(n));
+}
+/* 文字匯入用的「還沒排」記號（？？？、—、未指派）不是人名 */
+function isPlaceholderName(t){ return /^[?？\-—－_．.·]+$/.test(t) || /^[（(]?未指派[)）]?$/.test(t); }
+function supportTokens(text){ return String(text||'').split(/[、,，\s]+/).map(t=>t.trim()).filter(t=>t && !isPlaceholderName(t)); }
+function personName(id){ if(isSupportId(id)) return `${supportNameOf(id)}（支援）`; const p=state.personnel.find(p=>p.id===id); return p?p.name:'—'; }
 /* the 🚗駕照·⛑️EMT·🔧專長 badge string used consistently across every person
    dropdown/checkbox in the app, so qualifications are visible wherever
    you're picking someone regardless of which UI widget it's rendered in */
@@ -4341,7 +4379,7 @@ function autoAssignDay(date){
     // slots, so auto-assign leaves a slot empty rather than quietly
     // filling it with a non-NCO just to hit the headcount. Once the floor
     // is met (or every empty slot has been tried), the rest fill normally.
-    let ncoStillNeeded = Math.max(0, (s.minNCO||0) - arr.filter(pid=>pid && ['士官','軍官'].includes(rankCategory(personRank(pid)))).length);
+    let ncoStillNeeded = Math.max(0, (s.minNCO||0) - shiftNCOCount(arr.slice(0, s.count)));
     for(let idx=0; idx<s.count; idx++){
       if(!arr[idx]){
         /* v160：自動排班任何規則都不破（事實／嚴重／一般；提醒除外）——
@@ -4428,9 +4466,13 @@ function autoAssignMiscForDate(date, opts){
   });
   processingOrder.forEach(entry=>{
     if(skipPlanOwned && isPlanOwnedEntry(entry, planRoles)) return;
+    // 由支援負責的（只有支援說明、沒排我們的人）不補人
+    if(supportOnlyEntry(entry)) return;
     if(!entry.roles){
       if(!entry.personIds) entry.personIds=[];
       entry.personIds = entry.personIds.filter(Boolean);
+      // 有寫支援說明的：支援的人補剩下的名額，自動排班不再加人
+      if(String(entry.support||'').trim()) return;
       const presetForSort = presetForEntry(entry);
       const targetCount = (presetForSort && presetForSort.requiredCount) || 1;
       // 一次補一個人，每補一個重新檢查（查哨同性別/至少1士官這種整組規則
@@ -5804,6 +5846,38 @@ function cleanupOtherUnitPatrolEntries(){
   });
   return n;
 }
+/* v164：以前預排上寫的支援人員（例如救護車駕駛：王育綸）匯入班表時只記成
+   支援說明、位置空著，自動排班還是會把那個位置排給我們的人。現在支援的人會
+   佔著位置（sup:姓名）。今天以後、內容跟「舊寫法的預排」完全一樣的項目，換
+   成新寫法；有人手動改過（跟舊寫法也不一樣）的不動，照一般的不一致處理。 */
+function legacySupportSig(m){
+  const ids=m.personIds||[];
+  const names=ids.filter(isSupportId).map(supportNameOf);
+  const x=Object.assign({}, m, {
+    personIds: m.roles? ids.map(id=>isSupportId(id)? null : id) : ids.filter(id=>id && !isSupportId(id)),
+    support: [...supportTokens(m.support), ...names.flatMap(supportTokens)].sort().join('、')});
+  return planEntrySig(x);
+}
+function migrateSupportOccupants(){
+  if(!state.misc || !state.preplan) return 0;
+  const today=todayStr();
+  let n=0;
+  planDayTypes().forEach(t=>{
+    const role=planRoleName(t);
+    const store=state.preplan[t.key]||{};
+    Object.keys(store).forEach(d=>{
+      if(d<today) return;
+      const fresh=simulatePlanEntries(t, d);
+      if(!fresh.some(m=>(m.personIds||[]).some(isSupportId))) return;
+      const own=(state.misc[d]||[]).filter(m=>m.role===role && !m.standbyAnchor);
+      if(own.some(m=>(m.personIds||[]).some(isSupportId))) return; // 已經是新寫法
+      const f=list=>list.filter(m=>!isEmptyPlanEntry(m)).map(legacySupportSig).sort().join('\n');
+      if(f(own)!==f(fresh)) return;
+      if(syncPlanDate(t, d)) n++;
+    });
+  });
+  return n;
+}
 /* short text shown inside a calendar cell for a given day's plan */
 /* 「多人模式」（值星/督伙/驗菜）同一天可能不只一組（例如值星白天一組、
    晚上另一組人），用 plan.groups 陣列裝多組；沒有 groups 欄位的舊資料
@@ -5961,6 +6035,7 @@ function parsePreplanFillText(key, ym, text){
     (raw||'').split(/[、,，\s]+/).filter(Boolean).forEach(tok=>{
       const nominal=/[（(]掛[)）]$/.test(tok);
       const name=tok.replace(/[（(]掛[)）]$/,'');
+      if(isPlaceholderName(name)) return; // 「？？？」、空白＝沒有排
       const p=nameToId(name);
       if(p){ ids.push(p.id); if(nominal){ nominalIds.push(p.id); nominalMatches.push({date:curDate, label, name:p.name}); } }
       else { notes.push(tok); unresolved.push({date:curDate, label, name:tok}); }
@@ -7108,7 +7183,12 @@ function openPreplanDayEditor(key, date, onSaved){
     </div>`;
   const supportRow = (id, val)=>`
     <div class="row wrap" style="margin-bottom:6px">
-      <div class="grow"><label>支援單位/人員（選填，直接打字）</label><input type="text" id="${id}" value="${esc(val||'')}" placeholder="例：三連 王小明"></div>
+      <div class="grow"><label>支援說明（選填，直接打字；只有說明、沒排人時＝這項由支援負責，自動排班不會排人）</label><input type="text" id="${id}" value="${esc(val||'')}" placeholder="例：由三連支援"></div>
+    </div>`;
+  // 支援的人（別單位）佔名額：班表上他就佔一個位置，自動排班不會再把那個位置排給我們的人
+  const supPeopleRow = (id, val, label)=>`
+    <div class="row wrap" style="margin-bottom:6px">
+      <div class="grow"><label>${label||'支援人員'}（別單位的人，手打姓名，多人用「、」分開；會佔名額）</label><input type="text" class="pp-sup-people" id="${id}" value="${esc(val||'')}" placeholder="例：王小明"></div>
     </div>`;
   let body='';
   // one shared preset-based eligibility check for every non-roles mode —
@@ -7127,6 +7207,7 @@ function openPreplanDayEditor(key, date, onSaved){
       ${type.editableTime? timeRow('ppT'+gi, g.start||preplanDefault(key,'start',t0.start), g.end||preplanDefault(key,'end',t0.end)) : ''}
       ${restRow('ppRest'+gi, g.restUntil||preplanDefault(key,'rest',(preset&&preset.restUntil)||''))}
       ${supportRow('ppSupport'+gi, g.support)}
+      ${supPeopleRow('ppSupPeople'+gi, g.note)}
       ${searchBlock('ppSearch'+gi)}
       <div class="row wrap" style="margin-bottom:6px">
         <button class="ghost small" data-select-all-group="${gi}">全選(顯示中)</button>
@@ -7158,7 +7239,7 @@ function openPreplanDayEditor(key, date, onSaved){
           return `<div class="hint" style="margin:6px 0 2px"><b>${esc(r)}</b></div>`
             + searchBlock('ppSearch'+i)
             + listBox(radioRows(selId, 'pp-role'+i, 'pprole'+i, reasonsFn, plan.nominalIds), 'ppList'+i)
-            + `<div class="row wrap" style="margin:6px 0 2px"><div class="grow"><label>${esc(r)}支援（選填，找不到適合的人時手打）</label><input type="text" id="ppRoleNote${i}" value="${esc((plan.notes||[])[i]||'')}" placeholder="例：三連支援"></div></div>`;
+            + `<div class="row wrap" style="margin:6px 0 2px"><div class="grow"><label>${esc(r)}由支援的人擔任（別單位的人，手打姓名；會佔這個位置）</label><input type="text" class="pp-sup-people" id="ppRoleNote${i}" value="${esc((plan.notes||[])[i]||'')}" placeholder="例：王小明"></div></div>`;
         }).join('');
   } else if(type.mode==='dayNight'){
     const times = preset? presetTimes(preset) : [];
@@ -7168,11 +7249,13 @@ function openPreplanDayEditor(key, date, onSaved){
       + restRow('ppDayRest', plan.dayRestUntil||preplanDefault(key,'dayRest',''), '日班補休至（選填）')
       + searchBlock('ppSearchD')
       + listBox(checkRows(plan.dayPersonIds||(plan.dayPersonId?[plan.dayPersonId]:[]), 'pp-day', presetReasonsFn, plan.dayNominalIds), 'ppListD')
+      + supPeopleRow('ppDayNote', plan.dayNote, '日班支援人員')
       + `<div class="divider"></div><div class="hint" style="margin:6px 0 2px"><b>夜班</b></div>`
       + timeRow('ppNightT', plan.nightStart||preplanDefault(key,'nightStart',nt.start), plan.nightEnd||preplanDefault(key,'nightEnd',nt.end))
       + restRow('ppNightRest', plan.nightRestUntil||preplanDefault(key,'nightRest',''), '夜班補休至（選填）')
       + searchBlock('ppSearchN')
       + listBox(checkRows(plan.nightPersonIds||(plan.nightPersonId?[plan.nightPersonId]:[]), 'pp-night', presetReasonsFn, plan.nightNominalIds), 'ppListN')
+      + supPeopleRow('ppNightNote', plan.nightNote, '夜班支援人員')
       + supportRow('ppSupport', plan.support);
   } else if(type.mode==='fixedSlots'){
     // 照一天裡的時間先後（00-02…22-24）；輪到別的單位的班收起來，只列一行
@@ -7199,6 +7282,7 @@ function openPreplanDayEditor(key, date, onSaved){
             ${restRow('ppSlotRest'+i, cfg.restUntil||preplanDefault(key,'slotRest'+i,''))}
             ${searchBlock('ppSearchS'+i)}
             ${listBox(checkRows(ids, 'pp-slot'+i, presetReasonsFn, cfg.nominalIds), 'ppListS'+i)}
+            ${supPeopleRow('ppSlotNote'+i, other? '' : cfg.note)}
           </div>
         </div>`;
       }).join('');
@@ -7323,13 +7407,15 @@ function openPreplanDayEditor(key, date, onSaved){
         const ids=[...modal.querySelectorAll('.pp-person'+gi+':checked')].map(cb=>cb.value);
         const nominalIds=[...modal.querySelectorAll('.pp-person'+gi+'-nom:checked')].map(cb=>cb.value).filter(id=>ids.includes(id));
         const supportEl=document.getElementById('ppSupport'+gi);
+        const supEl=document.getElementById('ppSupPeople'+gi);
+        const note=supEl? supportTokens(supEl.value).join('、') : '';
         return {
-          personIds:ids, nominalIds, support:supportEl? supportEl.value : '',
+          personIds:ids, nominalIds, support:supportEl? supportEl.value : '', ...(note? {note} : {}),
           start:type.editableTime? getTimeSelectValue('ppT'+gi+'Start') : undefined,
           end:type.editableTime? getTimeSelectValue('ppT'+gi+'End') : undefined,
           restUntil:getTimeSelectValue('ppRest'+gi),
         };
-      }).filter(g=>g.personIds.length || g.support);
+      }).filter(g=>g.personIds.length || g.support || g.note);
       if(!groups.length) return null;
       return {groups};
     }
@@ -7357,8 +7443,11 @@ function openPreplanDayEditor(key, date, onSaved){
       const nightIds=[...modal.querySelectorAll('.pp-night:checked')].map(cb=>cb.value);
       const dayNominalIds=[...modal.querySelectorAll('.pp-day-nom:checked')].map(cb=>cb.value).filter(id=>dayIds.includes(id));
       const nightNominalIds=[...modal.querySelectorAll('.pp-night-nom:checked')].map(cb=>cb.value).filter(id=>nightIds.includes(id));
-      if(!dayIds.length && !nightIds.length && !support) return null;
+      const dayNote=supportTokens((document.getElementById('ppDayNote')||{}).value).join('、');
+      const nightNote=supportTokens((document.getElementById('ppNightNote')||{}).value).join('、');
+      if(!dayIds.length && !nightIds.length && !support && !dayNote && !nightNote) return null;
       return {dayPersonIds:dayIds, nightPersonIds:nightIds, dayNominalIds, nightNominalIds, support,
+        ...(dayNote? {dayNote} : {}), ...(nightNote? {nightNote} : {}),
         dayStart:getTimeSelectValue('ppDayTStart'), dayEnd:getTimeSelectValue('ppDayTEnd'),
         nightStart:getTimeSelectValue('ppNightTStart'), nightEnd:getTimeSelectValue('ppNightTEnd'),
         dayRestUntil:getTimeSelectValue('ppDayRest'), nightRestUntil:getTimeSelectValue('ppNightRest')};
@@ -7379,6 +7468,8 @@ function openPreplanDayEditor(key, date, onSaved){
         const cfg=Object.assign({}, old, {personIds:ids, nominalIds, restUntil:getTimeSelectValue('ppSlotRest'+i)});
         delete cfg.personId;
         if(otherUnitOfSlot(old)){ delete cfg.otherUnit; delete cfg.note; }
+        const noteEl=document.getElementById('ppSlotNote'+i);
+        if(noteEl){ const n=supportTokens(noteEl.value).join('、'); if(n) cfg.note=n; else delete cfg.note; }
         slots[i]=cfg;
       });
       if(!Object.keys(slots).length && !support) return null;
@@ -7386,17 +7477,36 @@ function openPreplanDayEditor(key, date, onSaved){
     }
     return null;
   };
+  // 支援人員手打的名字如果就是名冊上的人：要他直接勾選（打開時就已經在的不擋）
+  const supNamesNow=()=>[...modal.querySelectorAll('.pp-sup-people')].flatMap(el=>el.id.startsWith('ppRoleNote')? [el.value.trim()].filter(Boolean) : supportTokens(el.value));
+  const supAtOpen=new Set(supNamesNow());
+  const supClashOk=()=>{
+    const clash=rosterNameClash(supNamesNow().filter(n=>!supAtOpen.has(n)));
+    if(clash.length){ showAlert(`「${clash.join('、')}」是名冊上的人，請直接在名單勾選，不要打在支援人員。`); return false; }
+    if(type.mode==='roles'){
+      // 同一個位置只能一個人：選了我們的人就不能再填支援的人
+      const both=type.roles.filter((_,i)=>{
+        const sel=modal.querySelector(`.pp-role${i}:checked`);
+        const el=document.getElementById('ppRoleNote'+i);
+        return sel && sel.value && el && el.value.trim();
+      });
+      if(both.length){ showAlert(`「${both.join('、')}」同時選了人、又填了支援的人。一個位置只能一個人：要讓支援的人擔任，請把上面的名單選「（未指派）」；要用我們的人，請把支援的人清掉。`); return false; }
+    }
+    return true;
+  };
   document.getElementById('ppDelete').onclick=()=>{
     setPreplan(key, date, null);
     saveState(); close(); if(onSaved) onSaved();
   };
   document.getElementById('ppCopy').onclick=()=>{
+    if(!supClashOk()) return;
     const value=collect();
     if(!value){ showAlert('這天還沒有填任何內容，沒有東西可以複製。'); return; }
     setPreplan(key, date, value); saveState();
     openPreplanCopyModal(key, date, ()=>{ close(); if(onSaved) onSaved(); });
   };
   document.getElementById('ppSave').onclick=()=>{
+    if(!supClashOk()) return;
     const value=collect();
     setPreplan(key, date, value);
     // remember the shape (times / rest) so the next day opens pre-filled
@@ -8507,45 +8617,46 @@ function importPreplanForDate(key, date){
     const groups = peopleGroupsOf(plan);
     let wroteAny=false;
     groups.forEach((g,gi)=>{
-      const ids=(g.personIds||[]).filter(Boolean);
-      if(!ids.length && !g.support && !g.note) return;
+      // 預排上記的支援人員（g.note）佔名額，跟我們的人一起放進去
+      const ids=[...(g.personIds||[]).filter(Boolean), ...supportTokens(g.note).map(supportIdOf)];
+      if(!ids.length && !g.support) return;
       state.misc[date].push({id:uid(), role:roleName,
         start:g.start||plan.start||t0.start, end:g.end||plan.end||t0.end,
         restUntil:g.restUntil||plan.restUntil||(preset&&preset.restUntil)||'', personIds:ids,
-        nominalIds:g.nominalIds||[], fromPreplan:true, ...mergeSupport(g.support, g.note),
+        nominalIds:g.nominalIds||[], fromPreplan:true, ...mergeSupport(g.support),
         ...(planImportTagging? {pp:{kind:'group', gi}} : {})});
       wroteAny=true;
     });
     if(!wroteAny) return false;
   } else if(type.mode==='roles'){
-    const ids=(plan.personIds||[]).slice(0,type.roles.length);
-    const notes=(plan.notes||[]).filter(Boolean).join('、');
-    if(!ids.some(Boolean) && !plan.support && !notes) return false;
+    // 某個角色預排上只寫了支援人員（例如駕駛：王育綸）→ 那個位置由支援的人佔著
+    const ids=type.roles.map((_,i)=>(plan.personIds||[])[i] || (((plan.notes||[])[i]||'').trim()? supportIdOf((plan.notes||[])[i]) : null));
+    if(!ids.some(Boolean) && !plan.support) return false;
     const newEntry={id:uid(), role:roleName,
       start:plan.start||t0.start, end:plan.end||t0.end,
       restUntil:plan.restUntil||(preset&&preset.restUntil)||'', roles:[...type.roles], personIds:ids,
-      nominalIds:plan.nominalIds||[], lockedSlots:type.roles.map(()=>false), fromPreplan:true, ...mergeSupport(plan.support, notes),
+      nominalIds:plan.nominalIds||[], lockedSlots:type.roles.map(()=>false), fromPreplan:true, ...mergeSupport(plan.support),
       ...(planImportTagging? {pp:{kind:'roles'}} : {})};
     autoSwapDriverChief(newEntry);
     state.misc[date].push(newEntry);
   } else if(type.mode==='dayNight'){
     const dayT = times[0]||{start:'',end:''};
     const nightT = times[1]||times[0]||{start:'',end:''};
-    const dayIds=(plan.dayPersonIds||(plan.dayPersonId?[plan.dayPersonId]:[])).filter(Boolean);
-    const nightIds=(plan.nightPersonIds||(plan.nightPersonId?[plan.nightPersonId]:[])).filter(Boolean);
+    const dayIds=[...(plan.dayPersonIds||(plan.dayPersonId?[plan.dayPersonId]:[])).filter(Boolean), ...supportTokens(plan.dayNote).map(supportIdOf)];
+    const nightIds=[...(plan.nightPersonIds||(plan.nightPersonId?[plan.nightPersonId]:[])).filter(Boolean), ...supportTokens(plan.nightNote).map(supportIdOf)];
     let wrote=false;
-    if(dayIds.length || plan.dayNote){
+    if(dayIds.length){
       state.misc[date].push({id:uid(), role:roleName,
         start:plan.dayStart||dayT.start, end:plan.dayEnd||dayT.end,
         restUntil:plan.dayRestUntil||'', personIds:dayIds, nominalIds:plan.dayNominalIds||[],
-        shiftLabel:'日班', fromPreplan:true, ...mergeSupport(plan.support, plan.dayNote), ...(planImportTagging? {pp:{kind:'day'}} : {})});
+        shiftLabel:'日班', fromPreplan:true, ...mergeSupport(plan.support), ...(planImportTagging? {pp:{kind:'day'}} : {})});
       wrote=true;
     }
-    if(nightIds.length || plan.nightNote){
+    if(nightIds.length){
       state.misc[date].push({id:uid(), role:roleName,
         start:plan.nightStart||nightT.start, end:plan.nightEnd||nightT.end,
         restUntil:plan.nightRestUntil||(preset&&preset.restUntil)||'', personIds:nightIds, nominalIds:plan.nightNominalIds||[],
-        shiftLabel:'夜班', fromPreplan:true, ...mergeSupport(plan.support, plan.nightNote), ...(planImportTagging? {pp:{kind:'night'}} : {})});
+        shiftLabel:'夜班', fromPreplan:true, ...mergeSupport(plan.support), ...(planImportTagging? {pp:{kind:'night'}} : {})});
       wrote=true;
     }
     return wrote;
@@ -8556,11 +8667,11 @@ function importPreplanForDate(key, date){
       const label=type.slots[Number(idx)];
       if(!label || !cfg || otherUnitOfSlot(cfg)) return;
       const [st,en]=label.split('-');
-      const ids=(cfg.personIds||(cfg.personId?[cfg.personId]:[])).filter(Boolean);
-      if(!ids.length && !plan.support && !cfg.note) return;
+      const ids=[...(cfg.personIds||(cfg.personId?[cfg.personId]:[])).filter(Boolean), ...supportTokens(cfg.note).map(supportIdOf)];
+      if(!ids.length && !plan.support) return;
       state.misc[date].push({id:uid(), role:roleName, start:st, end:en,
         restUntil:cfg.restUntil||'', personIds:ids, nominalIds:cfg.nominalIds||[],
-        fromPreplan:true, ...mergeSupport(plan.support, cfg.note), ...(planImportTagging? {pp:{kind:'slot', si:Number(idx)}} : {})});
+        fromPreplan:true, ...mergeSupport(plan.support), ...(planImportTagging? {pp:{kind:'slot', si:Number(idx)}} : {})});
       wrote=true;
     });
     return wrote;
@@ -9872,6 +9983,7 @@ document.getElementById('importFile').addEventListener('change', (e)=>{
         if(!state.ruleExceptions) state.ruleExceptions={};
         if(!state.dutyChanges) state.dutyChanges={};
         cleanupOtherUnitPatrolEntries();
+        migrateSupportOccupants();
         // 匯入的備份就是它本來的樣子，先原封不動存進來（不當成手改、也不在
         // 存檔時就依預排改動它），再檢查它的班表跟預排有沒有不一致
         if(PLAN_SYNC) initPlanSync();
@@ -11194,17 +11306,100 @@ function showPrompt(message, defaultValue, onSubmit){
 /* ---- STATS TAB (stage 1) ---- */
 let queryFilterState={time:'08:00',group:'',rank:''}; // persists across re-renders until explicitly cleared
 let hourlyPeopleFilterState={search:'',group:''}; // shared filter for whichever hour row(s) are expanded
-function hourlyAvailablePeopleHTML(h){
+/* v164：統計「每時段」也列出在勤務上的人、出什麼勤務。時間以這一天 00:00
+   為 0，照實際發生的時間算：
+   - 衛哨類別的一天是「前一天 22:00 到這天 22:00」（DAY_START_MIN）：這天的
+     22-24 班其實是前一天晚上，隔天的 22-24 班才是這天晚上；衛哨提早 30 分
+     鐘準備也算在勤務上
+   - 其他勤務照日曆日；前一天延續過來的（例如救護車 06:30-06:30）也算
+   - 其他勤務後的補休（補休至）另外列成 kind:'rest'
+   支援的人、掛名不算。 */
+function dayDutyIntervals(date){
+  const out=[];
+  const add=(d, shift, tag)=>{
+    const dayAssign=state.assign[d]||{};
+    orderedCategories().forEach(cat=>effectiveShifts(cat, d).forEach(sft=>{
+      const st=toMin(sft.start), en=toMin(sft.end);
+      const dur=en<=st? en+1440-st : en-st;
+      const a=(st>=DAY_START_MIN? st-1440 : st)+shift;
+      const bs=a-(cat.isSentry? PREP_MINUTES : 0);
+      ((dayAssign[cat.id]||{})[sft.id]||[]).slice(0, sft.count).forEach(pid=>{
+        if(pid && !isSupportId(pid)) out.push({kind:'duty', pid, s:bs, e:a+dur, start:a, label:`${cat.name} ${sft.label||sft.start+'-'+sft.end}`, tag});
+      });
+    }));
+    (state.misc[d]||[]).forEach(m=>{
+      if(!m.start || !m.end) return;
+      const st=toMin(m.start), en=toMin(m.end);
+      const a=st+shift, b=a+(en<=st? en+1440-st : en-st);
+      let restEnd=null;
+      if(m.restUntil){ const r=toMin(m.restUntil); const gap=((r-(b%1440))%1440+1440)%1440; if(gap) restEnd=b+gap; }
+      (m.personIds||[]).forEach((pid,i)=>{
+        if(!pid || isSupportId(pid) || (m.nominalIds||[]).includes(pid)) return;
+        const role=(m.roles && m.roles[i])? '・'+m.roles[i] : '';
+        const label=`${m.role}${role}${m.shiftLabel? ' '+m.shiftLabel:''} ${m.start}-${m.end}`;
+        out.push({kind:'duty', pid, s:a, e:b, start:a, label, tag});
+        if(restEnd) out.push({kind:'rest', pid, s:b, e:restEnd, start:b, label:`${m.role}後補休到 ${m.restUntil}`, tag});
+      });
+    });
+  };
+  add(prevDateStr(date), -1440, '前一天');
+  add(date, 0, '');
+  add(nextDateStr(date), 1440, '隔天班表');
+  return out.filter(iv=>iv.e>0 && iv.s<1440);
+}
+/* 某一小時：在勤務上（kind='duty'）或補休中（kind='rest'）的人 → 那一小時的項目 */
+function hourDutyMap(intervals, h, kind){
+  const H=h*60, map=new Map();
+  intervals.forEach(iv=>{
+    if(iv.kind!==(kind||'duty')) return;
+    if(!(iv.s<H+60 && H<iv.e)) return;
+    if(!state.personnel.some(p=>p.id===iv.pid)) return;
+    const label=iv.label+(iv.tag? `（${iv.tag}）`:'');
+    if(!map.has(iv.pid)) map.set(iv.pid, []);
+    const list=map.get(iv.pid);
+    if(!list.some(x=>x.label===label)) list.push({label, start:iv.start});
+  });
+  return map;
+}
+/* 某一小時有空的人：不在勤務上、不在補休、也沒有休假/事故/長期事故/衛哨補休 */
+function hourFreePeople(h, dutyMap, restMap){
   const s=h*60, e=(h+1)*60;
-  const available = state.personnel.filter(p=>!isPersonUnavailable(p.id,currentDate,s,e));
-  let list = available;
+  return state.personnel.filter(p=>!dutyMap.has(p.id) && !(restMap && restMap.has(p.id)) && !isPersonUnavailable(p.id,currentDate,s,e,null,{skipDuties:true}));
+}
+function hourlyFilterPeople(list){
   if(hourlyPeopleFilterState.search) list=list.filter(p=>p.name.includes(hourlyPeopleFilterState.search));
   if(hourlyPeopleFilterState.group==='__none') list=list.filter(p=>!p.group);
   else if(hourlyPeopleFilterState.group) list=list.filter(p=>p.group===hourlyPeopleFilterState.group);
-  list.sort((a,b)=>groupIndex(a.group)-groupIndex(b.group)||rankIndex(a.rank)-rankIndex(b.rank));
-  const summary = personListSummaryHTML(list, available);
-  if(!list.length) return summary + `<div class="empty">找不到符合的人員</div>`;
-  return summary + list.map(p=>`<div class="muted">・${esc(p.name)}（${p.group||'未分組'}·${p.rank}）</div>`).join('');
+  return list;
+}
+function hourlyAvailablePeopleHTML(h){
+  const iv=dayDutyIntervals(currentDate);
+  const dutyMap=hourDutyMap(iv, h);
+  const restMap=hourDutyMap(iv, h, 'rest');
+  dutyMap.forEach((_,pid)=>restMap.delete(pid));
+  const available = hourFreePeople(h, dutyMap, restMap);
+  const list = hourlyFilterPeople(available).sort((a,b)=>groupIndex(a.group)-groupIndex(b.group)||rankIndex(a.rank)-rankIndex(b.rank));
+  const freeHTML = `<div class="hour-sec-title"><b>🟢 有空（${available.length} 人）</b></div>` + personListSummaryHTML(list, available)
+    + (list.length? list.map(p=>`<div class="muted">・${esc(p.name)}（${p.group||'未分組'}·${p.rank}）</div>`).join('') : `<div class="empty">找不到符合的人員</div>`);
+  // 在勤務上的人：照勤務分組（誰在出什麼勤務）
+  const onDuty=state.personnel.filter(p=>dutyMap.has(p.id));
+  const shown=new Set(hourlyFilterPeople(onDuty).map(p=>p.id));
+  const byLabel=new Map();
+  onDuty.forEach(p=>{
+    if(!shown.has(p.id)) return;
+    dutyMap.get(p.id).forEach(d=>{
+      if(!byLabel.has(d.label)) byLabel.set(d.label, {start:d.start, people:[]});
+      byLabel.get(d.label).people.push(p);
+    });
+  });
+  const groupsHTML=[...byLabel.entries()].sort((a,b)=>a[1].start-b[1].start || a[0].localeCompare(b[0]))
+    .map(([label,g])=>`<div class="muted hour-duty-row">・<b>${esc(label)}</b>：${g.people.map(p=>`${esc(p.name)}<span class="hint">（${esc(p.rank)}）</span>`).join('、')}</div>`).join('');
+  const dutyHTML = `<div class="hour-sec-title" style="margin-top:10px"><b>🔵 在勤務上（${onDuty.length} 人）</b>${shown.size!==onDuty.length? `<span class="hint">　篩選出 ${shown.size} 人</span>`:''}</div>`
+    + (groupsHTML || `<div class="empty">${onDuty.length? '找不到符合的人員' : '這一小時沒有人在勤務上'}</div>`);
+  const resting=hourlyFilterPeople(state.personnel.filter(p=>restMap.has(p.id)));
+  const restHTML = resting.length? `<div class="hour-sec-title" style="margin-top:10px"><b>😴 勤務後補休（${resting.length} 人）</b></div>`
+    + resting.map(p=>`<div class="muted hour-duty-row">・${esc(p.name)}<span class="hint">（${esc(restMap.get(p.id).map(d=>d.label).join('、'))}）</span></div>`).join('') : '';
+  return freeHTML + dutyHTML + restHTML;
 }
 let collapseState={};
 function isExpanded(key){ return !!collapseState[key]; }
@@ -11359,15 +11554,13 @@ function wireCardListDrag(containerId, tab, defs){
 function renderStats(){
   const groups = [...new Set(state.personnel.map(p=>p.group).filter(Boolean))].sort((a,b)=>groupIndex(a)-groupIndex(b));
   const hours=[...Array(24).keys()];
-  function hourBreakdown(h){
-    const s=h*60, e=(h+1)*60;
-    const avail = state.personnel.filter(p=>!isPersonUnavailable(p.id,currentDate,s,e));
-    return rankGenderBreakdown(avail);
-  }
-  const counts = hours.map(h=>{
-    const s=h*60, e=(h+1)*60;
-    return state.personnel.filter(p=>!isPersonUnavailable(p.id,currentDate,s,e)).length;
-  });
+  const dutyIv = dayDutyIntervals(currentDate);
+  const dutyMaps = hours.map(h=>hourDutyMap(dutyIv, h));
+  const restMaps = hours.map(h=>{ const m=hourDutyMap(dutyIv, h, 'rest'); dutyMaps[h].forEach((_,pid)=>m.delete(pid)); return m; });
+  const freeLists = hours.map(h=>hourFreePeople(h, dutyMaps[h], restMaps[h]));
+  function hourBreakdown(h){ return rankGenderBreakdown(freeLists[h]); }
+  const counts = hours.map(h=>freeLists[h].length);
+  const dutyCounts = hours.map(h=>dutyMaps[h].size);
   const maxCount = Math.max(1,...counts);
   const queryFormHTML = collapsibleCardHTML('queryForm', '指定時間查詢', `
       <div class="row wrap" style="margin-bottom:8px">
@@ -11397,7 +11590,7 @@ function renderStats(){
       <div id="queryResult"></div>
       <div class="hint">會列出這個時間點有空的人，以及每個人從這個時間點起還能連續空多久（已排的勤務、請假、長期事故、補休都會計入）。</div>
 `);
-  const hourlyHTML = collapsibleCardHTML('hourly', `每時段空閒人數（總員 ${state.personnel.length} 人）`, `
+  const hourlyHTML = collapsibleCardHTML('hourly', `每時段空閒／勤務人數（總員 ${state.personnel.length} 人）`, `
       ${hours.map((h,i)=>{
         const bd=hourBreakdown(h);
         const rowKey='hourRow-'+h;
@@ -11409,7 +11602,7 @@ function renderStats(){
             <div class="bar-fill" style="width:${(counts[i]/maxCount*100)}%"></div>
             <div style="position:absolute;inset:0;display:flex;align-items:center;padding-left:6px;font-size:10px;color:var(--text);white-space:nowrap">${fmtRankBreakdown(bd)}</div>
           </div>
-          <div style="width:28px;text-align:right;font-size:12px">${counts[i]}</div>
+          <div class="hour-counts" title="有空 ${counts[i]} 人・在勤務上 ${dutyCounts[i]} 人"><b>${counts[i]}</b><span class="hint">勤${dutyCounts[i]}</span></div>
         </div>
         ${rowExpanded? `<div class="card" style="margin:4px 0 8px;padding:8px">
           <div class="row wrap" style="margin-bottom:6px">
@@ -11423,7 +11616,7 @@ function renderStats(){
           <div id="hourPeopleList-${h}">${hourlyAvailablePeopleHTML(h)}</div>
         </div>` : ''}`;
       }).join('')}
-      <div class="hint">此數字已包含休假/事故、長期事故、補休、以及當天已排定的勤務。點任一小時列可展開看有空名單，並能搜尋姓名、篩選排組。</div>
+      <div class="hint">數字是那一小時有空的人（已扣掉休假/事故、長期事故、補休、在勤務上的人）；「勤」是那一小時在勤務上的人數（照實際時間：衛哨的 22-24 是前一天晚上、含 30 分鐘準備；前一天延續過來的勤務也算；掛名不算）。點任一小時列可展開看有空名單、在勤務上的人出什麼勤務，並能搜尋姓名、篩選排組。</div>
 `);
   const groupRankStatsHTML = collapsibleCardHTML('groupRankStats', '全部人員各排組人數（官/士/兵）', renderGroupRankStats() + groupTimelineSectionHTML(currentDate));
   const onDutyHTML = onDutyCardHTML();
@@ -11664,15 +11857,8 @@ function dayProgressSummary(date){
   });
   let miscFilled=0, miscTotal=0;
   (state.misc[date]||[]).forEach(m=>{
-    if(m.roles){
-      miscTotal += m.roles.length;
-      miscFilled += m.personIds.filter((pid,i)=>pid || (m.lockedSlots&&m.lockedSlots[i])).length;
-    } else {
-      const n=(m.personIds||[]).filter(Boolean).length;
-      const preset=presetForEntry(m);
-      miscTotal += Math.max((preset&&preset.requiredCount)||1, n);
-      miscFilled += n;
-    }
+    const pr=miscEntryProgress(m, presetForEntry(m));
+    miscTotal += pr.total; miscFilled += pr.filled;
   });
   const pendingChanges = (state.dutyChanges[date]||[]).filter(ch=>ch.status!=='filled').length;
   return {catFilled, catTotal, otherCatFilled, otherCatTotal, miscFilled, miscTotal, pendingChanges};
@@ -11886,6 +12072,10 @@ function openSubstituteModal(source){
       <div class="row wrap" style="margin-bottom:8px">
         <div class="grow"><label>搜尋姓名</label><input type="text" id="subSearch" placeholder="輸入姓名關鍵字"></div>
       </div>
+      ${subCtx.kind==='misc' && subCtx.entry && subCtx.entry.standbyAnchor? '' : `<div class="card sub-support-box" style="padding:8px 10px;margin-bottom:10px">
+        <label for="subSupportName">🤝 由支援的人補（別單位的人，手打姓名；會佔這一格，自動排班不會再排人）</label>
+        <div class="row" style="gap:6px"><input type="text" id="subSupportName" class="grow" placeholder="例：王小明" value="${isSupportId(currentPersonId)? esc(supportNameOf(currentPersonId)) : ''}"><button class="ghost small" id="subSupportOk">支援補上</button></div>
+      </div>`}
       <div id="subList">
       ${[0,1,2,3,4].map(t=>{
         if(!grouped[t].length) return '';
@@ -11994,6 +12184,18 @@ function openSubstituteModal(source){
   modal.querySelectorAll('[data-sub-pick]').forEach(btn=>{
     btn.onclick=()=>pick(btn.dataset.subPick, Number(btn.dataset.subTier), results.find(x=>x.person.id===btn.dataset.subPick));
   });
+  const supOkBtn=document.getElementById('subSupportOk');
+  if(supOkBtn) supOkBtn.onclick=()=>{
+    const toks=supportTokens(document.getElementById('subSupportName').value);
+    if(!toks.length){ showAlert('請輸入支援人員的姓名。'); return; }
+    if(toks.length>1){ showAlert('這一格只能放一個人，一次只填一位支援人員的姓名（姓名中間不要空格）。'); return; }
+    const name=toks[0];
+    if(rosterNameClash([name]).length){ showAlert(`「${name}」是名冊上的人，請直接在下面的名單選他。`); return; }
+    const sid=supportIdOf(name);
+    if(sid===currentPersonId){ modal.remove(); return; }
+    if(excludeIds.includes(sid)){ showAlert(`${name} 已經排在這個項目的其他位置。`); return; }
+    pick(sid, 0, {person:{id:sid, name:personName(sid)}, blockers:[]});
+  };
 }
 /* if this exact slot currently holds someone who was placed there as a
    deliberate rule-breaking exception (tier-3 pick in 找補位), surface that
@@ -12133,6 +12335,13 @@ function renderSchedule(){
   document.getElementById('exportTextDiff').onclick=()=>openDiffImportModal(generateScheduleText(currentDate));
 }
 
+/* 文字班表一筆其他勤務的人員：由支援負責的寫支援說明，有支援說明的附在後面 */
+function exportPeopleText(m){
+  const sup=String(m.support||'').trim();
+  if(supportOnlyEntry(m)) return `由支援負責（${sup}）`;
+  const people=(m.personIds||[]).map(pid=>personName(pid)).join('、');
+  return sup? `${people}（支援：${sup}）` : people;
+}
 function generateScheduleText(date){
   const lines=[];
   lines.push('🌟衛哨勤務🌟');
@@ -12158,7 +12367,7 @@ function generateScheduleText(date){
   if(preplanExportEntries.length){
     lines.push('📥預排項目：');
     preplanExportEntries.forEach(m=>{
-      const people=m.personIds.map(pid=>personName(pid)).join('、');
+      const people=exportPeopleText(m);
       const timePart = m.start&&m.end? `（${m.start}-${m.end}）`:'';
       lines.push(`♦️${m.role}${timePart}：${people}`);
     });
@@ -12186,7 +12395,7 @@ function generateScheduleText(date){
       });
     } else {
       const m=item.ref;
-      const people=m.personIds.map(pid=>personName(pid)).join('、');
+      const people=exportPeopleText(m);
       const timePart = m.start&&m.end? `（${m.start}-${m.end}）`:'';
       lines.push(`♦️${m.role}${timePart}：${people}`);
     }
@@ -12354,9 +12563,11 @@ function categoryPriorityLabel(cat){
    誤抓、把彼此的拖曳搞亂）。 */
 function buildScheduleCardItems(){
   const dayMisc = state.misc[currentDate]||[];
-  const linkedRoleNames = new Set(state.dutyDefinitions.filter(d=>d.linkedPreplan).map(d=>d.name));
-  const preplanEntries = dayMisc.filter(m=>linkedRoleNames.has(m.role));
-  const manualEntries = dayMisc.filter(m=>!linkedRoleNames.has(m.role));
+  // v164：預排管的（每日預排的角色＋留守寫的子勤務）全部放「預排項目」
+  const planRoles = new Set([...planOwnedRoleSet(), ...state.dutyDefinitions.filter(d=>d.linkedPreplan).map(d=>d.name)]);
+  const isPlanItem = m=>isPlanOwnedEntry(m, planRoles);
+  const preplanEntries = dayMisc.filter(isPlanItem);
+  const manualEntries = dayMisc.filter(m=>!isPlanItem(m));
   const catItems = orderedCategories().map(cat=>({kind:'cat', cat, sortOrder:cat.sortOrder??999})).sort((a,b)=>a.sortOrder-b.sortOrder);
   const miscByRole = {};
   manualEntries.forEach(m=>{ if(!miscByRole[m.role]) miscByRole[m.role]=[]; miscByRole[m.role].push(m); });
@@ -12374,7 +12585,7 @@ function renderScheduleCards(){
   // 收合時不算（見collapsibleCardHTML的說明）
   const catInner = ()=>`<div id="scheduleCardsContainer">${catItems.map((item,i)=>renderCategoryCard(item.cat, i)).join('')}</div>`;
   const catHTML = collapsibleCardHTML('schedblock-sentry', `${ico('shield')}衛哨（${catItems.length}）`, catInner);
-  const preplanHTML = preplanEntries.length? renderPreplanBundleCard(preplanEntries) : '';
+  const preplanHTML = renderPreplanBundleCard(preplanEntries);
   const miscHTML = renderMiscBundleCard(miscRoleGroups);
   return catHTML + preplanHTML + miscHTML;
 }
@@ -12411,6 +12622,12 @@ function wireScheduleCardsDrag(){
       }
       saveState();
     };
+  });
+  document.querySelectorAll('[data-pp-day]').forEach(b=>{
+    b.onclick=(e)=>{ e.stopPropagation(); openPreplanDayEditor(b.dataset.ppDay, currentDate, ()=>render()); };
+  });
+  document.querySelectorAll('[data-pp-open]').forEach(b=>{
+    b.onclick=(e)=>{ e.stopPropagation(); openPreplanCalendar(b.dataset.ppOpen); };
   });
   const importBtn = document.getElementById('importDefaultMiscBtn');
   if(importBtn) importBtn.onclick=()=>{
@@ -12455,20 +12672,93 @@ function orderFixedSlotEntries(list){
     return (t && t.mode==='fixedSlots')? by[r].slice().sort((a,b)=>toMin(a.start||'00:00')-toMin(b.start||'00:00')) : by[r];
   });
 }
-function renderPreplanBundleCard(entries){
-  const byRole={};
-  entries.forEach(m=>{ if(!byRole[m.role]) byRole[m.role]=[]; byRole[m.role].push(m); });
-  // 查哨這種固定時段的，照一天裡的時間先後（00-02…22-24）列
-  Object.entries(byRole).forEach(([role,list])=>{
-    const t=planTypeByRole(role);
-    if(t && t.mode==='fixedSlots') list.sort((a,b)=>toMin(a.start||'00:00')-toMin(b.start||'00:00'));
+/* v164：照預排表（抽屜）的順序列出「每一種」預排：留守、休假暨事故大表固定
+   在最前面，其他照拖曳排好的順序。今天有項目的照常顯示（可以直接改）；沒
+   有的只佔一行，按「排這天」直接開那一天的預排。 */
+function preplanBundleTypes(){
+  const PINNED=['standby','leave'];
+  const all=orderedPreplanTypes();
+  return [...PINNED.map(k=>all.find(t=>t.key===k)).filter(Boolean), ...all.filter(t=>!PINNED.includes(t.key))];
+}
+function todayLeaveTableSummary(date){
+  const byCat={};
+  Object.entries((state.preplan||{}).leave||{}).forEach(([pid, cats])=>{
+    const p=state.personnel.find(x=>x.id===pid);
+    if(!p) return;
+    Object.entries(cats||{}).forEach(([cat, rec])=>{
+      if(!rec) return;
+      const part=(rec.partialTimes||{})[date];
+      let txt=null;
+      if((rec.dates||[]).includes(date)) txt=p.name;
+      else if(part && part.start && part.end) txt=`${p.name}（${part.start}-${part.end}）`;
+      if(txt) (byCat[cat]=byCat[cat]||[]).push(txt);
+    });
   });
-  const inner = Object.entries(byRole).map(([role,roleEntries])=>{
-    const preset = state.miscPresets.find(p=>p.role===role);
-    return renderMiscDutyCardInner(role, roleEntries, preset, false);
-  }).join('<div class="divider"></div>');
-  const innerWithHint = `<div class="hint" style="margin-bottom:8px">這些以預排為準（預排存檔就直接更新到這裡）。今天以後在這裡改，會問你要不要一起更新預排；不更新的話這次修改會取消。</div>${inner}`;
-  return collapsibleCardHTML('schedblock-preplan', `${ico('inbox')}預排項目（${entries.length}筆）`, innerWithHint);
+  return byCat;
+}
+function renderPreplanBundleCard(entries){
+  const date=currentDate, canPlan=date>=todayStr();
+  const slotSort=(role, list)=>{ const t=planTypeByRole(role); return (t && t.mode==='fixedSlots')? list.slice().sort((a,b)=>toMin(a.start||'00:00')-toMin(b.start||'00:00')) : list; };
+  const emptyRow=(t, msg, btn)=>`<div class="row pp-bundle-empty" data-pp-bundle-type="${esc(t.key)}"><span class="grow"><span class="pp-bundle-name">${t.icon} ${esc(t.name)}</span><span class="hint">：${msg}</span></span>${btn||''}</div>`;
+  const planDayBtn=t=>canPlan? `<button class="ghost small" data-pp-day="${esc(t.key)}">排這天</button>` : '';
+  const openBtn=(t, label)=>`<button class="ghost small" data-pp-open="${esc(t.key)}">${label}</button>`;
+  const sections=[];
+  const used=new Set();
+  preplanBundleTypes().forEach(t=>{
+    if(t.mode==='standby'){
+      const blocks=Object.entries((state.preplan||{}).standby||{}).filter(([,p])=>standbySubActive(p, date));
+      const sb=entries.filter(m=>m.standbyAnchor);
+      sb.forEach(m=>used.add(m));
+      if(!blocks.length && !sb.length){ sections.push(emptyRow(t, '今天不在留守期間', openBtn(t,'打開留守'))); return; }
+      const head=blocks.map(([,p])=>`${shortDateLabel(p.startDate)}～${shortDateLabel(p.endDate)}，留守 ${(p.personIds||[]).length} 人`).join('；');
+      const order=[];
+      blocks.forEach(([,p])=>Object.keys(p.subDuties||{}).forEach(r=>{ if(!order.includes(r)) order.push(r); }));
+      const byRole={};
+      sb.forEach(m=>{ (byRole[m.role]=byRole[m.role]||[]).push(m); if(!order.includes(m.role)) order.push(m.role); });
+      const inner=order.filter(r=>byRole[r]).map(r=>renderMiscDutyCardInner(r, slotSort(r, byRole[r]), state.miscPresets.find(p=>p.role===r), false, {cardKey:'ppcard-standby-'+r})).join('<div class="divider"></div>');
+      sections.push(`<div class="pp-bundle-section" data-pp-bundle-type="standby"><div class="row" style="align-items:center;margin-bottom:6px"><span class="grow"><b>${t.icon} ${esc(t.name)}</b> <span class="hint">${esc(head)}</span></span>${openBtn(t,'打開留守')}</div>${inner || '<div class="hint">今天沒有留守子勤務。</div>'}</div>`);
+      return;
+    }
+    if(t.mode==='leaveTable'){
+      const byCat=todayLeaveTableSummary(date);
+      const cats=Object.keys(byCat);
+      if(!cats.length){ sections.push(emptyRow(t, '今天沒有人', openBtn(t,'打開大表'))); return; }
+      const n=cats.reduce((k,c)=>k+byCat[c].length,0);
+      sections.push(`<div class="pp-bundle-section" data-pp-bundle-type="leave"><div class="row" style="align-items:center;margin-bottom:4px"><span class="grow"><b>${t.icon} ${esc(t.name)}</b> <span class="hint">今天 ${n} 人</span></span>${openBtn(t,'打開大表')}</div>${cats.map(c=>byCat[c].length<=8
+        ? `<div class="hint">${esc(c)}：${esc(byCat[c].join('、'))}</div>`
+        : `<details class="hint pp-leave-more"><summary>${esc(c)} ${byCat[c].length} 人（點開看名單）</summary>${esc(byCat[c].join('、'))}</details>`).join('')}</div>`);
+      return;
+    }
+    const role=planRoleName(t);
+    const own=entries.filter(m=>m.role===role && !m.standbyAnchor);
+    own.forEach(m=>used.add(m));
+    if(own.length){
+      const btn=canPlan? `<button class="ghost small" data-pp-day="${esc(t.key)}">📅 預排</button>` : '';
+      sections.push(`<div class="pp-bundle-section" data-pp-bundle-type="${esc(t.key)}">${renderMiscDutyCardInner(role, slotSort(role, own), state.miscPresets.find(p=>p.role===role), false, {icon:t.icon, extraButtons:btn})}</div>`);
+      return;
+    }
+    const cover=standbyCoverFor(role, date);
+    if(cover.whole) sections.push(emptyRow(t, '今天由留守表排（見上面留守）'));
+    else {
+      const plan=preplanFor(t.key, date);
+      // 今天這一種沒有項目的原因：留守表接手了某幾班／輪到別的單位／由支援負責
+      const parts=[];
+      if(cover.times.size) parts.push(`${[...cover.times].map(x=>x.replace(/:00/g,'')).join('、')} 由留守表排（見上面留守）`);
+      const others=(plan && t.mode==='fixedSlots')? [...new Set(Object.values(plan.slots||{}).map(otherUnitOfSlot).filter(Boolean))] : [];
+      if(others.length) parts.push(`${parts.length? '其他時段' : '今天'}輪到其他單位（${esc(others.join('、'))}）`);
+      if(!parts.length){
+        const sup=plan? String(plan.support||'').trim() : '';
+        parts.push(!plan? (canPlan? '今天沒有預排' : '這天沒有預排') : sup? `由支援負責（${esc(sup)}）` : '預排上沒有要我們排的人');
+      }
+      sections.push(emptyRow(t, parts.join('；'), canPlan? `<button class="ghost small" data-pp-day="${esc(t.key)}">${plan? '看預排' : '排這天'}</button>` : ''));
+    }
+  });
+  // 連結到預排、但不屬於任何一種預排的角色（舊資料）放最後
+  const rest={};
+  entries.filter(m=>!used.has(m)).forEach(m=>{ (rest[m.role]=rest[m.role]||[]).push(m); });
+  Object.entries(rest).forEach(([role, list])=>sections.push(`<div class="pp-bundle-section">${renderMiscDutyCardInner(role, list, state.miscPresets.find(p=>p.role===role), false)}</div>`));
+  const innerWithHint = `<div class="hint" style="margin-bottom:8px">照預排表的順序列出每一種預排。這些以預排為準（預排存檔就直接更新到這裡）；今天以後在這裡改，會問你要不要一起更新預排，不更新的話這次修改會取消。</div>${sections.join('<div class="divider"></div>')}`;
+  return collapsibleCardHTML('schedblock-preplan', `${ico('inbox')}預排項目${entries.length? `（${entries.length}筆）`:''}`, innerWithHint);
 }
 /* 排班分頁第3區塊——其他勤務彙整卡（減法思維）：按「匯入預設」把「勤務
    設定」裡定義好的項目一次帶進今天，人選留空；不需要的項目當天直接刪
@@ -12488,16 +12778,15 @@ function renderMiscBundleCard(roleGroups){
    卡也可以重用同一份渲染邏輯，不用重複一次。standalone=true 才會在標題
    加上這張卡自己的拖曳把手；集中卡裡面的每個角色小節不需要各自的把手，
    拖曳是整張集中卡一起動。 */
-function renderMiscDutyCardInner(role, entries, preset, standalone){
-  const miscFilled = entries.reduce((n,m)=>n+(m.roles? m.personIds.filter((pid,i)=>pid||(m.lockedSlots&&m.lockedSlots[i])).length : (m.personIds||[]).filter(Boolean).length),0);
-  // freeform entries' target is the preset's 需求人數 (default 1) — previously
-  // this used however many were already filled as its own "total", so the
-  // progress readout could never show a shortfall for a freeform item
-  const miscTotal = entries.reduce((n,m)=>n+(m.roles? m.roles.length : Math.max(preset&&preset.requiredCount||1,(m.personIds||[]).filter(Boolean).length)),0);
+function renderMiscDutyCardInner(role, entries, preset, standalone, opts){
+  opts=opts||{};
+  // freeform entries' target is the preset's 需求人數 (default 1)；由支援負責的整筆算排滿
+  const miscFilled = entries.reduce((n,m)=>n+miscEntryProgress(m, preset).filled,0);
+  const miscTotal = entries.reduce((n,m)=>n+miscEntryProgress(m, preset).total,0);
   const miscShort = miscFilled<miscTotal;
   const handle = standalone? `<span data-drag-handle style="cursor:grab;padding-right:6px;color:var(--dim)">⠿</span>` : '';
-  const title = `${handle}${esc(role)}<span class="stat${miscShort?' short':''}" title="已排 ${miscFilled}/${miscTotal}">${miscFilled}/${miscTotal}</span>`;
-  const extraButtons = preset? `<label style="display:flex;align-items:center;gap:3px;font-size:11px"><input type="checkbox" class="card-exclude-cb" data-exclude-kind="misc" data-exclude-id="${esc(role)}" style="width:auto" ${preset.excludeFromExport?'checked':''}>不匯出</label><button class="ghost small" data-edit-misc-preset="${esc(role)}">設定</button><button class="ghost small" data-clear-misc-preset="${esc(role)}">清除</button><button class="ghost small danger" data-del-misc-preset="${esc(role)}">刪除此項目</button>` : '';
+  const title = `${handle}${opts.icon? opts.icon+' ':''}${esc(role)}<span class="stat${miscShort?' short':''}" title="已排 ${miscFilled}/${miscTotal}">${miscFilled}/${miscTotal}</span>`;
+  const extraButtons = (opts.extraButtons||'') + (preset? `<label style="display:flex;align-items:center;gap:3px;font-size:11px"><input type="checkbox" class="card-exclude-cb" data-exclude-kind="misc" data-exclude-id="${esc(role)}" style="width:auto" ${preset.excludeFromExport?'checked':''}>不匯出</label><button class="ghost small" data-edit-misc-preset="${esc(role)}">設定</button><button class="ghost small" data-clear-misc-preset="${esc(role)}">清除</button><button class="ghost small danger" data-del-misc-preset="${esc(role)}">刪除此項目</button>` : '');
   const inner = entries.map(m=>{
     if(m.id===miscInlineEditId) return miscEntryEditorHTML(m);
     const issues = validateMiscEntry(m);
@@ -12506,11 +12795,11 @@ function renderMiscDutyCardInner(role, entries, preset, standalone){
       ? m.roles.map((r,i)=>{
           const pid=m.personIds[i];
           const sub = `<button class="ghost small" data-find-sub-misc="${m.id}" data-find-sub-idx="${i}" title="找補位">🔍</button>`;
-          return `${r}：${pid? esc(personName(pid))+nominalTag(pid)+` <button class="ghost small" data-duty-change="${pid}" title="臨時異動">⚡</button>`+sub : ((m.lockedSlots&&m.lockedSlots[i])? '🔒保留空白':'（未指派）'+sub)}`;
+          return `${r}：${pid? esc(personName(pid))+nominalTag(pid)+(isSupportId(pid)? '' : ` <button class="ghost small" data-duty-change="${pid}" title="臨時異動">⚡</button>`)+sub : ((m.lockedSlots&&m.lockedSlots[i])? '🔒保留空白':(supportOnlyEntry(m)? '（由支援負責）' : '（未指派）')+sub)}`;
         }).join('　')
       : ((m.personIds||[]).filter(Boolean).length
-          ? m.personIds.map((pid,i)=>pid? `${esc(personName(pid))}${nominalTag(pid)} <button class="ghost small" data-duty-change="${pid}" title="臨時異動">⚡</button><button class="ghost small" data-find-sub-misc="${m.id}" data-find-sub-idx="${i}" title="找補位">🔍</button>`:'').filter(Boolean).join('、')
-          : `（未指派）<button class="ghost small" data-find-sub-misc="${m.id}" data-find-sub-idx="0" title="找補位">🔍</button>`);
+          ? m.personIds.map((pid,i)=>pid? `${esc(personName(pid))}${nominalTag(pid)}${isSupportId(pid)? '' : ` <button class="ghost small" data-duty-change="${pid}" title="臨時異動">⚡</button>`}<button class="ghost small" data-find-sub-misc="${m.id}" data-find-sub-idx="${i}" title="找補位">🔍</button>`:'').filter(Boolean).join('、')
+          : (supportOnlyEntry(m)? `（由支援負責）<button class="ghost small" data-find-sub-misc="${m.id}" data-find-sub-idx="0" title="找補位">🔍</button>` : `（未指派）<button class="ghost small" data-find-sub-misc="${m.id}" data-find-sub-idx="0" title="找補位">🔍</button>`));
     return `
       <div class="list-item" style="flex-direction:column;align-items:stretch">
         <div class="row">
@@ -12527,7 +12816,7 @@ function renderMiscDutyCardInner(role, entries, preset, standalone){
       </div>`;
   }).join('');
   // 跟衛哨類別卡一樣，設定/清除/刪除等按鈕放進展開後的內容最上面
-  return collapsibleCardHTML('misccard-'+role, title, (extraButtons? `<div class="card-toolbar">${extraButtons}</div>` : '') + inner);
+  return collapsibleCardHTML(opts.cardKey||('misccard-'+role), title, (extraButtons? `<div class="card-toolbar">${extraButtons}</div>` : '') + inner);
 }
 /* explains WHY a shift is still short of its "最少需要幾位士官" requirement —
    distinguishes "nobody at all is available for the empty slots" from
@@ -12600,7 +12889,7 @@ function renderCategoryCard(cat, dragIdx){
     ${shifts.map(s=>{
       const assigned = dayAssign[s.id] || [];
       const timeLabel = s.label? s.label+'（'+s.start+'-'+s.end+'）' : (s.start+'-'+s.end);
-      const ncoCount = assigned.filter(pid=>pid && ['士官','軍官'].includes(rankCategory(personRank(pid)))).length;
+      const ncoCount = shiftNCOCount(assigned.slice(0, s.count));
       return `<div class="shift-row" data-shift="${s.id}">
         <div class="shift-head"><span class="shift-time">${esc(timeLabel)}</span><span class="muted">需 ${s.count} 人${s.restUntil? '・補休至'+s.restUntil:''}</span></div>
         ${s.minNCO? minNCOStatusHTML(cat, s, currentDate, assigned, ncoCount) : ''}
@@ -12611,9 +12900,10 @@ function renderCategoryCard(cat, dragIdx){
             <div class="row" style="gap:4px">
               <select data-assign-cat="${cat.id}" data-assign-shift="${s.id}" data-assign-idx="${idx}" class="grow">
                 <option value="">（未排）</option>
+                ${isSupportId(pid)? `<option value="${esc(pid)}" selected>${esc(personName(pid))}</option>` : ''}
                 ${assignableOptions(cat, s, pid, idx)}
               </select>
-              ${pid? `<button class="ghost small" data-duty-change="${pid}" title="臨時異動">⚡</button>`:''}
+              ${pid && !isSupportId(pid)? `<button class="ghost small" data-duty-change="${pid}" title="臨時異動">⚡</button>`:''}
               <button class="ghost small" data-find-sub-cat="${cat.id}" data-find-sub-shift="${s.id}" data-find-sub-idx="${idx}" title="找補位">🔍</button>
             </div>
             ${pid? ruleFlagsHTML(currentDate, catSlotSubject(cat.id, s.id, idx), pid) : ''}
@@ -13694,6 +13984,9 @@ function miscEntryEditorHTML(m){
       <div id="inlineMiscPeopleList-${m.id}" style="max-height:260px;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:8px;margin-bottom:8px">
         ${inlineMiscPeopleListHTML(m, '')}
       </div>
+      ${m.standbyAnchor? '' : `<div class="row wrap" style="margin-bottom:8px">
+        <div class="grow"><label>支援人員（別單位的人，手打姓名，多人用「、」分開；會佔名額，自動排班不會再補人）</label><input type="text" id="inlineSupportPeople-${m.id}" value="${esc((m.personIds||[]).filter(isSupportId).map(supportNameOf).join('、'))}" placeholder="例：王小明"></div>
+      </div>`}
       <label style="display:flex;align-items:center;gap:6px;font-size:13px;margin-bottom:8px">
         <input type="checkbox" id="inlineSkipAutoFill-${m.id}" style="width:auto" ${m.skipAutoFill?'checked':''}> 🔒此項目本次不自動排人
       </label>
@@ -13767,7 +14060,7 @@ function rolePickerHTML(idPrefix, selectedId, reasonsFn){
     return groupIndex(a.group)-groupIndex(b.group) || rankIndex(a.rank)-rankIndex(b.rank);
   });
   return `
-    <input type="hidden" id="${idPrefix}" value="${selectedId||''}">
+    <input type="hidden" id="${idPrefix}" value="${esc(selectedId||'')}">
     <input type="text" class="role-picker-search" data-role-picker-search="${idPrefix}" placeholder="輸入姓名關鍵字" style="margin-bottom:6px">
     <div class="role-picker-list" id="${idPrefix}-list" style="max-height:220px;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:8px">
       ${rolePickerRows(idPrefix, list, selectedId, reasonsFn)}
@@ -13777,8 +14070,12 @@ function rolePickerRows(idPrefix, list, selectedId, reasonsFn){
   const optOut = `<label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0">
       <input type="radio" name="${idPrefix}-radio" class="role-picker-radio" data-role-picker="${idPrefix}" value="" ${!selectedId?'checked':''} style="width:auto"> （未指派）
     </label>`;
-  if(!list.length) return optOut + `<div class="empty">找不到符合的人員</div>`;
-  return optOut + list.map(p=>{
+  // 這一格目前是支援的人（別單位）：列在最上面、保持選取
+  const supRow = isSupportId(selectedId)? `<label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0">
+      <input type="radio" name="${idPrefix}-radio" class="role-picker-radio" data-role-picker="${idPrefix}" value="${esc(selectedId)}" checked style="width:auto"> ${esc(personName(selectedId))}
+    </label>` : '';
+  if(!list.length) return optOut + supRow + `<div class="empty">找不到符合的人員</div>`;
+  return optOut + supRow + list.map(p=>{
     const reasons = reasonsFn(p);
     return `<label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0">
       <input type="radio" name="${idPrefix}-radio" class="role-picker-radio" data-role-picker="${idPrefix}" value="${p.id}" ${p.id===selectedId?'checked':''} style="width:auto">
@@ -13898,7 +14195,12 @@ function wireMiscInlineEditors(){
           return cb? cb.checked : false;
         });
       } else {
-        vals.personIds = [...document.querySelectorAll('.inline-misc-person-cb:checked')].map(cb=>cb.value);
+        const supEl=document.getElementById('inlineSupportPeople-'+id);
+        const supNames = supEl? [...new Set(supportTokens(supEl.value))] : (m0.personIds||[]).filter(isSupportId).map(supportNameOf);
+        const clash = rosterNameClash(supNames.filter(n=>!(m0.personIds||[]).includes(supportIdOf(n))));
+        if(clash.length){ showAlert(`「${clash.join('、')}」是名冊上的人，請直接在上面的名單勾選，不要打在支援人員。`); return; }
+        const supIds = supNames.map(supportIdOf);
+        vals.personIds = [...[...document.querySelectorAll('.inline-misc-person-cb:checked')].map(cb=>cb.value), ...supIds];
         const skipCb=document.getElementById('inlineSkipAutoFill-'+id);
         vals.skipAutoFill = skipCb? skipCb.checked : false;
       }
