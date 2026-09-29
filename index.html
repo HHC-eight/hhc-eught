@@ -96,6 +96,9 @@ svg.i.fill{fill:currentColor;stroke:none;}
 .unit-banner .icon-btn{background:var(--banner-btn);color:var(--banner-ink);width:38px;height:38px;}
 .unit-banner-titles{overflow:hidden;}
 @media (max-width:380px){.unit-banner .icon-btn{width:34px;height:34px;border-radius:10px;}.banner-side{gap:3px;}.unit-banner-center{gap:7px;}.unit-banner-badge{width:26px;height:26px;}.unit-banner-text{font-size:13px;letter-spacing:.04em;}}
+/* v166：小螢幕（例如 iPhone SE 1 代 320 寬）單位名稱不能被切成「…」：縮小間距、字距，再不夠就收起星星徽章 */
+@media (max-width:359px){.unit-banner{padding-left:8px;padding-right:8px;}.unit-banner-row1{gap:4px;}.unit-banner .icon-btn{width:32px;height:32px;}.banner-side{gap:2px;}.unit-banner-center{gap:5px;}.unit-banner-badge{width:22px;height:22px;}.unit-banner-badge svg.i{width:13px;height:13px;}.unit-banner-text{font-size:12.5px;letter-spacing:0;}.unit-banner h1#pageTitle{letter-spacing:.02em;}}
+@media (max-width:299px){.unit-banner-badge{display:none;}}
 .unit-banner .icon-btn:disabled{opacity:.3;}
 #storageWarnBar{background:var(--danger) !important;color:#fff !important;border-radius:10px !important;}
 
@@ -141,8 +144,14 @@ svg.i.fill{fill:currentColor;stroke:none;}
 .row{display:flex;gap:8px;align-items:center;}
 .row.wrap{flex-wrap:wrap;}
 .grow{flex:1;min-width:0;}
+/* v166：會換行的列裡，每個欄位至少要有一定寬度——放不下就換到下一行，不要把欄位擠到字都看不到 */
+.row.wrap>.grow{flex:1 1 9em;}
+input[type=date]{min-width:9.5em;}
+button,h2,h3,h4,label,.tag{text-wrap:balance;}
+/* v166：標題只在標點、空白、括號前後換行，不把一個詞從中間拆開（例如「值\n星」）；真的放不下才任意斷 */
+h2,h3,h4,button{word-break:keep-all;overflow-wrap:anywhere;}
 .section-title{display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px;margin-bottom:0;min-height:26px;}
-.section-title h2,.section-title h3{margin:0;flex:1 1 auto;min-width:0;line-height:1.45;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.section-title h2,.section-title h3{margin:0;flex:1 1 10em;min-width:0;line-height:1.4;white-space:normal;overflow-wrap:anywhere;text-wrap:balance;}
 .section-title h2 svg.i{color:var(--accent-text);margin-right:6px;}
 .section-title>.row,.section-title>button{flex-shrink:0;margin-left:auto;}
 .section-title[data-collapse-row]{cursor:pointer;}
@@ -211,8 +220,9 @@ input[type=checkbox]{width:22px !important;height:22px !important;min-width:22px
 input[type=radio]{accent-color:var(--accent);width:18px;height:18px;}
 textarea{min-height:50px;resize:vertical;line-height:1.5;}
 ::placeholder{color:var(--dim);opacity:.75;}
-.time-select-pair{display:inline-flex;align-items:center;gap:3px;width:100%;}
-.time-select-pair select{width:auto;flex:1;min-width:0;}
+.time-select-pair{display:inline-flex;align-items:center;gap:3px;width:100%;min-width:132px;}
+/* v166：時間下拉不能被擠到看不到數字（以前 min-width:0，三個並排時 14 只剩 1） */
+.time-select-pair select{width:auto;flex:1 1 0;min-width:60px;padding-left:10px;padding-right:24px;background-position:calc(100% - 14px) 52%,calc(100% - 9px) 52%;}
 .time-select-colon{color:var(--dim);font-weight:700;}
 
 /* ---------------- 班次（時間軸） ---------------- */
@@ -278,6 +288,10 @@ select[data-assign-cat]:has(option[value=""]:checked){background-color:var(--war
 .hr-table{width:100%;border-collapse:collapse;font-size:12.5px;}
 .hr-table td,.hr-table th{padding:5px 3px;text-align:center;border-bottom:1px solid var(--line);}
 .hr-table th{color:var(--dim);font-weight:700;}
+/* v166：官/士/兵 每一段不拆開，要換行只在段與段之間；排組名稱不斷字 */
+.rk-part{white-space:nowrap;display:inline-block;}
+.nw{white-space:nowrap;}
+.hr-table td:first-child,.hr-table th:first-child{white-space:nowrap;}
 /* 每時段空閒人數：長條上面還疊著「官/士/兵」的小字，所以長條用淺色，字才讀得到 */
 .bar-wrap{background:var(--panel2);border-radius:7px;overflow:hidden;height:20px;position:relative;box-shadow:inset 0 0 0 1px var(--line);}
 .bar-fill{background:var(--bar-fill);height:100%;border-radius:7px 0 0 7px;box-shadow:inset -2px 0 0 var(--accent);}
@@ -317,9 +331,11 @@ select[data-assign-cat]:has(option[value=""]:checked){background-color:var(--war
 .dialog-box h2{font-size:17px;}
 
 /* ---------------- 月曆 ---------------- */
-.cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:4px;}
+.cal-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:4px;}
 .cal-head{text-align:center;font-size:12px;font-weight:700;color:var(--dim);padding:2px 0;}
-.cal-cell{aspect-ratio:1;border:1.5px solid transparent;border-radius:10px;background:var(--panel);display:flex;flex-direction:column;align-items:center;justify-content:flex-start;padding:3px 2px;cursor:pointer;overflow:hidden;box-shadow:inset 0 0 0 1px var(--line);}
+.cal-cell{aspect-ratio:1;width:100%;min-width:0;min-height:auto;border:1.5px solid transparent;border-radius:10px;background:var(--panel);display:flex;flex-direction:column;align-items:center;justify-content:flex-start;padding:3px 2px;cursor:pointer;overflow:visible;box-shadow:inset 0 0 0 1px var(--line);}
+/* v166：格子裡的字太多時格子長高，不把字切掉 */
+.cal-grid{align-items:stretch;}
 .cal-cell.empty{border:none;background:transparent;box-shadow:none;cursor:default;}
 .cal-cell.has{border-color:var(--accent);background:var(--accent-soft);box-shadow:none;}
 .cal-cell.standby-marked{border-color:var(--ok);background:var(--ok-soft);box-shadow:none;}
@@ -333,6 +349,8 @@ select[data-assign-cat]:has(option[value=""]:checked){background-color:var(--war
 .cal-day{font-size:12px;font-weight:700;color:var(--dim);line-height:1.2;}
 .cal-mark{font-size:10px;font-weight:600;color:var(--accent-text);line-height:1.15;text-align:center;word-break:break-all;}
 .cal-mark-outside{color:var(--warn);font-style:italic;}
+.cal-mark .cm-line{display:block;}
+.cal-mark .cm-sep{display:block;height:1px;margin:2px 3px;background:currentColor;opacity:.35;}
 </style>
 </head>
 <body>
@@ -347,7 +365,7 @@ select[data-assign-cat]:has(option[value=""]:checked){background-color:var(--war
       <span class="unit-banner-badge"><i data-ico="star"></i></span>
       <span class="unit-banner-titles">
         <span class="unit-banner-text">陸軍第八軍團 本部連</span>
-        <h1 id="pageTitle">衛哨排班系統 <span class="muted">v165</span></h1>
+        <h1 id="pageTitle">衛哨排班系統 <span class="muted">v166</span></h1>
       </span>
     </span>
     <span class="banner-side right">
@@ -723,6 +741,11 @@ function rankGenderBreakdown(people){
 function fmtRankBreakdown(bd){
   const f=(cat)=> `${bd[cat]}(${bd[cat+'女']})`;
   return `${f('軍官')}官${f('士官')}士${f('士兵')}兵`;
+}
+/* 表格裡用：每一段（例如 2(1)官）不拆開，換行只發生在段與段之間 */
+function fmtRankBreakdownHTML(bd){
+  const f=(cat,ch)=> `<span class="rk-part">${bd[cat]}(${bd[cat+'女']})${ch}</span>`;
+  return `${f('軍官','官')}${f('士官','士')}${f('士兵','兵')}`;
 }
 function rankOptionsHTML(selected){
   const groups=['軍官','士官','士兵'];
@@ -3279,7 +3302,7 @@ function openConflictDialog(date, conflicts, altInfo, nomOpts, h){
       <div class="hint" style="margin:8px 0">可以換人${nomOpts.length? '、把他在其他勤務上改成掛名':''}，或是忽略這一次（照排，只記錄有衝突）。</div>
       ${alts.length? `<h3 style="margin:8px 0 4px">換人</h3>`+alts.map((a,ai)=>`
         <div style="font-weight:600;margin:6px 0 4px">${esc(ctxLabel(a.ctx))}（符合規則 ${a.alts.length} 位）</div>
-        ${a.alts.slice(0,6).map(p=>`<div class="list-item"><span class="grow">${esc(p.name)}（${esc(p.group||'未分組')}·${esc(p.rank)}${personBadges(p)}）<br><span class="hint">${esc(personDutySummary(p.id, date).join('、')||'今天沒有其他任務')}</span></span><button class="primary small" data-cf-pick="${ai}|${p.id}">排他</button></div>`).join('')}
+        ${a.alts.slice(0,6).map(p=>`<div class="list-item"><span class="grow">${esc(p.name)}（<span class="nw">${esc(p.group||'未分組')}</span>·<span class="nw">${esc(p.rank)}</span>${personBadges(p)}）<br><span class="hint">${esc(personDutySummary(p.id, date).join('、')||'今天沒有其他任務')}</span></span><button class="primary small" data-cf-pick="${ai}|${p.id}">排他</button></div>`).join('')}
         ${a.alts.length>6? `<div class="hint">…還有 ${a.alts.length-6} 位</div>`:''}`).join('') : `<div class="hint">符合規則、可以換上來的人：0 位。</div>`}
       ${nominalButtonsHTML(nomOpts, 'data-cf-nom')}
       <h3 style="margin:10px 0 4px">忽略一次</h3>
@@ -3398,7 +3421,7 @@ function openRuleAlternativesDialog(date, serious, altInfo, retry, nom){
       <div class="hint" style="margin:8px 0">還有符合規則的人可以排，所以這一格不能破例。請改排下面的人：</div>
       ${altInfo.filter(a=>a.alts.length).map((a,ai)=>`
         <div style="font-weight:600;margin:6px 0 4px">${esc(ctxLabel(a.ctx))}（符合規則 ${a.alts.length} 位）</div>
-        ${a.alts.slice(0,12).map(p=>`<div class="list-item"><span class="grow">${esc(p.name)}（${esc(p.group||'未分組')}·${esc(p.rank)}${personBadges(p)}）<br><span class="hint">${esc(personDutySummary(p.id, date).join('、')||'今天沒有其他任務')}</span></span><button class="primary small" data-ra-pick="${ai}|${p.id}">排他</button></div>`).join('')}
+        ${a.alts.slice(0,12).map(p=>`<div class="list-item"><span class="grow">${esc(p.name)}（<span class="nw">${esc(p.group||'未分組')}</span>·<span class="nw">${esc(p.rank)}</span>${personBadges(p)}）<br><span class="hint">${esc(personDutySummary(p.id, date).join('、')||'今天沒有其他任務')}</span></span><button class="primary small" data-ra-pick="${ai}|${p.id}">排他</button></div>`).join('')}
         ${a.alts.length>12? `<div class="hint">…還有 ${a.alts.length-12} 位</div>`:''}`).join('')}
       ${nominalButtonsHTML(nom.opts||[], 'data-ra-nom')}
     </div>`;
@@ -3591,7 +3614,7 @@ function openRuleFixDialog(date, subject, pid, memberSig){
             ].join('')}</div>
         ${alts.filter(a=>a.alts.length).map((a,ai)=>`
           <div style="font-weight:600;margin:6px 0 4px">${a.pid? `把 ${esc(personName(a.pid))} 換成：` : ''}（${esc(ctxLabel(a.ctx))}）</div>
-          ${a.alts.slice(0,8).map(p=>`<div class="list-item"><span class="grow">${esc(p.name)}（${esc(p.group||'未分組')}·${esc(p.rank)}${personBadges(p)}）<br><span class="hint">${esc(personDutySummary(p.id, date).join('、')||'今天沒有其他任務')}</span></span><button class="primary small" data-rf-swap="${alts.indexOf(a)}|${p.id}">換他</button></div>`).join('')}
+          ${a.alts.slice(0,8).map(p=>`<div class="list-item"><span class="grow">${esc(p.name)}（<span class="nw">${esc(p.group||'未分組')}</span>·<span class="nw">${esc(p.rank)}</span>${personBadges(p)}）<br><span class="hint">${esc(personDutySummary(p.id, date).join('、')||'今天沒有其他任務')}</span></span><button class="primary small" data-rf-swap="${alts.indexOf(a)}|${p.id}">換他</button></div>`).join('')}
           ${a.alts.length>8? `<div class="hint">…還有 ${a.alts.length-8} 位，可以用「找補位」看全部</div>`:''}`).join('')}
         ${!hardFacts.length && nomOpts.length? `<div class="divider"></div><div class="hint" style="margin-bottom:6px">掛名（不用真的出勤，這個問題就解掉）：</div>`+nomOpts.map((o,i)=>`<button class="ghost" data-rf-nom="${i}" style="width:100%;margin-bottom:6px;text-align:left">${esc(personName(o.pid))} 在「${esc(o.label)}」只掛名</button>`).join('') : ''}
         ${!hardFacts.length && conflicts.length? `<div class="divider"></div><button class="ghost" id="rfIgnore" style="width:100%">忽略一次：照排，只記錄有衝突</button>` : ''}
@@ -3668,7 +3691,7 @@ function openDayRuleIssuesModal(date){
     const facts=group(st.facts), open=group(st.open), covered=group(st.covered), rem=group(st.reminders);
     modal.innerHTML=`
       <div class="sheet-inner">
-        <div class="section-title"><h2 style="margin:0">${esc(minguoLabel(date))} 規則檢查</h2><button class="ghost small" id="riClose">關閉</button></div>
+        <div class="section-title"><h2 style="margin:0"><span class="nw">${esc(minguoLabel(date))}</span> 規則檢查</h2><button class="ghost small" id="riClose">關閉</button></div>
         <div class="hint" style="margin-bottom:8px">衝突（休假事故、同時段、補休、準備時間）可以換人、掛名，或忽略一次（只記錄有衝突）；已離退、同一人排兩格一定要換人；其他嚴重／一般規則破例要記原因（等級可以在右上角⚙️「我們的規則→規則等級」調整）；提醒不用記。</div>
         ${!facts.length && !open.length? `<div class="ok" style="margin-bottom:8px">✅ 沒有待處理的規則問題</div>`:''}
         ${facts.length? `<h3>⛔ 事實衝突（${facts.length}）</h3>${facts.map(vs=>itemHTML(vs, v=>`<button class="ghost small" data-ri-fix="${ruleFixToken(v)}">處理</button>`)).join('')}`:''}
@@ -4190,7 +4213,9 @@ function personName(id){ if(isSupportId(id)) return `${supportNameOf(id)}（支�
    dropdown/checkbox in the app, so qualifications are visible wherever
    you're picking someone regardless of which UI widget it's rendered in */
 function personBadges(p){
-  return `${p.license? '·🚗'+esc(p.license):''}${p.medCert? '·⛑️'+esc(p.medCert):''}${(p.skills&&p.skills.length)? '·🔧'+p.skills.map(esc).join('/'):''}`;
+  // v166：每個標記（🚗小型車、⛑️EMT-1、每一項專長）不從中間斷行，要換行只在「·」「/」之間
+  const nw=t=>`<span class="nw">${t}</span>`;
+  return `${p.license? '·'+nw('🚗'+esc(p.license)):''}${p.medCert? '·'+nw('⛑️'+esc(p.medCert)):''}${(p.skills&&p.skills.length)? '·'+p.skills.map((k,i)=>nw((i?'':'🔧')+esc(k))).join('/'):''}`;
 }
 /* for the ad-hoc "who's free right now, and for how long" query: steps forward
    in 15-minute increments from queryMin until the person becomes unavailable
@@ -4875,7 +4900,7 @@ function openDatePickerModal(){
     <div class="dialog-box" style="background:var(--panel);max-width:320px;width:100%;border-radius:10px;padding:16px;border:1px solid var(--line);">
       <h2 style="margin:0 0 10px">選擇日期（民國）</h2>
       <div class="row wrap" style="margin-bottom:12px">
-        <div class="grow"><label>年</label><select id="dpYear">${yearOpts.map(yy=>`<option value="${yy}" ${yy===minguoYear?'selected':''}>民國${yy}年</option>`).join('')}</select></div>
+        <div class="grow"><label>年（民國）</label><select id="dpYear">${yearOpts.map(yy=>`<option value="${yy}" ${yy===minguoYear?'selected':''}>${yy}年</option>`).join('')}</select></div>
         <div class="grow"><label>月</label><select id="dpMonth">${Array.from({length:12},(_,i)=>i+1).map(mm=>`<option value="${mm}" ${mm===m?'selected':''}>${mm}月</option>`).join('')}</select></div>
         <div class="grow"><label>日</label><select id="dpDay">${Array.from({length:daysInMonth(minguoYear,m)},(_,i)=>i+1).map(dd=>`<option value="${dd}" ${dd===d?'selected':''}>${dd}日</option>`).join('')}</select></div>
       </div>
@@ -4926,7 +4951,7 @@ function openHolidayDateModal(onDone){
     <div class="dialog-box" style="background:var(--panel);max-width:320px;width:100%;border-radius:10px;padding:16px;border:1px solid var(--line);">
       <h2 style="margin:0 0 10px">新增國定假日（民國）</h2>
       <div class="row wrap" style="margin-bottom:12px">
-        <div class="grow"><label>年</label><select id="hdYear">${yearOpts.map(yy=>`<option value="${yy}" ${yy===minguoYear?'selected':''}>民國${yy}年</option>`).join('')}</select></div>
+        <div class="grow"><label>年（民國）</label><select id="hdYear">${yearOpts.map(yy=>`<option value="${yy}" ${yy===minguoYear?'selected':''}>${yy}年</option>`).join('')}</select></div>
         <div class="grow"><label>月</label><select id="hdMonth">${Array.from({length:12},(_,i)=>i+1).map(mm=>`<option value="${mm}" ${mm===m?'selected':''}>${mm}月</option>`).join('')}</select></div>
         <div class="grow"><label>日</label><select id="hdDay">${Array.from({length:daysInMonth(minguoYear,m)},(_,i)=>i+1).map(dd=>`<option value="${dd}" ${dd===d?'selected':''}>${dd}日</option>`).join('')}</select></div>
       </div>
@@ -6063,6 +6088,11 @@ function peopleGroupsOf(plan){
   if((plan.personIds && plan.personIds.length) || plan.note || plan.support) return [plan];
   return [];
 }
+/* v166：月曆格子很窄，名字一個一行（不從名字中間斷開），多組之間畫一條線 */
+function calMarkLinesHTML(mark){
+  if(!mark) return '';
+  return String(mark).split('｜').map(g=>g.split('･').map(x=>`<span class="cm-line">${x}</span>`).join('')).join('<span class="cm-sep"></span>');
+}
 function preplanCellMark(type, plan){
   if(!plan) return '';
   const nm = id=>{ const p=state.personnel.find(x=>x.id===id); return p? p.name : ''; };
@@ -6614,7 +6644,7 @@ function openPatrolRangeModal(onDone){
         ${state.personnel.slice().sort((a,b)=>groupIndex(a.group)-groupIndex(b.group)||rankIndex(a.rank)-rankIndex(b.rank)).map(p=>`
           <label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0">
             <input type="checkbox" class="pr-person-cb" value="${p.id}" data-group="${esc(p.group||'__none')}" style="width:auto" ${isChecked(p.id)?'checked':''}>
-            ${esc(p.name)}（${p.group||'未分組'}·${p.rank}）
+            <span class="grow">${esc(p.name)}（<span class="nw">${esc(p.group||'未分組')}</span>·<span class="nw">${esc(p.rank)}</span>）</span>
           </label>`).join('')}
       </div>
       <button class="primary" id="prSave" style="width:100%;margin-top:10px">儲存</button>
@@ -6693,11 +6723,12 @@ function openPatrolAnchorModal(onDone){
       <div class="row wrap" style="margin-bottom:8px">
         <div class="grow"><label>序列</label>
           <select id="paSeqType">
-            <option value="weekday">平日序列（目前基準：${cfg.anchorWeekday.date} ${slotLabels[cfg.anchorWeekday.slotIdx]} ＝ ${esc(cfg.weekdayUnits[cfg.anchorWeekday.unitIndex])}）</option>
-            <option value="holiday">假日序列（目前基準：${cfg.anchorHoliday.date} ${slotLabels[cfg.anchorHoliday.slotIdx]} ＝ ${esc(cfg.holidayUnits[cfg.anchorHoliday.unitIndex])}）</option>
+            <option value="weekday">平日序列</option>
+            <option value="holiday">假日序列</option>
           </select>
         </div>
       </div>
+      <div class="hint" style="margin:-2px 0 8px">目前基準：平日 ${shortDateLabel(cfg.anchorWeekday.date)} ${slotLabels[cfg.anchorWeekday.slotIdx].replace(/:00/g,'')}＝${esc(cfg.weekdayUnits[cfg.anchorWeekday.unitIndex])}；假日 ${shortDateLabel(cfg.anchorHoliday.date)} ${slotLabels[cfg.anchorHoliday.slotIdx].replace(/:00/g,'')}＝${esc(cfg.holidayUnits[cfg.anchorHoliday.unitIndex])}</div>
       <div class="row wrap" style="margin-bottom:8px">
         <div class="grow"><label>日期</label><input type="date" id="paDate" value="${todayStr()}"></div>
         <div class="grow"><label>時段</label>
@@ -6770,7 +6801,7 @@ function openDutyRangeFillModal(onDone){
     if(pd && (pd.ranks||[]).length && !pd.ranks.includes(p.rank)) r.push(`${pd.name}需為${pd.ranks.join('或')}`);
     return r;
   };
-  const row=(p, input, reasons)=>`<label style="display:flex;align-items:flex-start;gap:6px;font-size:13px;padding:6px 0;border-bottom:1px solid var(--line);${reasons.length?'opacity:.6':''}">${input}<span class="grow">${esc(p.name)}（${p.group||'未分組'}·${p.rank}${personBadges(p)}）${reasons.length? `<br><span class="warn" style="font-size:11px">🚫${esc(reasons.join('・'))}</span>`:''}</span></label>`;
+  const row=(p, input, reasons)=>`<label style="display:flex;align-items:flex-start;gap:6px;font-size:13px;padding:6px 0;border-bottom:1px solid var(--line);${reasons.length?'opacity:.6':''}">${input}<span class="grow">${esc(p.name)}（<span class="nw">${esc(p.group||'未分組')}</span>·<span class="nw">${esc(p.rank)}</span>${personBadges(p)}）${reasons.length? `<br><span class="warn" style="font-size:11px">🚫${esc(reasons.join('・'))}</span>`:''}</span></label>`;
   const pickers = pos? pos.map((pd,pi)=>{
     const rf=reasonsFor(pd);
     const list=pool.map(p=>({p, r:rf(p)})).sort((a,b)=>(a.r.length>0)-(b.r.length>0));
@@ -6913,7 +6944,7 @@ function openPreplanCalendar(key){
       const mark = owner? preplanCellMark(type, owner.plan) : '';
       const hol=isHolidayDate(ds);
       cells.push(`<div class="cal-cell ${mark?'has':''} ${hol?'holiday':''}" data-cal-date="${ds}" data-cal-anchor="${owner? owner.anchor : ds}">
-        <div class="cal-day">${d}</div><div class="cal-mark">${mark}</div>
+        <div class="cal-day">${d}</div><div class="cal-mark">${calMarkLinesHTML(mark)}</div>
       </div>`);
     }
     const plannedCount=Object.keys(state.preplan[key]||{}).filter(d=>d.startsWith(ym) && preplanCellMark(type, state.preplan[key][d])).length;
@@ -7065,11 +7096,11 @@ function openStandbyEditor(date, onSaved){
         <div class="grow"><label>例假日最後一天</label><input type="date" id="sbEndDate" value="${plan.endDate}"></div>
       </div>
       <div class="row wrap" style="margin-bottom:4px">
-        <div class="grow"><label>留守開始（${prevDateStr(plan.startDate)}）</label>${timeSelectHTML('sbStart', plan.startTime)}</div>
-        <div class="grow"><label>放假開始（${prevDateStr(plan.startDate)}）</label>${timeSelectHTML('sbLeave', plan.leaveStartTime)}</div>
-        <div class="grow"><label>結束（${nextDateStr(plan.endDate)}）</label>${timeSelectHTML('sbEnd', plan.endTime)}</div>
+        <div class="grow"><label>留守開始（${shortDateLabel(prevDateStr(plan.startDate))}）</label>${timeSelectHTML('sbStart', plan.startTime)}</div>
+        <div class="grow"><label>放假開始（${shortDateLabel(prevDateStr(plan.startDate))}）</label>${timeSelectHTML('sbLeave', plan.leaveStartTime)}</div>
+        <div class="grow"><label>結束（${shortDateLabel(nextDateStr(plan.endDate))}）</label>${timeSelectHTML('sbEnd', plan.endTime)}</div>
       </div>
-      <div class="hint" style="margin-bottom:10px">目前設定：留守 ${prevDateStr(plan.startDate)} ${plan.startTime} → ${nextDateStr(plan.endDate)} ${plan.endTime}；其餘人員 ${prevDateStr(plan.startDate)} ${plan.leaveStartTime} 起放假。</div>
+      <div class="hint" style="margin-bottom:10px">目前設定：留守 ${shortDateLabel(prevDateStr(plan.startDate))}（${weekdayLabel(prevDateStr(plan.startDate))}）${plan.startTime} → ${shortDateLabel(nextDateStr(plan.endDate))}（${weekdayLabel(nextDateStr(plan.endDate))}）${plan.endTime}；其餘人員 ${shortDateLabel(prevDateStr(plan.startDate))} ${plan.leaveStartTime} 起放假。</div>
       ${(()=>{ const notHol=blockDates.filter(d=>!isHolidayDate(d)); return notHol.length? `<div class="badge-issue" style="margin-bottom:10px">📅 ${notHol.map(shortDateLabel).join('、')} 在「假日設定」裡不是假日。留守期間「僅平日不可排」的人一律照假日算；但查哨的平日／假日輪值、外散宿還是照假日設定。如果這幾天是國定假日（例如中秋），建議設為假日。<button class="ghost small" id="sbMarkHoliday" style="margin-top:6px">把 ${notHol.map(shortDateLabel).join('、')} 設為假日</button></div>` : ''; })()}
       <div class="divider"></div>
       <div class="section-title"><h3 style="margin:0">留守名單（${staying.length}人）</h3><button class="ghost small" id="sbPickPeople">選擇人員</button></div>
@@ -7082,7 +7113,7 @@ function openStandbyEditor(date, onSaved){
           const leaveDates=((state.preplan.leave||{})[pid]||{}).dates||[];
           const clash=blockDates.filter(d=>leaveDates.includes(d));
           return `<div class="list-item" style="flex-direction:column;align-items:stretch">
-            <div class="row"><span class="grow">${esc(p.name)}（${p.group||'未分組'}·${p.rank}）</span>
+            <div class="row"><span class="grow">${esc(p.name)}（<span class="nw">${esc(p.group||'未分組')}</span>·<span class="nw">${esc(p.rank)}</span>）</span>
               <button class="ghost small danger" data-sb-remove="${pid}">移除</button></div>
             ${clash.length? `<div class="badge-issue">⚠️ 休假暨事故大表已排他 ${clash.length} 天休假（${clash.map(d=>minguoLabel(d)).join('、')}），跟留守衝突</div>`:''}
             ${(ov.start||ov.end)? `<div class="hint">個別調整：${ov.start? '留守至 '+ov.start : ''}${ov.end? ' ／ 提早於 '+ov.end+' 離營':''}</div>`:''}
@@ -7209,7 +7240,7 @@ function openStandbyPeoplePicker(plan, onDone){
           const skillIssues = skillIssuesOf(p);
           return `<label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0;${skillIssues.length?'opacity:.6':''}">
           <input type="checkbox" class="sp-person" value="${p.id}" style="width:auto" ${plan.personIds.includes(p.id)?'checked':''}>
-          ${esc(p.name)}（${p.group||'未分組'}·${p.rank}${personBadges(p)}）${clash.length? ` <span class="warn">🏖️已排休假${clash.length}天</span>`:''}${skillIssues.length? ` <span class="warn">🚫${esc(skillIssues.map(skillRequirementLabel).join('・'))}</span>`:''}
+          <span class="grow">${esc(p.name)}（<span class="nw">${esc(p.group||'未分組')}</span>·<span class="nw">${esc(p.rank)}</span>${personBadges(p)}）${clash.length? ` <span class="warn">🏖️已排休假${clash.length}天</span>`:''}${skillIssues.length? ` <span class="warn">🚫${esc(skillIssues.map(skillRequirementLabel).join('・'))}</span>`:''}</span>
         </label>`;}).join('')}
       </div>
       <button class="primary" id="spSave" style="width:100%">確定</button>
@@ -7430,7 +7461,7 @@ function openStandbySubDutyEditor(plan, role, d, onDone){
       const reasons=reasonsFn(p);
       return `<label style="display:flex;align-items:flex-start;gap:6px;font-size:13px;padding:6px 0;border-bottom:1px solid var(--line);${reasons.length?'opacity:.6':''}">
         <input type="radio" name="sd-role${i}" class="sd-role${i}" value="${p.id}" style="width:auto;margin-top:2px" ${p.id===selId?'checked':''}>
-        <span>${esc(p.name)}（${p.group||'未分組'}·${p.rank}${personBadges(p)}）${reasons.length? `<br><span class="warn" style="font-size:11px">🚫${esc(reasons.join('・'))}</span>`:''}</span>
+        <span>${esc(p.name)}（<span class="nw">${esc(p.group||'未分組')}</span>·<span class="nw">${esc(p.rank)}</span>${personBadges(p)}）${reasons.length? `<br><span class="warn" style="font-size:11px">🚫${esc(reasons.join('・'))}</span>`:''}</span>
       </label>`;
     }).join('');
     return `<div class="hint" style="margin:6px 0 2px"><b>${esc(r)}</b></div>
@@ -7441,7 +7472,7 @@ function openStandbySubDutyEditor(plan, role, d, onDone){
   }).join('') : '';
   modal.innerHTML=`
     <div class="sheet-inner">
-      <div class="section-title"><h2 style="margin:0">${esc(role)}：${minguoLabel(d)}</h2><button class="ghost small" id="sdClose">關閉</button></div>
+      <div class="section-title"><h2 style="margin:0"><span class="nw">${esc(role)}：</span><span class="nw">${minguoLabel(d)}</span></h2><button class="ghost small" id="sdClose">關閉</button></div>
       <div class="row wrap" style="margin-bottom:8px">
         <div class="grow"><label>開始</label>${timeSelectHTML('sdStart', cfg.start||t0.start, {allowEmpty:true})}</div>
         <div class="grow"><label>結束</label>${timeSelectHTML('sdEnd', cfg.end||t0.end, {allowEmpty:true})}</div>
@@ -7471,7 +7502,7 @@ function openStandbySubDutyEditor(plan, role, d, onDone){
             return `
           <label style="display:flex;align-items:flex-start;gap:6px;font-size:13px;padding:6px 0;border-bottom:1px solid var(--line);${reasons.length?'opacity:.6':''}">
             <input type="checkbox" class="sd-person" value="${p.id}" style="width:auto;margin-top:2px" ${(cfg.personIds||[]).includes(p.id)?'checked':''}>
-            <span>${esc(p.name)}（${p.group||'未分組'}·${p.rank}${personBadges(p)}）${reasons.length? `<br><span class="warn" style="font-size:11px">🚫${esc(reasons.join('・'))}</span>`:''}</span>
+            <span>${esc(p.name)}（<span class="nw">${esc(p.group||'未分組')}</span>·<span class="nw">${esc(p.rank)}</span>${personBadges(p)}）${reasons.length? `<br><span class="warn" style="font-size:11px">🚫${esc(reasons.join('・'))}</span>`:''}</span>
           </label>`;}).join('') : `<div class="empty">請先選擇留守人員</div>`}
       </div>`}
       <div class="row wrap">
@@ -7509,7 +7540,7 @@ function openStandbySubDutyEditor(plan, role, d, onDone){
             const reasons=reasonsFn(p);
             return `<label style="display:flex;align-items:flex-start;gap:6px;font-size:13px;padding:6px 0;border-bottom:1px solid var(--line);${reasons.length?'opacity:.6':''}">
               <input type="radio" name="sd-role1" class="sd-role1" value="${p.id}" style="width:auto;margin-top:2px" ${p.id===curVal?'checked':''}>
-              <span>${esc(p.name)}（${p.group||'未分組'}·${p.rank}${personBadges(p)}）${reasons.length? `<br><span class="warn" style="font-size:11px">🚫${esc(reasons.join('・'))}</span>`:''}</span>
+              <span>${esc(p.name)}（<span class="nw">${esc(p.group||'未分組')}</span>·<span class="nw">${esc(p.rank)}</span>${personBadges(p)}）${reasons.length? `<br><span class="warn" style="font-size:11px">🚫${esc(reasons.join('・'))}</span>`:''}</span>
             </label>`;
           }).join('');
           chiefListEl.innerHTML=rows;
@@ -7641,7 +7672,7 @@ function openPreplanDayEditor(key, date, onSaved){
     return withReasons.map(({p,reasons,conflicts})=>`
       <label style="display:flex;align-items:flex-start;gap:6px;font-size:13px;padding:6px 0;border-bottom:1px solid var(--line);${reasons.length?'opacity:.6':''}">
         <input type="checkbox" class="${cls}" value="${p.id}" style="width:auto;flex-shrink:0;margin-top:2px" ${selectedIds.includes(p.id)?'checked':''}>
-        <span class="grow">${esc(p.name)}（${p.group||'未分組'}·${p.rank}${personBadges(p)}）${reasons.length? `<br><span class="warn" style="font-size:11px">🚫${esc(reasons.join('・'))}</span>`:''}${conflictLine(conflicts)}</span>
+        <span class="grow">${esc(p.name)}（<span class="nw">${esc(p.group||'未分組')}</span>·<span class="nw">${esc(p.rank)}</span>${personBadges(p)}）${reasons.length? `<br><span class="warn" style="font-size:11px">🚫${esc(reasons.join('・'))}</span>`:''}${conflictLine(conflicts)}</span>
         <label style="display:flex;align-items:center;gap:3px;font-size:11px;color:var(--dim);flex-shrink:0;margin-top:2px" title="掛名：排進去但不算忙碌，可以同時被排別的任務">
           <input type="checkbox" class="${cls}-nom" value="${p.id}" style="width:auto" ${nomSet.has(p.id)?'checked':''}>掛
         </label>
@@ -7658,7 +7689,7 @@ function openPreplanDayEditor(key, date, onSaved){
       </label>`+withReasons.map(({p,reasons,conflicts})=>`
       <label style="display:flex;align-items:flex-start;gap:6px;font-size:13px;padding:6px 0;border-bottom:1px solid var(--line);${reasons.length?'opacity:.6':''}">
         <input type="radio" name="${name}" class="${cls}" value="${p.id}" style="width:auto;margin-top:2px" ${p.id===selectedId?'checked':''}>
-        <span class="grow">${esc(p.name)}（${p.group||'未分組'}·${p.rank}${personBadges(p)}）${reasons.length? `<br><span class="warn" style="font-size:11px">🚫${esc(reasons.join('・'))}</span>`:''}${conflictLine(conflicts)}</span>
+        <span class="grow">${esc(p.name)}（<span class="nw">${esc(p.group||'未分組')}</span>·<span class="nw">${esc(p.rank)}</span>${personBadges(p)}）${reasons.length? `<br><span class="warn" style="font-size:11px">🚫${esc(reasons.join('・'))}</span>`:''}${conflictLine(conflicts)}</span>
         <label style="display:flex;align-items:center;gap:3px;font-size:11px;color:var(--dim);flex-shrink:0;margin-top:2px" title="掛名：排進去但不算忙碌，可以同時被排別的任務">
           <input type="checkbox" class="${cls}-nom" value="${p.id}" style="width:auto" ${nomSet.has(p.id)?'checked':''}>掛
         </label>
@@ -7811,13 +7842,13 @@ function openPreplanDayEditor(key, date, onSaved){
   }
   modal.innerHTML=`
     <div class="sheet-inner">
-      <div class="section-title"><h2 style="margin:0">${type.icon} ${type.name}：${minguoLabel(date)}</h2><button class="ghost small" id="ppClose">關閉</button></div>
+      <div class="section-title"><h2 style="margin:0"><span class="nw">${type.icon} ${type.name}：</span><span class="nw">${minguoLabel(date)}</span></h2><button class="ghost small" id="ppClose">關閉</button></div>
       <div class="hint" style="margin-bottom:8px">${type.hint}${date>=todayStr()? '<br>名單上標 ⚠️ 的人這天有衝突（長期事故、休假／事故、同時段的勤務…），還是可以勾；存檔時會列出來，問你要不要忽略一次。' : ''}</div>
       ${body}
       <div class="row wrap" style="margin-top:10px">
         <button class="ghost grow" id="ppCopy">複製到其他日期</button>
         <button class="ghost grow danger" id="ppDelete">清除這天</button>
-        <button class="primary grow" id="ppSave">儲存</button>
+        <button class="primary grow" id="ppSave" style="flex:1 1 100%">儲存</button>
       </div>
     </div>`;
   document.body.appendChild(modal);
@@ -8079,7 +8110,7 @@ function openPreplanCopyModal(key, fromDate, onDone){
   modal.className='sheet-modal'; modal.style.zIndex='95';
   modal.innerHTML=`
     <div class="sheet-inner">
-      <div class="section-title"><h2 style="margin:0">複製「${type.name} ${minguoLabel(fromDate)}」</h2><button class="ghost small" id="pcClose">關閉</button></div>
+      <div class="section-title"><h2 style="margin:0"><span class="nw">複製「${type.name}</span> <span class="nw">${minguoLabel(fromDate)}」</span></h2><button class="ghost small" id="pcClose">關閉</button></div>
       <div class="hint" style="margin-bottom:8px">勾選要套用同樣內容的日期（會覆蓋那些日期原本的這個項目），或直接框一段日期範圍快速勾選。</div>
       <div class="row wrap" style="margin-bottom:8px">
         <div class="grow"><label>從</label><input type="date" id="pcRangeFrom"></div>
@@ -8093,7 +8124,7 @@ function openPreplanCopyModal(key, fromDate, onDone){
           const has=!!preplanFor(key,d);
           return `<label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0">
             <input type="checkbox" class="pc-date" value="${d}" style="width:auto">
-            ${minguoLabel(d)}${isHolidayDate(d)?' <span class="warn">假</span>':''}${has?' <span class="hint">（已有內容，會被覆蓋）</span>':''}
+            <span class="grow"><span class="nw">${minguoLabel(d)}</span>${isHolidayDate(d)?' <span class="warn">假</span>':''}${has?' <span class="hint nw">（已有內容，會被覆蓋）</span>':''}</span>
           </label>`;
         }).join('')}
       </div>
@@ -8339,7 +8370,7 @@ function openDelayedStartModal(defaultDate, onDone){
             const p=state.personnel.find(x=>x.id===u.personId);
             return `<label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:6px 0;border-bottom:1px solid var(--line)">
               <input type="checkbox" class="ds-entry" value="${u.id}" style="width:auto">
-              ${p? esc(p.name)+'（'+(p.group||'未分組')+'·'+p.rank+'）':'（找不到這個人）'}${u.reason? ` <span class="hint">${esc(u.reason)}</span>`:''}
+              <span class="grow">${p? `${esc(p.name)}（<span class="nw">${esc(p.group||'未分組')}</span>·<span class="nw">${esc(p.rank)}</span>）`:'（找不到這個人）'}${u.reason? ` <span class="hint">${esc(u.reason)}</span>`:''}</span>
             </label>`;
           }).join('')}
         </div>
@@ -8596,7 +8627,7 @@ function openLeaveTableEditor(date, onSaved, presetPid){
       });
       let mark, cls;
       if(fragments.length){
-        mark = fragments.map(f=>f.text).join('・');
+        mark = fragments.map(f=>`<span class="cm-line">${esc(f.text)}</span>`).join('');
         cls = fragments.some(f=>f.cls==='has')? 'has' : 'leave-partial-marked';
       } else if(sb==='staying'){
         mark = '留守';
@@ -8605,7 +8636,7 @@ function openLeaveTableEditor(date, onSaved, presetPid){
         mark=''; cls='';
       }
       cells.push(`<div class="cal-cell ${cls} ${hol?'holiday':''}" data-lt-date="${ds}">
-        <div class="cal-day">${d}</div><div class="cal-mark">${mark}</div>
+        <div class="cal-day">${d}</div><div class="cal-mark">${calMarkLinesHTML(mark)}</div>
       </div>`);
     }
     const allDates=(catRec(selectedPid,selectedCat).dates||[]);
@@ -8632,10 +8663,10 @@ function openLeaveTableEditor(date, onSaved, presetPid){
               return {name:c.name, cnt};
             }).filter(x=>x.cnt>0);
             const totalCnt = catCounts.reduce((s,x)=>s+x.cnt,0);
-            const summary = catCounts.length? ` <span class="ok">${catCounts.map(x=>`${x.name.slice(0,1)}${x.cnt}`).join('・')}（共${totalCnt}天）</span>` : '';
+            const summary = catCounts.length? ` <span class="ok nw">${catCounts.map(x=>`${x.name.slice(0,1)}${x.cnt}`).join('・')}（共${totalCnt}天）</span>` : '';
             return `<label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0">
               <input type="radio" name="ltp" class="lt-person" value="${p.id}" style="width:auto" ${p.id===selectedPid?'checked':''}>
-              ${esc(p.name)}（${p.group||'未分組'}·${p.rank}）${summary}
+              <span class="grow">${esc(p.name)}（<span class="nw">${esc(p.group||'未分組')}</span>·<span class="nw">${esc(p.rank)}</span>）${summary}</span>
             </label>`;
           }).join('')}
       </div>
@@ -9046,7 +9077,7 @@ function openQuickLeaveModal(presetPid){
             const summary = catCounts.length? ` <span class="ok">${catCounts.map(x=>`${x.name.slice(0,1)}${x.cnt}`).join('・')}</span>` : '';
             return `<label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0">
               <input type="radio" name="qlp" class="ql-person" value="${p.id}" style="width:auto" ${p.id===selectedPid?'checked':''}>
-              ${esc(p.name)}（${p.group||'未分組'}·${p.rank}）${summary}
+              <span class="grow">${esc(p.name)}（<span class="nw">${esc(p.group||'未分組')}</span>·<span class="nw">${esc(p.rank)}</span>）${summary}</span>
             </label>`;
           }).join('')}
       </div>
@@ -9073,7 +9104,7 @@ function openQuickLeaveModal(presetPid){
         <button class="primary" id="qlSave" style="width:100%;margin-bottom:6px">✅ 登記（立即生效）</button>
       ` : `<div class="empty">請先搜尋並選擇一位人員</div>`}
       <div class="divider"></div>
-      <button class="ghost" id="qlOpenFull" style="width:100%">📋 開啟完整休假暨事故大表（部分時段/更細部調整）</button>
+      <button class="ghost" id="qlOpenFull" style="width:100%"><span class="nw">📋 開啟完整休假暨事故大表</span><br><span class="nw" style="font-weight:500;font-size:12px">（部分時段/更細部調整）</span></button>
     `;
     document.getElementById('qlClose').onclick=()=>modal.remove();
     document.getElementById('qlOpenFull').onclick=()=>{
@@ -9835,7 +9866,7 @@ function batchLtPeopleCheckboxesHTML(groupFilter, searchFilter){
     return `<h3>${g?esc(g):'未分組'}</h3>` + members.map(p=>`
       <label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0">
         <input type="checkbox" class="batch-lt-person-cb" value="${p.id}" style="width:auto" ${batchLtCheckedIds.has(p.id)?'checked':''}>
-        ${esc(p.name)}（${p.group||'未分組'}·${p.rank}）${longTermLabel(p)? ` <span class="warn">🚫${esc(longTermLabel(p))}</span>`:''}
+        <span class="grow">${esc(p.name)}（<span class="nw">${esc(p.group||'未分組')}</span>·<span class="nw">${esc(p.rank)}</span>）${longTermLabel(p)? ` <span class="warn">🚫${esc(longTermLabel(p))}</span>`:''}</span>
       </label>`).join('');
   }).join('');
 }
@@ -9968,7 +9999,7 @@ function renderPeople(){
         </div>
       </div>
       <div class="row wrap" style="margin-bottom:8px">
-        <div style="width:100px"><label>性別（選填）</label>
+        <div style="width:116px"><label>性別（選填）</label>
           <select id="npGender">
             <option value="">（不填）</option>
             <option value="男">男</option>
@@ -10001,7 +10032,7 @@ function renderPeople(){
               <input type="checkbox" class="np-skill-cb" value="${esc(s)}" style="width:auto"> ${esc(s)}
             </label>`).join('')}</div>
           <div class="row wrap" style="margin-top:4px">
-            <input type="text" id="npNewSkillName" placeholder="新增技能類別，例：無線電" style="flex:1">
+            <input type="text" id="npNewSkillName" placeholder="新技能，例：無線電" style="flex:1">
             <button class="ghost small" id="npAddSkillType">＋新增類別</button>
           </div>
         </div>
@@ -10077,7 +10108,7 @@ function renderPeople(){
             <option value="__none" ${pplFilterState.group==='__none'?'selected':''}>未分組</option>
           </select>
         </div>
-        <div style="width:100px"><label>性別篩選</label>
+        <div style="width:116px"><label>性別篩選</label>
           <select id="pplGenderFilter">
             <option value="" ${!pplFilterState.gender?'selected':''}>（全部）</option>
             <option value="男" ${pplFilterState.gender==='男'?'selected':''}>男</option>
@@ -10472,7 +10503,7 @@ function openPersonEditor(personId){
           <input type="checkbox" class="ep-skill-cb" value="${esc(s)}" style="width:auto" ${(p.skills||[]).includes(s)?'checked':''}> ${esc(s)}
         </label>`).join('')}</div>
       <div class="row wrap" style="margin-bottom:8px">
-        <input type="text" id="epNewSkillName" placeholder="新增技能類別，例：無線電" style="flex:1">
+        <input type="text" id="epNewSkillName" placeholder="新技能，例：無線電" style="flex:1">
         <button class="ghost small" id="epAddSkillType">＋新增類別</button>
       </div>
       <label>長期事故</label>
@@ -10805,7 +10836,7 @@ function notInCampItemsHTML(list, date, groupByReason){
       const rows = sorted.map(p=>{
         const lid = findLeaveIdForPerson(p.id, date);
         return `<div class="row" style="margin-bottom:4px;align-items:flex-start">
-          <span class="muted grow">・${esc(p.name)}（${p.group||'未分組'}·${p.rank}）</span>
+          <span class="muted grow">・${esc(p.name)}（<span class="nw">${esc(p.group||'未分組')}</span>·<span class="nw">${esc(p.rank)}</span>）</span>
           ${lid? `<button class="ghost small" data-goto-leave-table="${p.id}">去休假暨事故大表改</button>` : `<button class="ghost small" data-quick-incident="${p.id}">編輯</button>`}
         </div>`;
       }).join('');
@@ -11446,7 +11477,7 @@ function outingFilterFn(p){
 }
 function renderOutingList(date){
   const list = outingEligibleList(date, outingFilterFn);
-  return list.length? list.map(p=>`<div class="muted">・${esc(p.name)}（${p.group||'未分組'}·${p.rank}）</div>`).join('') : `<div class="empty">找不到符合條件的人</div>`;
+  return list.length? list.map(p=>`<div class="muted">・${esc(p.name)}（<span class="nw">${esc(p.group||'未分組')}</span>·<span class="nw">${esc(p.rank)}</span>）</div>`).join('') : `<div class="empty">找不到符合條件的人</div>`;
 }
 function outingEligibleList(date, filterFn){
   // 排除「今天整天休假」跟「今天晚上就要開始休假」的人——只要今天有跟
@@ -11664,7 +11695,7 @@ function renderOnDutyList(date){
   return people.map(p=>{
     const duties = personDutySummary(p.id, date);
     return `<div class="row" style="margin-bottom:2px">
-      <span class="muted grow">・${esc(p.name)}（${p.group||'未分組'}·${p.rank}）：${duties.length? duties.map(esc).join('、') : '無排班'}</span>
+      <span class="muted grow">・${esc(p.name)}（<span class="nw">${esc(p.group||'未分組')}</span>·<span class="nw">${esc(p.rank)}</span>）：${duties.length? duties.map(esc).join('、') : '無排班'}</span>
       <button class="ghost small" data-quick-incident="${p.id}">登記事故</button>
     </div>`;
   }).join('');
@@ -12047,7 +12078,7 @@ function hourlyAvailablePeopleHTML(h){
   const available = hourFreePeople(h, dutyMap, restMap);
   const list = hourlyFilterPeople(available).sort((a,b)=>groupIndex(a.group)-groupIndex(b.group)||rankIndex(a.rank)-rankIndex(b.rank));
   const freeHTML = `<div class="hour-sec-title"><b>🟢 有空（${available.length} 人）</b></div>` + personListSummaryHTML(list, available)
-    + (list.length? list.map(p=>`<div class="muted">・${esc(p.name)}（${p.group||'未分組'}·${p.rank}）</div>`).join('') : `<div class="empty">找不到符合的人員</div>`);
+    + (list.length? list.map(p=>`<div class="muted">・${esc(p.name)}（<span class="nw">${esc(p.group||'未分組')}</span>·<span class="nw">${esc(p.rank)}</span>）</div>`).join('') : `<div class="empty">找不到符合的人員</div>`);
   // 在勤務上的人：照勤務分組（誰在出什麼勤務）
   const onDuty=state.personnel.filter(p=>dutyMap.has(p.id));
   const shown=new Set(hourlyFilterPeople(onDuty).map(p=>p.id));
@@ -12395,7 +12426,7 @@ function renderQueryResult(){
   const absentAll = rankGenderBreakdown(state.personnel.filter(absentNow));
   const presentAll = {};
   Object.keys(totalAll).forEach(k=>{ presentAll[k]=totalAll[k]-absentAll[k]; });
-  const fmtRank=fmtRankBreakdown;
+  const fmtRank=fmtRankBreakdownHTML;
   const busyList = state.personnel.filter(groupMatch).filter(absentNow)
     .map(p=>({p, temp:adj.out.has(p.id), reasons: adj.out.has(p.id)? [] : unavailabilityReasonsInRange(p.id,currentDate,qMin,qMin+1)}))
     .sort((a,b)=>(b.temp-a.temp) || groupIndex(a.p.group)-groupIndex(b.p.group) || rankIndex(a.p.rank)-rankIndex(b.p.rank));
@@ -12409,10 +12440,10 @@ function renderQueryResult(){
       <tr style="font-weight:600"><td style="text-align:left">總計</td><td>${fmtRank(totalAll)}</td><td>${fmtRank(absentAll)}</td><td>${fmtRank(presentAll)}</td></tr>
     </table>
     <div class="muted" style="margin:8px 0 4px"><b>有空人員</b><span class="hint">　點名時誰突然有事，按「臨時事故」</span></div>
-    ${free.length? free.map(x=>`<div class="list-item"><span class="grow">${esc(x.p.name)}（${x.p.group||'未分組'}·${x.p.rank}）${x.dur===null? ' <span class="tag">已回來（臨時）</span>' : ''}</span>${x.dur===null? `<button class="ghost small" data-q-undo="${x.p.id}">還原</button>` : `<span class="muted">空 ${Math.floor(x.dur/60)}小時${x.dur%60?x.dur%60+'分':''}</span><button class="ghost small" data-q-out="${x.p.id}">臨時事故</button>`}</div>`).join('') : `<div class="empty">此時間無人有空</div>`}
+    ${free.length? free.map(x=>`<div class="list-item"><span class="grow">${esc(x.p.name)}（<span class="nw">${esc(x.p.group||'未分組')}</span>·<span class="nw">${esc(x.p.rank)}</span>）${x.dur===null? ' <span class="tag">已回來（臨時）</span>' : ''}</span>${x.dur===null? `<button class="ghost small" data-q-undo="${x.p.id}">還原</button>` : `<span class="muted">空 ${Math.floor(x.dur/60)}小時${x.dur%60?x.dur%60+'分':''}</span><button class="ghost small" data-q-out="${x.p.id}">臨時事故</button>`}</div>`).join('') : `<div class="empty">此時間無人有空</div>`}
     <div class="muted" style="margin:12px 0 4px"><b>事故人員</b><span class="hint">　任務提早結束、人出現了，按「已回來」</span></div>
     ${busyList.length? busyList.map(x=>`<div class="list-item" style="flex-direction:column;align-items:stretch">
-        <div class="row"><span class="grow">${esc(x.p.name)}（${x.p.group||'未分組'}·${x.p.rank}）${x.temp? ' <span class="tag">臨時事故</span>' : ''}</span>
+        <div class="row"><span class="grow">${esc(x.p.name)}（<span class="nw">${esc(x.p.group||'未分組')}</span>·<span class="nw">${esc(x.p.rank)}</span>）${x.temp? ' <span class="tag">臨時事故</span>' : ''}</span>
           ${x.temp? `<button class="ghost small" data-q-reg="${x.p.id}">也登記到班表</button><button class="ghost small" data-q-undo="${x.p.id}">還原</button>` : `<button class="ghost small" data-q-back="${x.p.id}">已回來</button>`}</div>
         ${x.temp? `<div class="muted">・臨時事故（這次點名，還沒登記到班表）</div>` : x.reasons.map(r=>`<div class="muted">・${esc(r)}</div>`).join('')}
       </div>`).join('') : `<div class="empty">此時間無人有事故</div>`}
@@ -12801,7 +12832,7 @@ function openSubstituteModal(source){
           <div class="hint" style="margin-bottom:4px"><b>${tierMeta[t].icon} ${tierMeta[t].title}（${grouped[t].length}）</b></div>
           ${grouped[t].map(r=>`
             <div class="row sub-row" data-sub-name="${esc(r.person.name)}" style="align-items:flex-start;margin-bottom:4px">
-              <span class="muted grow">・${esc(r.person.name)}（${r.person.group||'未分組'}·${r.person.rank}${personBadges(r.person)}）<br><span style="font-size:11px;color:var(--dim)">${esc(r.note)}</span></span>
+              <span class="muted grow">・${esc(r.person.name)}（<span class="nw">${esc(r.person.group||'未分組')}</span>·<span class="nw">${esc(r.person.rank)}</span>${personBadges(r.person)}）<br><span style="font-size:11px;color:var(--dim)">${esc(r.note)}</span></span>
               ${t===4? ''
                 : t===3
                 ? `<button class="ghost small danger" data-sub-pick="${r.person.id}" data-sub-tier="${t}" data-sub-note="${esc(r.note)}">仍要排</button>`
@@ -12965,9 +12996,9 @@ function renderSchedule(){
     <div class="card">
       <div class="section-title" style="margin-bottom:10px"><h2 style="margin:0">${ico('send')}發布與檢查</h2></div>
       <button class="primary" id="exportText" style="width:100%;margin-bottom:8px">${ico('fileText')}轉出文字班表</button>
-      <div class="row" style="gap:8px">
-        <button class="ghost grow" id="exportTextDiff">${ico('compare')}比對上次版本</button>
-        <button class="ghost grow" id="dailyCheck">${ico('checkCircle')}檢查當日規則</button>
+      <div class="row wrap" style="gap:8px">
+        <button class="ghost grow" id="exportTextDiff" style="flex:1 1 11em">${ico('compare')}比對上次版本</button>
+        <button class="ghost grow" id="dailyCheck" style="flex:1 1 11em">${ico('checkCircle')}檢查當日規則</button>
       </div>
       <div id="dailyCheckOut"></div>
     </div>
@@ -14031,7 +14062,7 @@ function openCategoryEditor(catId, initialScope, onDone){
         <div class="grow"><label>補休至(選填，下班後自動排除其他勤務至此時間)</label>${timeSelectHTML('se-rest-'+i, s.restUntil, {allowEmpty:true})}</div>
       </div>
       <div class="row wrap" style="margin-top:6px">
-        <div style="width:120px"><label>最少需要幾位士官(含)以上(選填，0代表不限)</label><input type="text" class="se-minnco" value="${s.minNCO||0}"></div>
+        <div class="grow"><label>最少需要幾位士官(含)以上(選填，0代表不限)</label><input type="text" inputmode="numeric" class="se-minnco" value="${s.minNCO||0}" style="max-width:120px"></div>
       </div>
     </div>`;
   }
@@ -14147,7 +14178,7 @@ function renderAdhocQueryResult(){
   const fmtMin=m=>`${p2(Math.floor(m/60)%24)}:${p2(m%60)}`;
   const rowHtml = ({p,freeMin,freeUntilMin,nextCommitment})=>`
         <div class="row" style="align-items:flex-start;margin-bottom:4px">
-          <div class="muted grow">・${esc(p.name)}（${p.group||'未分組'}·${p.rank}${personBadges(p)}）：可用到 ${fmtMin(freeUntilMin)}（共${Math.floor(freeMin/60)}時${freeMin%60}分）${nextCommitment? ` → 之後：${esc(nextCommitment)}`:''}</div>
+          <div class="muted grow">・${esc(p.name)}（<span class="nw">${esc(p.group||'未分組')}</span>·<span class="nw">${esc(p.rank)}</span>${personBadges(p)}）：可用到 ${fmtMin(freeUntilMin)}（共${Math.floor(freeMin/60)}時${freeMin%60}分）${nextCommitment? ` → 之後：${esc(nextCommitment)}`:''}</div>
           <button class="ghost small" data-adhoc-add="${p.id}" data-adhoc-start="${adhocQueryState.time}" data-adhoc-end="${fmtMin(freeUntilMin)}">加入</button>
         </div>`;
   if(mode==='anyCount'){
@@ -14666,7 +14697,7 @@ function inlineMiscPeopleListHTML(m, searchFilter){
     const busy = reasons.length>0;
     return `<label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0;${busy?'color:var(--danger)':''}">
       <input type="checkbox" class="inline-misc-person-cb" value="${p.id}" style="width:auto" ${checked?'checked':''}>
-      ${esc(p.name)}（${p.group||'未分組'}·${p.rank}${personBadges(p)}）${busy? ` 🚫不可排（${[...new Set(reasons)].join('・')}）`:''}
+      <span class="grow">${esc(p.name)}（<span class="nw">${esc(p.group||'未分組')}</span>·<span class="nw">${esc(p.rank)}</span>${personBadges(p)}）${busy? ` 🚫不可排（${[...new Set(reasons)].join('・')}）`:''}</span>
     </label>`;
   }).join('');
 }
@@ -14800,7 +14831,7 @@ function rolePickerRows(idPrefix, list, selectedId, reasonsFn){
     const reasons = reasonsFn(p);
     return `<label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0">
       <input type="radio" name="${idPrefix}-radio" class="role-picker-radio" data-role-picker="${idPrefix}" value="${p.id}" ${p.id===selectedId?'checked':''} style="width:auto">
-      ${esc(p.name)}（${p.group||'未分組'}·${p.rank}${personBadges(p)}）${reasons.length? ` <span class="warn">🚫不可排（${reasons.map(esc).join('・')}）</span>`:''}
+      <span class="grow">${esc(p.name)}（<span class="nw">${esc(p.group||'未分組')}</span>·<span class="nw">${esc(p.rank)}</span>${personBadges(p)}）${reasons.length? ` <span class="warn">🚫不可排（${reasons.map(esc).join('・')}）</span>`:''}</span>
     </label>`;
   }).join('');
 }
