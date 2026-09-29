@@ -347,7 +347,7 @@ select[data-assign-cat]:has(option[value=""]:checked){background-color:var(--war
       <span class="unit-banner-badge"><i data-ico="star"></i></span>
       <span class="unit-banner-titles">
         <span class="unit-banner-text">陸軍第八軍團 本部連</span>
-        <h1 id="pageTitle">衛哨排班系統 <span class="muted">v164</span></h1>
+        <h1 id="pageTitle">衛哨排班系統 <span class="muted">v165</span></h1>
       </span>
     </span>
     <span class="banner-side right">
@@ -1637,6 +1637,50 @@ function planDayTypes(){ return PREPLAN_TYPES.filter(t=>t.mode!=='leaveTable' &&
 function planRoleName(type){ return type.presetRole || type.name; }
 function planOwnedRoleSet(){ return new Set(planDayTypes().map(planRoleName)); }
 function planTypeByRole(role){ return planDayTypes().find(t=>planRoleName(t)===role) || null; }
+/* v165：值星可以分「值星官／值星士官」兩個位置（崗位定義設定），各自的階級
+   要求；一次值幾天、幾點交接也在崗位定義設定 */
+const DEFAULT_DUTY_POSITIONS=[{name:'值星官', ranks:[]}, {name:'值星士官', ranks:[]}];
+function dutyDef(){ return (state.dutyDefinitions||[]).find(d=>d.key==='duty')||null; }
+function dutyPositions(){ const d=dutyDef(); return (d && d.splitPositions && Array.isArray(d.positions) && d.positions.length)? d.positions : null; }
+function dutyTermDays(){ const d=dutyDef(); return Math.max(1, Number(d && d.termDays)||7); }
+function dutyHandoverTime(){ const d=dutyDef(); return (d && d.handoverTime)||'12:00'; }
+/* 一組值星照位置排好的人（值星官, 值星士官）；舊資料沒記位置：階級高的當值星官。
+   人比位置多就回傳 null（照舊不分位置） */
+function dutyGroupPositionalIds(g, pos){
+  if(g.positional) return pos.map((_,i)=>(g.personIds||[])[i] || (((g.posNotes||[])[i]||'').trim()? supportIdOf(g.posNotes[i]) : null));
+  const people=(g.personIds||[]).filter(Boolean).slice().sort((a,b)=>rankIndex(personRank(a))-rankIndex(personRank(b)));
+  const all=[...people, ...supportTokens(g.note).map(supportIdOf)];
+  if(all.length>pos.length) return null;
+  return pos.map((_,i)=>all[i]||null);
+}
+/* 值星改了分不分位置：格子的名稱會變（值星 ↔ 值星官／值星士官），今天以後已
+   經記的破例／忽略一次紀錄照人對到新的格子，不然存檔時會被當成過期清掉 */
+function remapDutyExceptionSubjects(from){
+  const t=PREPLAN_TYPES.find(x=>x.key==='duty');
+  if(!t) return;
+  const role=planRoleName(t);
+  Object.keys(state.ruleExceptions||{}).filter(d=>d>=from).forEach(d=>{
+    const entries=(state.misc[d]||[]).filter(m=>m.role===role);
+    (state.ruleExceptions[d]||[]).forEach(r=>{
+      if(!r.personId || !String(r.subject||'').startsWith(`m|${role}|`)) return;
+      for(const m of entries){
+        const i=(m.personIds||[]).indexOf(r.personId);
+        if(i<0) continue;
+        const subj=miscSlotSubject(m, i);
+        if(subj!==r.subject){ r.subject=subj; r.label=ctxLabel({kind:'misc', date:d, entry:m, idx:i}); }
+        break;
+      }
+    });
+  });
+}
+/* 班表上某一格如果是值星的某個位置，回傳那個位置的設定 */
+function dutyPositionFor(m, rn){
+  if(!m || !m.roles || !rn) return null;
+  const t=PREPLAN_TYPES.find(x=>x.key==='duty');
+  if(!t || m.role!==planRoleName(t)) return null;
+  const pos=dutyPositions();
+  return pos? (pos.find(p=>p.name===rn)||null) : null;
+}
 /* 預排管的班表項目：每日預排類型的角色（不管是匯入的、常用項目點的、還是
    自動排班產生的——跟排班頁「預排項目」區塊同一個分法），加上留守寫的子勤務 */
 function isPlanOwnedEntry(m, roles){ return !!(m && (m.standbyAnchor || (roles||planOwnedRoleSet()).has(m.role))); }
@@ -1880,8 +1924,9 @@ function leaveRunPreview(pid, r, category, note){
   Object.entries(out).forEach(([d,arr])=>(arr||[]).forEach(u=>flat.push({d,u})));
   return {flat, res};
 }
-function applyLeavePlan(pid, catName){
-  const today=todayStr();
+function applyLeavePlan(pid, catName, fromDate){
+  // fromDate：使用者在大表明確說要連同過去的班表一起改時，從這天開始照大表重寫
+  const today=(fromDate && fromDate<todayStr())? fromDate : todayStr();
   const category=state.leaveCategories.find(c=>c.name===catName);
   const out={count:0, downgraded:[]};
   if(!category) return out;
@@ -2058,6 +2103,14 @@ function writeBackTypeDate(type, date, prevList){
       base=base||{};
       const out={personIds:idsOf(a), nominalIds:nomOf(a), support:base.support||'', start:a.start||'', end:a.end||'', restUntil:a.restUntil||''};
       const sn=supOf(a); if(sn.length) out.note=sn.join('、');
+      // 值星分位置：照位置記（支援的人記在那個位置的備註）
+      if(a.roles && type.key==='duty' && dutyPositions()){
+        const at=i=>(a.personIds||[])[i];
+        out.personIds=a.roles.map((_,i)=>at(i) && !isSupportId(at(i))? at(i) : null);
+        out.posNotes=a.roles.map((_,i)=>isSupportId(at(i))? supportNameOf(at(i)) : '');
+        out.positional=true;
+        delete out.note;
+      }
       // 班表上的支援說明跟原本那一組不一樣＝在班表上改過，照班表記
       if((out.support||'')!==(a.support||'')) out.support=a.support||'';
       return out;
@@ -2829,6 +2882,11 @@ function personalViolations(ctx, pid){
       if(preset && (preset.chiefRequiredRanks||[]).length && !preset.chiefRequiredRanks.includes(person.rank)) add('qualification', `車長需為${preset.chiefRequiredRanks.join('或')}`);
     } else if(rn.startsWith('話務') || (!m.roles && m.role.startsWith('話務'))){
       if(!person.license) add('phoneLicense', '話務需至少小型車駕照');
+    } else if(dutyPositionFor(m, rn)){
+      // 值星官／值星士官：各自的階級要求（整個值星的駕照／專長要求照舊）
+      const posDef=dutyPositionFor(m, rn);
+      if((posDef.ranks||[]).length && !posDef.ranks.includes(person.rank)) add('qualification', `${rn}需為${posDef.ranks.join('或')}`);
+      driverQualificationIssues(person, Object.assign({}, preset||{}, {requiredRanks:[]})).forEach(msg=>add('qualification', msg));
     } else if(rn==='駕駛' || !m.roles){
       driverQualificationIssues(person, preset).forEach(msg=>add('qualification', msg));
     }
@@ -3649,6 +3707,18 @@ function todayExceptionsCardHTML(date){
   return collapsibleCardHTML('todayExceptions', `${ico('shield')}今日破例紀錄（${recs.length}）`, `<div class="hint" style="margin-bottom:6px">要撤銷或看其他待處理的，按上面概況卡的「查看」。</div>${inner}`);
 }
 /* 統計：本月破例紀錄 */
+let exceptionStatsMode='day';
+/* 某一天的破例紀錄：每一筆可以取消 */
+function dayExceptionStatsHTML(date){
+  const list=(state.ruleExceptions||{})[date]||[];
+  if(!list.length) return `<div class="empty">這天沒有破例紀錄</div>`;
+  const ign=list.filter(r=>r.reason==='ignored').length;
+  return `<div class="muted" style="margin-bottom:6px">共 ${list.length} 筆（忽略一次 ${ign}、嚴重 ${list.filter(r=>r.reason!=='ignored' && r.level==='serious').length}、一般 ${list.filter(r=>r.reason!=='ignored' && r.level!=='serious').length}）</div>`
+    + list.map((r,i)=>({r,i})).sort((a,b)=>(a.r.label||'').localeCompare(b.r.label||'', 'zh-Hant')).map(({r,i})=>`<div class="list-item ex-day-row" style="align-items:flex-start">
+      <span class="grow">${esc(r.label||'')}${r.personId?`　<b>${esc(personName(r.personId))}</b>`:''}<br><span class="hint">${esc(r.rules.map(k=>ruleDef(k).name).join('、'))}・${esc(exceptionReasonLabel(r.reason))}${r.note?`（${esc(r.note)}）`:''}</span>${(r.msgs||[]).length? `<br><span class="hint">${esc(r.msgs.join('；'))}</span>`:''}</span>
+      <button class="ghost small danger" data-ex-del="${date}|${i}">取消</button>
+    </div>`).join('');
+}
 function monthExceptionStatsHTML(ym){
   const recs=[];
   Object.entries(state.ruleExceptions||{}).forEach(([d,list])=>{ if(d.startsWith(ym)) (list||[]).forEach(r=>recs.push(Object.assign({date:d}, r))); });
@@ -5087,7 +5157,88 @@ function dutyDefPreviewLabel(d){
   if(d.restUntil) parts.push(`補休至${d.restUntil}`);
   return parts.join('・');
 }
-function openUnitRulesModal(){
+/* v165：崗位定義裡的查哨設定——以前散在查哨預排畫面的幾顆按鈕（補休、階級
+   平均、輪值序列基準點、候選名單），集中在這裡設定 */
+const PATROL_SHORT=['12-14','22-24','00-02','02-04','04-06'];
+function patrolSettingsBlockHTML(){
+  const seq=state.patrolSequence;
+  const ranksInUse=[...new Set(state.personnel.filter(p=>!isDeparted(p)).map(p=>p.rank))].sort((a,b)=>rankIndex(a)-rankIndex(b));
+  const cand=patrolCandidateIdSet();
+  const anchorText=(a, units)=>`${minguoLabel(a.date)} ${PATROL_SHORT[a.slotIdx]}＝${esc(units[a.unitIndex]||'?')}`;
+  return `<div class="card patrol-settings" style="padding:10px;margin-bottom:8px">
+    <h3 style="margin-top:0">🔦 查哨設定</h3>
+    <div class="hint" style="margin-bottom:8px">每一班 2 人，同性別、每組至少 1 名士官（規則 18）。自動排的挑人順序：階級平均次數少的先 → 不同排組 → 一士一兵 → 12-14 優先有駕照的。</div>
+    <h4 style="margin:6px 0 4px">各時段補休（查完哨補休到幾點，留空＝不補休）</h4>
+    <div class="row wrap" style="gap:8px;margin-bottom:8px">${PATROL_CHRONO_ORDER.map(i=>`<div style="min-width:130px"><label>${PATROL_SHORT[i]}</label>${timeSelectHTML('ddePatRest'+i, (state.patrolRestDefaults||{})[i]||'', {allowEmpty:true})}</div>`).join('')}</div>
+    <h4 style="margin:6px 0 4px">輪值單位（依序輪流，用「、」分開）</h4>
+    <div class="row wrap" style="margin-bottom:6px"><div class="grow"><label>平日</label><input type="text" id="ddePatWd" value="${esc((seq.weekdayUnits||[]).join('、'))}"></div></div>
+    <div class="row wrap" style="margin-bottom:6px"><div class="grow"><label>假日</label><input type="text" id="ddePatHol" value="${esc((seq.holidayUnits||[]).join('、'))}"></div></div>
+    <div class="hint" style="margin-bottom:6px">基準點：平日 ${anchorText(seq.anchorWeekday, seq.weekdayUnits)}；假日 ${anchorText(seq.anchorHoliday, seq.holidayUnits)}</div>
+    <div class="row wrap" style="gap:6px;margin-bottom:8px"><button class="ghost small" id="ddePatAnchor">改基準點</button><button class="ghost small" id="ddePatSeqView">看本月輪值</button></div>
+    <h4 style="margin:6px 0 4px">各階級每人每月平均班數（自動排的公平參考，不是上限）</h4>
+    <div class="row wrap" style="gap:8px;margin-bottom:8px">${ranksInUse.map(r=>`<div style="width:90px"><label>${esc(r)}</label><input type="number" min="0" step="0.5" class="dde-pat-rank" data-rank="${esc(r)}" value="${patrolRankTarget(r)}"></div>`).join('')}</div>
+    <h4 style="margin:6px 0 4px">自動排的候選名單</h4>
+    <div class="row" style="align-items:center;gap:8px"><span class="grow hint" style="margin-top:0">目前：${cand? `${cand.size} 人` : '全部人員'}</span><button class="ghost small" id="ddePatRange">調整候選名單</button></div>
+  </div>`;
+}
+function wirePatrolSettingsBlock(root, redraw){
+  // 子視窗要蓋在「我們的規則」上面
+  const lift=()=>{ const m=document.body.lastElementChild; if(m) m.style.zIndex='160'; };
+  const a=root.querySelector('#ddePatAnchor'); if(a) a.onclick=()=>{ openPatrolAnchorModal(redraw); lift(); };
+  const v=root.querySelector('#ddePatSeqView'); if(v) v.onclick=()=>{ openPatrolSequenceViewModal(preplanMonth||monthOf(currentDate)); lift(); };
+  const r=root.querySelector('#ddePatRange'); if(r) r.onclick=()=>{ openPatrolRangeModal(redraw); lift(); };
+}
+/* 存查哨設定；有問題回傳訊息（不存）。dryRun：只檢查不寫 */
+function savePatrolSettingsBlock(root, dryRun){
+  const seq=state.patrolSequence;
+  const parse=id=>[...new Set(String((root.querySelector('#'+id)||{}).value||'').split(/[、,，\s]+/).map(x=>x.trim()).filter(Boolean))];
+  const wd=parse('ddePatWd'), hol=parse('ddePatHol');
+  if(!wd.length || !hol.length) return '平日、假日的輪值單位都至少要有一個。';
+  if(!wd.includes(OUR_PATROL_UNIT) && !hol.includes(OUR_PATROL_UNIT)) return `輪值單位裡沒有「${OUR_PATROL_UNIT}」，這樣永遠不會輪到我們排。`;
+  // 基準點記的是「第幾個單位」：單位清單改了，要照單位名稱對回去
+  const wdName=seq.weekdayUnits[seq.anchorWeekday.unitIndex], holName=seq.holidayUnits[seq.anchorHoliday.unitIndex];
+  const wi=wd.indexOf(wdName), hi=hol.indexOf(holName);
+  if(wi<0) return `平日基準點是「${wdName}」，新的平日名單裡沒有這個單位。請先按「改基準點」換成名單裡有的單位，或保留${wdName}。`;
+  if(hi<0) return `假日基準點是「${holName}」，新的假日名單裡沒有這個單位。請先按「改基準點」換成名單裡有的單位，或保留${holName}。`;
+  if(dryRun) return '';
+  seq.weekdayUnits=wd; seq.holidayUnits=hol; seq.anchorWeekday.unitIndex=wi; seq.anchorHoliday.unitIndex=hi;
+  if(!state.patrolRestDefaults) state.patrolRestDefaults={};
+  PATROL_CHRONO_ORDER.forEach(i=>{ if(document.getElementById('ddePatRest'+i+'__h')) state.patrolRestDefaults[i]=getTimeSelectValue('ddePatRest'+i)||''; });
+  root.querySelectorAll('.dde-pat-rank').forEach(inp=>{ const v=parseFloat(inp.value); state.patrolRankTargets[inp.dataset.rank]=isNaN(v)? 1 : v; });
+  return '';
+}
+/* v165：崗位定義裡的值星設定——值星官／值星士官分開、一次值幾天、交接時間 */
+function dutySettingsBlockHTML(def){
+  const pos=(Array.isArray(def.positions) && def.positions.length)? def.positions : DEFAULT_DUTY_POSITIONS;
+  const rankCbs=(pi, sel)=>['軍官','士官','士兵'].map(g=>`<div class="hint" style="margin:2px 0 0;font-size:11px">${g}</div><div class="row wrap" style="gap:10px;margin-bottom:2px">${RANK_DEFS.filter(r=>r.cat===g).map(r=>`<label style="display:flex;align-items:center;gap:4px;font-size:12px"><input type="checkbox" class="dde-pos${pi}-rank" value="${r.rank}" style="width:auto" ${(sel||[]).includes(r.rank)?'checked':''}>${r.rank}</label>`).join('')}</div>`).join('');
+  return `<div class="card duty-settings" style="padding:10px;margin-bottom:8px">
+    <h3 style="margin-top:0">⭐ 值星設定</h3>
+    <label style="display:flex;align-items:center;gap:6px;font-size:13px;margin-bottom:6px"><input type="checkbox" id="ddeDutySplit" style="width:auto" ${def.splitPositions?'checked':''}> 值星官／值星士官分開（各自選人、各自的階級要求）</label>
+    <div id="ddeDutyPosBlock" style="display:${def.splitPositions?'block':'none'}">
+      ${pos.map((pd,pi)=>`<div style="margin:6px 0"><b>${esc(pd.name)}</b>需求階級（可複選，不選＝不限）${rankCbs(pi, pd.ranks)}</div>`).join('')}
+      <div class="hint" style="margin-bottom:6px">分開之後，上面「需求階級」改看這裡各位置的設定；駕照、專長要求照舊。沒記位置的舊預排，階級高的當${esc(pos[0].name)}。</div>
+    </div>
+    <div class="row wrap" style="gap:8px;margin-bottom:6px">
+      <div style="width:120px"><label>一次值幾天</label><input type="number" min="1" id="ddeDutyDays" value="${esc(String(def.termDays||7))}"></div>
+      <div class="grow"><label>交接時間</label>${timeSelectHTML('ddeDutyHandover', def.handoverTime||'12:00')}</div>
+    </div>
+    <div class="hint">預排值星的「排一段值星」會用這兩個設定：交接那天從交接時間開始接班，連續值這麼多天，到最後一天的交接時間交給下一組。</div>
+  </div>`;
+}
+/* 存值星設定；回傳要不要把今天以後的值星重新寫進班表（分不分位置、位置階級改了） */
+function saveDutySettingsBlock(root, def){
+  const before=JSON.stringify([!!def.splitPositions, def.positions||null]);
+  const sp=root.querySelector('#ddeDutySplit');
+  const base=(Array.isArray(def.positions) && def.positions.length)? def.positions : DEFAULT_DUTY_POSITIONS;
+  def.splitPositions=!!(sp && sp.checked);
+  def.positions=base.map((pd,pi)=>({name:pd.name, ranks:[...root.querySelectorAll(`.dde-pos${pi}-rank:checked`)].map(c=>c.value)}));
+  const days=parseInt((root.querySelector('#ddeDutyDays')||{}).value,10);
+  def.termDays=days>0? days : 7;
+  def.handoverTime=getTimeSelectValue('ddeDutyHandover')||'12:00';
+  return before!==JSON.stringify([!!def.splitPositions, def.positions]);
+}
+function openUnitRulesModal(opts){
+  opts=opts||{};
   const modal=document.createElement('div');
   // ⚙️「我們的規則」的按鈕在.unit-banner裡（position:fixed, z-index:999），
   // 不像其他一般按鈕會被開著的彈窗蓋住——不管當下已經開著哪個彈窗，這顆都
@@ -5095,8 +5246,11 @@ function openUnitRulesModal(){
   // 窗一樣用150這一層z-index，不然在別的彈窗已經開著時按⚙️，這個彈窗會
   // 開在下面被蓋住，看起來像卡住沒反應。
   modal.className='fullscreen-modal'; modal.style.zIndex='150';
-  let section=null; // null = 主列表；否則是分類的 key
-  let editingDutyKey=null; // 崗位定義畫面：null = 清單，否則是正在編輯的 dutyDefinitions.key
+  let section=opts.dutyKey? 'dutyDefs' : null; // null = 主列表；否則是分類的 key
+  let editingDutyKey=opts.dutyKey||null; // 崗位定義畫面：null = 清單，否則是正在編輯的 dutyDefinitions.key
+  // 從預排畫面直接打開某個崗位：返回／儲存後直接關掉回到預排
+  const direct=!!opts.dutyKey;
+  const closeDirect=()=>{ modal.remove(); if(opts.onClose) opts.onClose(); };
   const drawMain=()=>{
     // 主列表也能拖曳排序，跟「休假/事故」「統計」分頁共用同一套機制
     // (sortedCardDefs+wireDragReorder，順序存在state.cardOrder['unitRulesMain'])。
@@ -5265,7 +5419,7 @@ function openUnitRulesModal(){
         </div>`).join('');
     const t0 = def.times[0]||{start:'',end:''};
     modal.innerHTML=`
-      <div class="section-title"><button class="ghost small" id="urBack">← 返回</button><h2 style="margin:0">${esc(def.icon)} ${esc(def.name)}</h2></div>
+      <div class="section-title"><button class="ghost small" id="urBack">${direct? '關閉' : '← 返回'}</button><h2 style="margin:0">${esc(def.icon)} ${esc(def.name)}</h2></div>
       <div class="row wrap" style="margin-bottom:6px">
         <div style="width:70px"><label>圖示</label><input type="text" id="ddeIcon" value="${esc(def.icon)}" maxlength="2"></div>
         <div class="grow"><label>名稱</label><input type="text" id="ddeName" value="${esc(def.name)}"></div>
@@ -5291,10 +5445,11 @@ function openUnitRulesModal(){
       ${def.mode!=='fixedSlots'?`<div class="row wrap" style="margin-bottom:8px">
         <div class="grow"><label>開始時間</label>${timeSelectHTML('ddeStart', t0.start||'08:00')}</div>
         <div class="grow"><label>結束時間</label>${timeSelectHTML('ddeEnd', t0.end||'08:00')}</div>
-      </div>`:'<div class="hint" style="margin-bottom:8px">這個崗位是固定時段班（查哨），時段清單在該項目自己的預排畫面裡調整，這裡不重複設定。</div>'}
-      <div class="row wrap" style="margin-bottom:8px">
+      </div>`:''}
+      ${def.key==='duty'? dutySettingsBlockHTML(def) : ''}
+      ${def.key==='patrol'? patrolSettingsBlockHTML() : `<div class="row wrap" style="margin-bottom:8px">
         <div class="grow"><label>補休到（選填）</label>${timeSelectHTML('ddeRest', def.restUntil||'')}</div>
-      </div>
+      </div>`}
       <button class="primary" id="ddeSave" style="width:100%;margin-bottom:8px">儲存</button>
       ${def.deletable? `<button class="ghost danger" id="ddeDelete" style="width:100%">刪除這個崗位</button>` : `<div class="hint">內建崗位不能刪除，但上面所有設定都能自由調整。</div>`}`;
     const renderReqBlock=(isVehicle)=>{
@@ -5326,13 +5481,18 @@ function openUnitRulesModal(){
       `;
     };
     renderReqBlock(def.isVehicle);
-    document.getElementById('urBack').onclick=()=>{ editingDutyKey=null; draw(); };
+    document.getElementById('urBack').onclick=()=>{ if(direct){ closeDirect(); return; } editingDutyKey=null; draw(); };
+    // 子視窗（基準點、候選名單）改完就存了，回來重畫這一頁
+    if(def.key==='patrol') wirePatrolSettingsBlock(modal, ()=>drawDutyDefEditor(key));
+    if(def.key==='duty'){ const sp=document.getElementById('ddeDutySplit'); if(sp) sp.onchange=()=>{ document.getElementById('ddeDutyPosBlock').style.display=sp.checked? 'block':'none'; }; }
     const vehicleCb = document.getElementById('ddeVehicle');
     if(vehicleCb) vehicleCb.onchange=()=>renderReqBlock(vehicleCb.checked);
     document.getElementById('ddeSave').onclick=()=>{
       const name=document.getElementById('ddeName').value.trim();
       if(!name){ showAlert('請輸入名稱'); return; }
       if(state.dutyDefinitions.some(d=>d.key!==key && d.name===name)){ showAlert('已經有這個名稱的崗位了'); return; }
+      // 查哨設定先檢查，有問題整個不存（不能改了一半）
+      if(def.key==='patrol'){ const err0=savePatrolSettingsBlock(modal, true); if(err0){ showAlert(err0); return; } }
       def.name = name;
       def.icon = document.getElementById('ddeIcon').value.trim()||'📋';
       def.hint = document.getElementById('ddeHint').value.trim();
@@ -5360,17 +5520,30 @@ function openUnitRulesModal(){
         const s=getTimeSelectValue('ddeStart'), e=getTimeSelectValue('ddeEnd');
         def.times = (s||e)? [{start:s,end:e}] : [];
       }
-      def.restUntil = getTimeSelectValue('ddeRest');
+      let dutyResync=false;
+      if(def.key==='patrol'){
+        const err=savePatrolSettingsBlock(modal);
+        if(err){ showAlert(err); return; }
+      } else def.restUntil = getTimeSelectValue('ddeRest');
+      if(def.key==='duty') dutyResync=saveDutySettingsBlock(modal, def);
       def.mode = def.isVehicle? 'roles' : (def.mode==='roles'? 'people' : def.mode);
       if(!def.linkedPreplan){
         const dayTypeSel = document.getElementById('ddeDayType');
         if(dayTypeSel) def.dayType = dayTypeSel.value;
       }
       syncDutyDefinitionToLegacy(def);
+      // 值星改了分不分位置：今天以後的值星照新的方式重新寫進班表
+      if(dutyResync){
+        const t=PREPLAN_TYPES.find(x=>x.key==='duty'), today=todayStr();
+        Object.keys(state.preplan.duty||{}).filter(d=>d>=today).forEach(d=>syncPlanDate(t, d));
+        remapDutyExceptionSubjects(today);
+        markPlanSystemChange();
+      }
       saveState();
+      showToast('已儲存');
+      if(direct){ closeDirect(); return; }
       editingDutyKey=null;
       draw();
-      showToast('已儲存');
     };
     const delBtn=document.getElementById('ddeDelete');
     if(delBtn) delBtn.onclick=()=>{
@@ -5906,7 +6079,7 @@ function preplanCellMark(type, plan){
   }
   if(type.mode==='people'){
     const groups = peopleGroupsOf(plan);
-    return groups.map(g=>[...ours(g.personIds), ...outside(g.note)].join('･')).filter(Boolean).join('｜');
+    return groups.map(g=>[...ours(g.personIds), ...outside(g.note), ...(g.posNotes||[]).filter(Boolean).flatMap(n=>outside(n))].join('･')).filter(Boolean).join('｜');
   }
   if(type.mode==='roles'){
     const parts=[...ours(plan.personIds), ...(plan.notes||[]).flatMap(n=>outside(n))];
@@ -5957,6 +6130,7 @@ function preplanSupportsTextFormat(type){
    literally when parsing a filled-in file back, so has to line up exactly
    with what preplanFillLines below prints */
 function preplanFillLabels(type){
+  if(type.key==='duty' && dutyPositions()) return dutyPositions().map(p=>p.name);
   if(type.mode==='people') return [type.name];
   if(type.mode==='roles') return [...type.roles];
   if(type.mode==='dayNight') return ['日班','夜班'];
@@ -5976,6 +6150,16 @@ function preplanFillLines(type, plan){
     return parts.join('、');
   };
   const labels=preplanFillLabels(type);
+  if(type.key==='duty' && dutyPositions()){
+    // 值星分位置：值星官、值星士官各一行（只顯示第一組）
+    const pos=dutyPositions();
+    const g0 = peopleGroupsOf(plan)[0];
+    const ids = g0? (dutyGroupPositionalIds(g0, pos) || pos.map(()=>null)) : pos.map(()=>null);
+    return labels.map((l,i)=>{
+      const id=ids[i];
+      return `${l} ${g0? cellText(id && !isSupportId(id)? [id] : [], new Set(g0.nominalIds), id && isSupportId(id)? supportNameOf(id) : '') : ''}`.trimEnd();
+    });
+  }
   if(type.mode==='people'){
     // 文字格式只能編輯/顯示第一組——多組要用日曆頁面本身的編輯畫面調整
     const g0 = peopleGroupsOf(plan)[0];
@@ -6000,19 +6184,77 @@ function preplanFillLines(type, plan){
   }
   return [];
 }
-function generatePreplanFillText(key, ym){
+/* v165：查哨每一班是哪個單位的：預排上有我們的人（或支援的人）＝本部連；
+   標了別的單位＝那個單位；都沒有就照輪值序列 */
+const OUR_PATROL_UNIT='本部連';
+function patrolSlotUnit(date, idx, seqMap){
+  const plan=preplanFor('patrol', date);
+  const cfg=plan && (plan.slots||{})[idx];
+  const ids=cfg? (cfg.personIds||(cfg.personId?[cfg.personId]:[])).filter(Boolean) : [];
+  const other=otherUnitOfSlot(cfg);
+  if(ids.length || (cfg && cfg.note && !other)) return OUR_PATROL_UNIT;
+  if(other) return other;
+  const u=seqMap && seqMap[date] && seqMap[date][idx];
+  return u || OUR_PATROL_UNIT;
+}
+function patrolUnitNames(){
+  const seq=state.patrolSequence||{};
+  return [...new Set([OUR_PATROL_UNIT, ...(seq.weekdayUnits||[]), ...(seq.holidayUnits||[])].filter(Boolean))];
+}
+/* opts.units（只有查哨）：要匯出哪些單位的班次；我們的班照樣給人填，別的單位
+   的班只寫【單位】讓大家看輪值（匯入時略過） */
+function generatePreplanFillText(key, ym, opts){
+  opts=opts||{};
   const type=PREPLAN_TYPES.find(t=>t.key===key);
   const total=daysInMonth(ym);
   const [y,m]=ym.split('-').map(Number);
-  const lines=[`${type.name}　民國${y-1911}年${m}月`,
-    `（在每個項目後面直接打姓名即可，例：${preplanFillLabels(type)[0]} 陳小明；不需要就留空；如果只是掛名備援、不用真的出勤，姓名後面加"(掛)"；找不到的名字也可以直接打上去，不會自動加進名冊）`, ''];
+  const units=(type.mode==='fixedSlots' && key==='patrol')? (opts.units||new Set([OUR_PATROL_UNIT])) : null;
+  const lines=[`${type.name}　民國${y-1911}年${m}月${units? `（${[...units].join('、')}）` : ''}`,
+    `（在每個項目後面直接打姓名即可，例：${preplanFillLabels(type)[0]} 陳小明；不需要就留空；如果只是掛名備援、不用真的出勤，姓名後面加"(掛)"；找不到的名字也可以直接打上去，不會自動加進名冊${units && [...units].some(u=>u!==OUR_PATROL_UNIT)? '；【】裡是別的單位的班，只是讓大家看輪值，不用填' : ''}）`, ''];
+  const seqMap=units? computePatrolSequence(`${ym}-01`, `${ym}-${String(total).padStart(2,'0')}`) : null;
   for(let d=1;d<=total;d++){
     const ds=`${ym}-${String(d).padStart(2,'0')}`;
     const plan=preplanFor(key, ds);
+    if(units){
+      const dayLines=[];
+      fixedSlotOrder(type).forEach(i=>{
+        const unit=patrolSlotUnit(ds, i, seqMap);
+        if(!units.has(unit)) return;
+        const short=type.slots[i].replace(/:\d\d/g,'');
+        if(unit!==OUR_PATROL_UNIT){ dayLines.push(`${short} 【${unit}】`); return; }
+        const cfg=plan? (plan.slots||{})[i] : null;
+        const line=preplanFillLines(type, {slots: cfg? {[i]:cfg} : {}}).find(l=>l.split(' ')[0]===short);
+        dayLines.push(line || short);
+      });
+      if(!dayLines.length) continue;
+      lines.push(`${m}/${d}`);
+      dayLines.forEach(l=>lines.push(l));
+      continue;
+    }
     lines.push(`${m}/${d}`);
     preplanFillLines(type, plan).forEach(l=>lines.push(l));
   }
   return lines.join('\n');
+}
+function openPatrolExportModal(ym){
+  const [y,m]=ym.split('-').map(Number);
+  const units=patrolUnitNames();
+  const modal=document.createElement('div');
+  modal.className='sheet-modal'; modal.style.zIndex='96';
+  modal.innerHTML=`<div class="sheet-inner">
+    <div class="section-title"><h2 style="margin:0">匯出查哨文字：${m}月</h2><button class="ghost small" id="peClose">關閉</button></div>
+    <div class="hint" style="margin-bottom:8px">要匯出哪些單位的班次？本部連的班給人填名字；別的單位的班只寫單位名稱（例：12-14 【憲兵連】），讓大家看輪值，匯入時會略過。每一班輪到哪個單位照輪值序列算。</div>
+    <div class="row wrap" style="gap:12px;margin-bottom:10px">${units.map(u=>`<label style="display:flex;align-items:center;gap:4px;font-size:13px"><input type="checkbox" class="pe-unit" value="${esc(u)}" style="width:auto" ${u===OUR_PATROL_UNIT?'checked':''}>${esc(u)}</label>`).join('')}</div>
+    <button class="primary" id="peGo" style="width:100%">匯出</button>
+  </div>`;
+  document.body.appendChild(modal);
+  dialogEl(modal,'peClose').onclick=()=>modal.remove();
+  dialogEl(modal,'peGo').onclick=()=>{
+    const sel=new Set([...modal.querySelectorAll('.pe-unit:checked')].map(c=>c.value));
+    if(!sel.size){ showAlert('至少勾一個單位。'); return; }
+    modal.remove();
+    openTextShareModal(`查哨 民國${y-1911}年${m}月（${[...sel].join('、')}）`, generatePreplanFillText('patrol', ym, {units:sel}));
+  };
 }
 /* parses a filled-in template back. Tolerant of the header/instruction
    lines being left in place (only date headers "M/D" and "label：value"
@@ -6022,10 +6264,13 @@ function parsePreplanFillText(key, ym, text){
   const type=PREPLAN_TYPES.find(t=>t.key===key);
   const [y,m]=ym.split('-').map(Number);
   const labels=preplanFillLabels(type);
+  const ambiguous=[]; // {date,label,name,count} — 名冊裡有兩個以上同名
   const nameToId=name=>{
     const matches=state.personnel.filter(p=>p.name===name.trim());
     return matches.length===1? matches[0] : null;
   };
+  const unitNames=new Set(key==='patrol'? patrolUnitNames() : []);
+  const skippedUnitLines=[]; // 【憲兵連】這種別的單位的班（只是看輪值）
   /* one filled cell ("陳小明、王小華(掛)、友軍支援") into resolved ids +
      which of those are 掛名 (nominal — rostered but not actually blocking
      their day) + leftover text for names that don't match exactly one
@@ -6038,7 +6283,12 @@ function parsePreplanFillText(key, ym, text){
       if(isPlaceholderName(name)) return; // 「？？？」、空白＝沒有排
       const p=nameToId(name);
       if(p){ ids.push(p.id); if(nominal){ nominalIds.push(p.id); nominalMatches.push({date:curDate, label, name:p.name}); } }
-      else { notes.push(tok); unresolved.push({date:curDate, label, name:tok}); }
+      else {
+        notes.push(tok);
+        const cnt=state.personnel.filter(x=>x.name===name.trim()).length;
+        if(cnt>1) ambiguous.push({date:curDate, label, name:tok, count:cnt});
+        else unresolved.push({date:curDate, label, name:tok});
+      }
     });
     return {ids, nominalIds, note:notes.join('、')};
   };
@@ -6047,9 +6297,21 @@ function parsePreplanFillText(key, ym, text){
   const result={}; // date -> plan
   const unresolved=[]; // {date,label,name} — couldn't match exactly one person; kept as a note, not dropped
   const nominalMatches=[]; // {date,label,name} — successfully recognised as 掛名, for confirming the marker was actually read
+  const multiInCell=[]; // {date,label,text} 一個位置填了不只一個人（只取第一個）
+  const oneOf=(c, label, raw)=>{ if(c.ids.length + (c.note? c.note.split('、').length : 0) > 1) multiInCell.push({date:curDate, label, text:raw}); };
   const flush=()=>{
     if(!curDate) return;
-    if(type.mode==='people'){
+    if(type.key==='duty' && dutyPositions()){
+      const cells=labels.map(l=>{ const c=parseCell(buf[l], curDate, l); oneOf(c, l, buf[l]); return c; });
+      if(cells.some(c=>c.ids.length||c.note)){
+        const existing = (state.preplan[key]||{})[curDate];
+        const extraGroups = existing && existing.groups && existing.groups.length>1 ? existing.groups.slice(1) : [];
+        const first=peopleGroupsOf(existing)[0]||{};
+        const g0={personIds:cells.map(c=>c.ids[0]||null), posNotes:cells.map(c=>c.ids[0]? '' : (c.note||'').split('、')[0]||''), positional:true,
+          nominalIds:cells.flatMap(c=>c.nominalIds.filter(id=>id===c.ids[0])), start:first.start, end:first.end, restUntil:first.restUntil, support:first.support};
+        result[curDate] = extraGroups.length? {groups:[g0, ...extraGroups]} : g0;
+      }
+    } else if(type.mode==='people'){
       const c=parseCell(buf[labels[0]], curDate, labels[0]);
       if(c.ids.length || c.note){
         // 文字匯入只能編輯第一組——如果這天本來就有多組（用日曆頁面的編
@@ -6060,9 +6322,9 @@ function parsePreplanFillText(key, ym, text){
         result[curDate] = extraGroups.length? {groups:[g0, ...extraGroups]} : g0;
       }
     } else if(type.mode==='roles'){
-      const cells=labels.map(r=>parseCell(buf[r], curDate, r));
+      const cells=labels.map(r=>{ const c=parseCell(buf[r], curDate, r); oneOf(c, r, buf[r]); return c; });
       if(cells.some(c=>c.ids.length||c.note)){
-        result[curDate]={personIds:cells.map(c=>c.ids[0]), nominalIds:cells.flatMap(c=>c.nominalIds), notes:cells.map(c=>c.note||undefined)};
+        result[curDate]={personIds:cells.map(c=>c.ids[0]), nominalIds:cells.flatMap(c=>c.nominalIds), notes:cells.map(c=>c.ids[0]? undefined : ((c.note||'').split('、')[0]||undefined))};
       }
     } else if(type.mode==='dayNight'){
       const dc=parseCell(buf['日班'], curDate, '日班'), nc=parseCell(buf['夜班'], curDate, '夜班');
@@ -6073,8 +6335,12 @@ function parsePreplanFillText(key, ym, text){
     } else if(type.mode==='fixedSlots'){
       const slots={};
       labels.forEach((short,i)=>{
-        const raw=buf[short];
+        let raw=buf[short];
         if(raw===undefined) return;
+        // 【憲兵連】／只寫單位名稱＝別的單位的班，只是看輪值，略過
+        const um=raw.match(/^[【\[(（]?\s*([^】\])）]+?)\s*[】\])）]?$/);
+        if(um && um[1].trim()===OUR_PATROL_UNIT) return; // 只寫「本部連」＝還沒填人
+        if(raw.startsWith('【') || (um && unitNames.has(um[1].trim()))){ skippedUnitLines.push({date:curDate, label:short, text:raw}); return; }
         const c=parseCell(raw, curDate, short);
         if(c.ids.length || c.note) slots[i]={personIds:c.ids, nominalIds:c.nominalIds, note:c.note||undefined};
       });
@@ -6083,15 +6349,26 @@ function parsePreplanFillText(key, ym, text){
     buf={};
   };
   const labelStarts = labels.slice().sort((a,b)=>b.length-a.length); // longest-first so "日班" doesn't get shadowed by a shorter prefix
-  lines.forEach(line=>{
+  const badDates=[];      // {text, why} 月份不對、日期不存在——整天略過
+  const dupDates=[];      // 同一天出現兩次（後面的蓋掉前面的）
+  const ignoredLines=[];  // 看不懂的行
+  const seenDates=new Set();
+  let skipBlock=false;
+  lines.forEach((line, ln)=>{
     const trimmed=line.trim();
-    const dm=trimmed.match(/^(\d{1,2})\/(\d{1,2})$/);
+    const dm=trimmed.match(/^(\d{1,2})\s*\/\s*(\d{1,2})(?:\s*[（(].{0,3}[)）])?$/);
     if(dm){
       flush();
-      curDate=`${y}-${String(m).padStart(2,'0')}-${String(Number(dm[2])).padStart(2,'0')}`;
+      const mm=Number(dm[1]), dd=Number(dm[2]);
+      if(mm!==m){ badDates.push({text:trimmed, why:`不是${m}月`}); curDate=null; skipBlock=true; return; }
+      if(dd<1 || dd>daysInMonth(ym)){ badDates.push({text:trimmed, why:'這個月沒有這一天'}); curDate=null; skipBlock=true; return; }
+      curDate=`${y}-${String(m).padStart(2,'0')}-${String(dd).padStart(2,'0')}`;
+      skipBlock=false;
+      if(seenDates.has(curDate)) dupDates.push(curDate);
+      seenDates.add(curDate);
       return;
     }
-    if(!curDate) return;
+    if(!curDate){ if(trimmed && !skipBlock && seenDates.size) ignoredLines.push({ln:ln+1, text:trimmed}); return; }
     for(const lbl of labelStarts){
       if(trimmed===lbl){ buf[lbl]=''; return; }
       // no space/colon required after the label — "00-02陳小明" is just as
@@ -6102,20 +6379,67 @@ function parsePreplanFillText(key, ym, text){
         return;
       }
     }
+    if(trimmed) ignoredLines.push({ln:ln+1, text:trimmed});
   });
   flush();
-  return {result, unresolved, nominalMatches};
+  return {result, unresolved, nominalMatches, ambiguous, badDates, dupDates, ignoredLines, skippedUnitLines, multiInCell};
+}
+/* 文字匯入：這一天照填好的文字會變成什麼（查哨只換掉有填的那幾班） */
+function mergeImportedPlan(key, type, d, v){
+  if(type.mode!=='fixedSlots') return v;
+  // 空白＝沒有變動：只換掉有填的那幾班，其他班（含輪到別的單位的標記、整天
+  // 的支援說明）照舊；原本那班的補休保留，別的單位的班改成我們的就帶入查哨預設補休
+  const old=preplanFor(key, d)||{};
+  const slots=Object.assign({}, JSON.parse(JSON.stringify(old.slots||{})));
+  Object.entries(v.slots||{}).forEach(([i,c])=>{
+    const prev=slots[i]||{};
+    const def=(key==='patrol'? (state.patrolRestDefaults||{})[i] : '')||'';
+    const base=otherUnitOfSlot(prev)? {restUntil:def} : {restUntil:prev.restUntil||def};
+    slots[i]=Object.assign(base, c);
+    if(!c.note) delete slots[i].note;
+  });
+  return Object.assign({}, old, {slots});
+}
+/* 一天預排的每一行（給改前／改後比較用） */
+function planLinesMap(type, plan){
+  const out={};
+  preplanFillLines(type, plan).forEach(l=>{ const i=l.indexOf(' '); const k=i<0? l : l.slice(0,i); out[k]=i<0? '' : l.slice(i+1); });
+  return out;
+}
+/* 先試算：照文字套用之後，這幾天會多出哪些規則問題（不改資料） */
+function simulateImportIssues(key, type, dates, merged){
+  // 在副本上試算，算完換回原本的物件（外面拿著的參照都不受影響）
+  const origState=state, origSync=PLAN_SYNC;
+  state=JSON.parse(JSON.stringify(origState)); PLAN_SYNC=JSON.parse(JSON.stringify(origSync));
+  const out={};
+  try{
+    invalidateRuleStatus();
+    const before={};
+    dates.forEach(d=>{ before[d]=new Set(dayRuleViolations(d).filter(v=>v.level!=='remind').map(violationId)); });
+    dates.forEach(d=>setPreplan(key, d, merged[d]));
+    runPlanSync();
+    invalidateRuleStatus();
+    dates.forEach(d=>{
+      const role=planRoleName(type);
+      out[d]=dayRuleViolations(d).filter(v=>v.level!=='remind' && !before[d].has(violationId(v)))
+        .map(v=>({level:v.level, text:`${v.label||''}${v.pid? ' '+personName(v.pid):''}：${v.msg}`, ignorable:isIgnorableConflict(v)}));
+    });
+  } finally {
+    state=origState; PLAN_SYNC=origSync; rebuildPreplanTypes(); invalidateRuleStatus();
+  }
+  return out;
 }
 function openPreplanTextImportModal(key, ym, onDone){
   const type=PREPLAN_TYPES.find(t=>t.key===key);
+  const today=todayStr();
   const modal=document.createElement('div');
   modal.className='sheet-modal'; modal.style.zIndex='96';
   modal.innerHTML=`
     <div class="sheet-inner">
       <div class="section-title"><h2 style="margin:0">匯入填好的文字：${type.name}</h2><button class="ghost small" id="tiClose">關閉</button></div>
-      <div class="hint" style="margin-bottom:8px">把對方填好的整段文字貼回這裡。系統會依姓名比對名冊，「？？？」或空白代表沒有變動。</div>
+      <div class="hint" style="margin-bottom:8px">把對方填好的整段文字貼回這裡。系統會依姓名比對名冊，「？？？」或空白代表沒有變動${key==='patrol'?'，【】裡別的單位的班會略過':''}。按「檢查」會先列出每天改前→改後跟可能的問題，確認沒錯再套用。</div>
       <textarea id="tiText" placeholder="貼上內容…" style="min-height:200px;font-size:13px;margin-bottom:8px"></textarea>
-      <button class="primary" id="tiCheck" style="width:100%">檢查並套用</button>
+      <button class="primary" id="tiCheck" style="width:100%">檢查</button>
       <div id="tiResult" style="margin-top:10px"></div>
     </div>`;
   document.body.appendChild(modal);
@@ -6123,47 +6447,81 @@ function openPreplanTextImportModal(key, ym, onDone){
   document.getElementById('tiCheck').onclick=()=>{
     const text=document.getElementById('tiText').value;
     if(!text.trim()){ showAlert('請先貼上內容。'); return; }
-    const {result, unresolved, nominalMatches}=parsePreplanFillText(key, ym, text);
-    const dates=Object.keys(result).sort();
+    const pr=parsePreplanFillText(key, ym, text);
+    const {result, unresolved, nominalMatches, ambiguous, badDates, dupDates, ignoredLines, skippedUnitLines, multiInCell}=pr;
     const box=document.getElementById('tiResult');
-    if(!dates.length && !unresolved.length){
-      box.innerHTML=`<div class="badge-issue">⚠️ 沒有解析出任何內容，請確認格式（日期行要是「9/1」這種格式，項目名稱後面直接接名字）</div>`;
+    const allDates=Object.keys(result).sort();
+    if(!allDates.length && !unresolved.length && !badDates.length){
+      box.innerHTML=`<div class="badge-issue">⚠️ 沒有解析出任何內容，請確認格式（日期行要是「${Number(ym.split('-')[1])}/1」這種格式，項目名稱後面直接接名字）</div>`;
       return;
     }
+    // 每天：改前 → 改後，只列有變的
+    const merged={}, changes={};
+    allDates.forEach(d=>{
+      merged[d]=mergeImportedPlan(key, type, d, result[d]);
+      const a=planLinesMap(type, preplanFor(key, d)), b=planLinesMap(type, merged[d]);
+      changes[d]=[...new Set([...Object.keys(a), ...Object.keys(b)])].filter(k=>(a[k]||'')!==(b[k]||'')).map(k=>({label:k, before:a[k]||'', after:b[k]||''}));
+    });
+    const dates=allDates.filter(d=>changes[d].length);
+    // 查哨：填到別的單位的班
+    const seqMap=key==='patrol'? computePatrolSequence(`${ym}-01`, `${ym}-${String(daysInMonth(ym)).padStart(2,'0')}`) : null;
+    const otherUnitFill={};
+    if(key==='patrol') dates.forEach(d=>Object.keys(result[d].slots||{}).forEach(i=>{
+      const u=patrolSlotUnit(d, Number(i), seqMap);
+      if(u!==OUR_PATROL_UNIT) (otherUnitFill[d]=otherUnitFill[d]||[]).push(`${type.slots[i].replace(/:\d\d/g,'')} 照輪值是${u}的班`);
+    }));
+    const futureDates=dates.filter(d=>d>=today);
+    const issues=simulateImportIssues(key, type, futureDates, merged);
+    const perDate={};
+    const push=(d, cls, text)=>{ (perDate[d]=perDate[d]||[]).push({cls, text}); };
+    unresolved.forEach(u=>{ if(changes[u.date] && changes[u.date].length) push(u.date, 'warn', `「${u.name}」名冊裡找不到，會當成別單位支援的人（佔名額）`); });
+    ambiguous.forEach(u=>{ if(changes[u.date] && changes[u.date].length) push(u.date, 'bad', `「${u.name}」名冊裡有 ${u.count} 個同名的人，分不出是誰——請到那天的預排直接勾選`); });
+    Object.entries(otherUnitFill).forEach(([d,list])=>list.forEach(t=>push(d, 'warn', `${t}，套用後會改成本部連排`)));
+    multiInCell.forEach(x=>{ if(changes[x.date] && changes[x.date].length) push(x.date, 'warn', `${x.label}填了不只一個人（${x.text}），只用第一個`); });
+    Object.entries(issues).forEach(([d,list])=>list.forEach(x=>push(d, x.level==='fact'? 'bad' : 'warn', `${x.level==='fact'? (x.ignorable? '衝突' : '不能排') : RULE_LEVEL_LABEL[x.level]+'規則'}：${x.text}`)));
+    dates.filter(d=>d<today).forEach(d=>push(d, 'hint', '已經過去的日子：只改預排，班表那天不會跟著改'));
+    const problemDays=dates.filter(d=>(perDate[d]||[]).some(x=>x.cls==='bad' || x.cls==='warn'));
+    const listTop=(arr, fn, n)=>arr.slice(0,n||8).map(fn).join('<br>')+(arr.length>(n||8)? `<br>…還有 ${arr.length-(n||8)} 筆` : '');
     box.innerHTML=`
       <div class="card" style="padding:10px">
-        <div style="font-weight:600;margin-bottom:6px">解析結果：</div>
-        <div class="muted">・可套用：${dates.length} 天</div>
-        ${nominalMatches.length? `<div class="hint">✅ 已辨識為「掛名」的共 ${nominalMatches.length} 筆：<br>${nominalMatches.slice(0,10).map(x=>`${minguoLabel(x.date)} ${esc(x.label)}：${esc(x.name)}(掛)`).join('<br>')}${nominalMatches.length>10?'<br>…':''}</div>`:''}
-        ${unresolved.length? `<div class="badge-issue">⚠️ 有 ${unresolved.length} 個名字在名冊裡找不到唯一符合的人，會以文字方式保留在該筆勤務的備註（不會加入名冊，也不會誤配對）：<br>${unresolved.slice(0,10).map(u=>`${minguoLabel(u.date)} ${esc(u.label)}：「${esc(u.name)}」`).join('<br>')}${unresolved.length>10?'<br>…':''}</div>`:''}
-        ${dates.length? `<button class="primary" id="tiApply" style="width:100%;margin-top:8px">套用這 ${dates.length} 天</button>`:''}
+        <div style="font-weight:600;margin-bottom:6px">檢查結果</div>
+        <div class="muted">・有變動：${dates.length} 天${problemDays.length? `（其中 ${problemDays.length} 天有要注意的地方，預設不勾）` : ''}${allDates.length-dates.length? `；跟現在一樣、不用改：${allDates.length-dates.length} 天` : ''}</div>
+        ${nominalMatches.length? `<div class="hint">✅ 認出「掛名」${nominalMatches.length} 筆</div>` : ''}
+        ${skippedUnitLines.length? `<div class="hint">略過別的單位的班 ${skippedUnitLines.length} 行（只是看輪值）</div>` : ''}
+        ${badDates.length? `<div class="badge-issue">⚠️ 這幾個日期整天略過：<br>${listTop(badDates, b=>`「${esc(b.text)}」${esc(b.why)}`)}</div>` : ''}
+        ${dupDates.length? `<div class="badge-issue">⚠️ 同一天出現兩次（用後面那一段）：${esc([...new Set(dupDates)].map(shortDateLabel).join('、'))}</div>` : ''}
+        ${ignoredLines.length? `<div class="badge-issue">⚠️ 這幾行看不懂，沒有匯入：<br>${listTop(ignoredLines, x=>`第 ${x.ln} 行「${esc(x.text)}」`)}</div>` : ''}
+        ${dates.length? `<div class="row" style="gap:6px;margin:8px 0 4px"><button class="ghost small" id="tiAll">全選</button><button class="ghost small" id="tiNone">全不選</button><button class="ghost small" id="tiOk">只選沒問題的</button></div>` : ''}
+        <div id="tiDays">${dates.map(d=>{
+          const warn=problemDays.includes(d);
+          return `<label class="ti-day" style="display:flex;gap:8px;align-items:flex-start;padding:6px 0;border-bottom:1px solid var(--line)">
+            <input type="checkbox" class="ti-date" value="${d}" style="width:auto;margin-top:3px" ${warn? '' : 'checked'}>
+            <span class="grow"><b>${esc(shortDateLabel(d))}（${weekdayLabel(d)}）</b>${warn? ' <span class="warn">要注意</span>' : ''}
+              ${changes[d].map(c=>`<br><span style="font-size:12.5px">${esc(c.label)}：<span class="muted">${esc(c.before||'（空）')}</span> → <b>${esc(c.after||'（空）')}</b></span>`).join('')}
+              ${(perDate[d]||[]).map(x=>`<br><span class="${x.cls==='bad'?'warn':'hint'}" style="font-size:12px">${x.cls==='bad'?'⛔':x.cls==='warn'?'⚠️':'ℹ️'} ${esc(x.text)}</span>`).join('')}
+            </span></label>`;
+        }).join('')}</div>
+        ${dates.length? `<button class="primary" id="tiApply" style="width:100%;margin-top:8px">套用勾選的日子</button>` : `<div class="hint" style="margin-top:6px">沒有需要改的日子。</div>`}
       </div>`;
-    if(dates.length){
-      document.getElementById('tiApply').onclick=()=>{
-        dates.forEach(d=>{
-          let v=result[d];
-          if(type.mode==='fixedSlots'){
-            // 空白＝沒有變動：只換掉有填的那幾班，其他班（含輪到別的單位的標記、
-            // 整天的支援說明）照舊；原本那班的補休保留，別的單位的班改成我們的
-            // 就帶入查哨預設補休
-            const old=preplanFor(key, d)||{};
-            const slots=Object.assign({}, JSON.parse(JSON.stringify(old.slots||{})));
-            Object.entries(v.slots||{}).forEach(([i,c])=>{
-              const prev=slots[i]||{};
-              const base=otherUnitOfSlot(prev)? {restUntil:(key==='patrol'? (state.patrolRestDefaults||{})[i] : '')||''} : {restUntil:prev.restUntil||((key==='patrol'? (state.patrolRestDefaults||{})[i] : '')||'')};
-              slots[i]=Object.assign(base, c);
-              if(!c.note) delete slots[i].note;
-            });
-            v=Object.assign({}, old, {slots});
-          }
-          setPreplan(key, d, v);
-        });
-        saveState();
-        showAlert(`已套用 ${dates.length} 天的內容到「${type.name}」預排。`);
-        modal.remove();
-        if(onDone) onDone();
-      };
-    }
+    if(!dates.length) return;
+    const boxes=()=>[...box.querySelectorAll('.ti-date')];
+    const upd=()=>{ const n=boxes().filter(b=>b.checked).length; const btn=document.getElementById('tiApply'); btn.textContent=`套用勾選的 ${n} 天`; btn.disabled=!n; };
+    boxes().forEach(b=>b.onchange=upd); upd();
+    document.getElementById('tiAll').onclick=()=>{ boxes().forEach(b=>b.checked=true); upd(); };
+    document.getElementById('tiNone').onclick=()=>{ boxes().forEach(b=>b.checked=false); upd(); };
+    document.getElementById('tiOk').onclick=()=>{ boxes().forEach(b=>b.checked=!problemDays.includes(b.value)); upd(); };
+    document.getElementById('tiApply').onclick=()=>{
+      const pick=boxes().filter(b=>b.checked).map(b=>b.value);
+      if(!pick.length) return;
+      const factsBefore=planFactSnapshot(pick);
+      pick.forEach(d=>setPreplan(key, d, merged[d]));
+      saveState();
+      modal.remove();
+      if(onDone) onDone();
+      const items=newPlanFacts(factsBefore, pick);
+      if(items.length) confirmPlanConflicts(items, null);
+      else showAlert(`已套用 ${pick.length} 天的內容到「${type.name}」預排。`);
+    };
   };
 }
 /* 值星's dedicated quick-fill: pick the person(s) once, type a date range
@@ -6380,80 +6738,154 @@ function openPatrolAnchorModal(onDone){
     });
   };
 }
+/* v165：排一段值星——選人（分位置的話值星官、值星士官各選一人）、交接那天，
+   照崗位定義的「一次值幾天」「交接時間」一次排好整段：
+   - 交接那天：交接時間～24:00 是新的這組（前一組當天交接前的部分保留）
+   - 中間每天：整天
+   - 最後一天：00:00～交接時間，交接後留給下一組 */
+function dutyTermPlanDays(start, days, handover){
+  const H=handover||'00:00';
+  const out=[];
+  if(H==='00:00'){
+    dateRangeList(start, addDays(start, days-1)).forEach(d=>out.push({date:d, start:'00:00', end:'24:00', part:'full'}));
+    return out;
+  }
+  out.push({date:start, start:H, end:'24:00', part:'first'});
+  for(let i=1;i<days;i++) out.push({date:addDays(start, i), start:'00:00', end:'24:00', part:'full'});
+  out.push({date:addDays(start, days), start:'00:00', end:H, part:'last'});
+  return out;
+}
+function addDays(d, n){ let x=d; for(let i=0;i<n;i++) x=nextDateStr(x); return x; }
 function openDutyRangeFillModal(onDone){
   const type=PREPLAN_TYPES.find(t=>t.key==='duty');
+  const pos=dutyPositions();
   const modal=document.createElement('div');
   modal.className='sheet-modal'; modal.style.zIndex='96';
   const pool=preplanEligiblePeople(type);
   const lastTo = (state.preplanDefaults.duty||{}).lastRangeFillTo;
-  const lastStart = preplanDefault('duty','start','18:00');
-  const lastEnd = preplanDefault('duty','end','22:00');
+  const H0=dutyHandoverTime(), N0=dutyTermDays();
+  const preset=state.miscPresets.find(p=>p.role===planRoleName(type));
+  const reasonsFor=pd=>p=>{
+    const r=driverQualificationIssues(p, Object.assign({}, preset||{}, pd? {requiredRanks:[]} : {}));
+    if(pd && (pd.ranks||[]).length && !pd.ranks.includes(p.rank)) r.push(`${pd.name}需為${pd.ranks.join('或')}`);
+    return r;
+  };
+  const row=(p, input, reasons)=>`<label style="display:flex;align-items:flex-start;gap:6px;font-size:13px;padding:6px 0;border-bottom:1px solid var(--line);${reasons.length?'opacity:.6':''}">${input}<span class="grow">${esc(p.name)}（${p.group||'未分組'}·${p.rank}${personBadges(p)}）${reasons.length? `<br><span class="warn" style="font-size:11px">🚫${esc(reasons.join('・'))}</span>`:''}</span></label>`;
+  const pickers = pos? pos.map((pd,pi)=>{
+    const rf=reasonsFor(pd);
+    const list=pool.map(p=>({p, r:rf(p)})).sort((a,b)=>(a.r.length>0)-(b.r.length>0));
+    return `<div class="hint" style="margin:6px 0 2px"><b>${esc(pd.name)}</b>${(pd.ranks||[]).length? `（需為${esc(pd.ranks.join('、'))}）`:''}</div>
+      <div class="df-list" data-df-list="${pi}" style="max-height:24vh;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:8px;margin-bottom:8px">
+        ${list.map(({p,r})=>row(p, `<input type="radio" name="dfPos${pi}" class="df-pos${pi}" value="${p.id}" style="width:auto;margin-top:2px">`, r)).join('')}
+      </div>`;
+  }).join('') : `<div id="dfList" class="df-list" style="max-height:30vh;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:8px;margin-bottom:8px">
+        ${pool.map(p=>row(p, `<input type="checkbox" class="df-person" value="${p.id}" style="width:auto;margin-top:2px">`, reasonsFor(null)(p))).join('')}
+      </div>`;
   modal.innerHTML=`
     <div class="sheet-inner">
-      <div class="section-title"><h2 style="margin:0">值星：直接設定範圍</h2><button class="ghost small" id="dfClose">關閉</button></div>
-      <div class="hint" style="margin-bottom:8px">選人、填一段日期範圍跟時間，套用到範圍內的每一天。預設會新增一組（保留這天原本已經有的內容），勾選下面的選項才會取代原本的。如果這是接在前一段之後的下一棒（例如前一段9/17~9/24、這段接著從9/24開始），按「接續上一段」會自動把開始日期抓成上一段結束日的隔天，避免兩段都想用同一天當開始/結束，變成同一天被排兩組、互相重疊。</div>
-      ${lastTo? `<button class="ghost small" id="dfContinue" style="margin-bottom:8px">⏩ 接續上一段（上一段到 ${minguoLabel(lastTo)} 結束，這段從 ${minguoLabel(nextDateStr(lastTo))} 開始）</button>` : ''}
+      <div class="section-title"><h2 style="margin:0">排一段值星</h2><button class="ghost small" id="dfClose">關閉</button></div>
+      <div class="hint" style="margin-bottom:8px">選${pos? pos.map(p=>p.name).join('、') : '值星的人'}、交接那天，照「一次值幾天」「交接時間」一次排好整段（這兩個預設在崗位定義的值星設定）。交接那天前一組交接前的部分會保留。</div>
+      ${lastTo? `<button class="ghost small" id="dfContinue" style="margin-bottom:8px">⏩ 接續上一段（上一段在 ${minguoLabel(lastTo)} 交接）</button>` : ''}
       <div class="row wrap" style="margin-bottom:6px">
         <div class="grow"><label>搜尋姓名</label><input type="text" id="dfSearch" placeholder="輸入姓名關鍵字"></div>
       </div>
-      <div id="dfList" style="max-height:30vh;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:8px;margin-bottom:8px">
-        ${pool.map(p=>`<label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:6px 0;border-bottom:1px solid var(--line)">
-          <input type="checkbox" class="df-person" value="${p.id}" style="width:auto">
-          ${esc(p.name)}（${p.group||'未分組'}·${p.rank}${personBadges(p)}）
-        </label>`).join('')}
+      ${pickers}
+      <div class="row wrap" style="margin-bottom:8px">
+        <div class="grow"><label>交接那天（開始接班）</label><input type="date" id="dfFrom" value="${lastTo||currentDate}"></div>
+        <div style="width:100px"><label>值幾天</label><input type="number" min="1" id="dfDays" value="${N0}"></div>
       </div>
       <div class="row wrap" style="margin-bottom:8px">
-        <div class="grow"><label>開始日期</label><input type="date" id="dfFrom" value="${currentDate}"></div>
-        <div class="grow"><label>結束日期</label><input type="date" id="dfTo" value="${currentDate}"></div>
+        <div class="grow"><label>交接時間</label>${timeSelectHTML('dfHandover', H0)}</div>
       </div>
-      <div class="row wrap" style="margin-bottom:8px">
-        <div class="grow"><label>開始時間</label>${timeSelectHTML('dfStart', lastStart)}</div>
-        <div class="grow"><label>結束時間</label>${timeSelectHTML('dfEnd', lastEnd)}</div>
-      </div>
-      <label style="display:flex;align-items:center;gap:6px;font-size:13px;margin-bottom:8px">
-        <input type="checkbox" id="dfReplace" style="width:auto"> 取代這段範圍原本的內容（不保留舊的，只留這次設定的這組）
-      </label>
-      <button class="primary" id="dfSave" style="width:100%">套用到這段範圍</button>
+      <div class="hint" id="dfPreview" style="margin-bottom:8px"></div>
+      <button class="primary" id="dfSave" style="width:100%">排這一段</button>
     </div>`;
   document.body.appendChild(modal);
   document.getElementById('dfClose').onclick=()=>modal.remove();
-  const dfContinueBtn = document.getElementById('dfContinue');
-  if(dfContinueBtn) dfContinueBtn.onclick=()=>{
-    document.getElementById('dfFrom').value = nextDateStr(lastTo);
+  const preview=()=>{
+    const from=document.getElementById('dfFrom').value, n=parseInt(document.getElementById('dfDays').value,10)||0, H=getTimeSelectValue('dfHandover')||'00:00';
+    const el=document.getElementById('dfPreview');
+    if(!from || n<1){ el.textContent=''; return; }
+    const days=dutyTermPlanDays(from, n, H);
+    const last=days[days.length-1];
+    el.textContent = H==='00:00'
+      ? `${minguoLabel(from)} 00:00 接班 → ${minguoLabel(last.date)} 24:00 交班（共 ${n} 天）`
+      : `${minguoLabel(from)}（${weekdayLabel(from)}）${H} 接班 → ${minguoLabel(last.date)}（${weekdayLabel(last.date)}）${H} 交給下一組（共 ${n} 天）`;
   };
-  const se=document.getElementById('dfSearch'), le=document.getElementById('dfList');
+  ['dfFrom','dfDays'].forEach(id=>document.getElementById(id).addEventListener('input', preview));
+  modal.addEventListener('change', e=>{ if((e.target.id||'').startsWith('dfHandover')) preview(); });
+  preview();
+  const dfContinueBtn = document.getElementById('dfContinue');
+  if(dfContinueBtn) dfContinueBtn.onclick=()=>{ document.getElementById('dfFrom').value = lastTo; preview(); };
+  const se=document.getElementById('dfSearch');
   se.oninput=()=>{
     const term=se.value.trim();
-    le.querySelectorAll('label').forEach(l=>{ l.style.display=(!term||l.textContent.includes(term))?'flex':'none'; });
+    modal.querySelectorAll('.df-list label').forEach(l=>{ l.style.display=(!term||l.textContent.includes(term))?'flex':'none'; });
   };
-  keepSearchFocusOnPick(le, se);
   document.getElementById('dfSave').onclick=()=>{
-    const ids=[...modal.querySelectorAll('.df-person:checked')].map(cb=>cb.value);
-    const from=document.getElementById('dfFrom').value, to=document.getElementById('dfTo').value;
-    if(!ids.length){ showAlert('請至少選一位人員'); return; }
-    if(!from||!to||from>to){ showAlert('請確認日期範圍正確'); return; }
-    const start=getTimeSelectValue('dfStart'), end=getTimeSelectValue('dfEnd');
-    const replace=document.getElementById('dfReplace').checked;
-    const dates=dateRangeList(from,to);
-    const newGroup=()=>({personIds:[...ids], start, end, restUntil:''});
-    dates.forEach(d=>{
-      if(replace){
-        setPreplan('duty', d, newGroup());
-        return;
+    const from=document.getElementById('dfFrom').value;
+    const n=parseInt(document.getElementById('dfDays').value,10);
+    const H=getTimeSelectValue('dfHandover')||'00:00';
+    let group;
+    if(pos){
+      const ids=pos.map((_,pi)=>{ const r=modal.querySelector(`.df-pos${pi}:checked`); return r? r.value : null; });
+      if(!ids.some(Boolean)){ showAlert(`請至少選一位（${pos.map(p=>p.name).join('／')}）`); return; }
+      if(ids[0] && ids[0]===ids[1]){ showAlert(`同一個人不能同時當${pos.map(p=>p.name).join('跟')}。`); return; }
+      group=()=>({personIds:[...ids], posNotes:pos.map(()=>''), positional:true, nominalIds:[], restUntil:''});
+    } else {
+      const ids=[...modal.querySelectorAll('.df-person:checked')].map(cb=>cb.value);
+      if(!ids.length){ showAlert('請至少選一位人員'); return; }
+      group=()=>({personIds:[...ids], nominalIds:[], restUntil:''});
+    }
+    if(!from || !(n>=1)){ showAlert('請確認交接那天跟天數。'); return; }
+    const days=dutyTermPlanDays(from, n, H);
+    const prevDay=prevDateStr(from);
+    const dates=[prevDay, ...days.map(x=>x.date)];
+    const factsBefore=planFactSnapshot(dates);
+    const toMinE=t=>t==='24:00'? 1440 : toMin(t);
+    // 前一天跨夜的值星（例如舊的 12:00-12:00）延續到交接時間以後的部分剪掉，免得兩組重疊
+    {
+      const pg=peopleGroupsOf(preplanFor('duty', prevDay)).map(g=>JSON.parse(JSON.stringify(g)));
+      let changed=false;
+      pg.forEach(g=>{
+        const gs=toMin(g.start||'00:00'), ge=toMinE(g.end||'24:00');
+        if(ge<=gs && ge>toMin(H)){ g.end = H==='00:00'? '24:00' : H; changed=true; }
+      });
+      if(changed) setPreplan('duty', prevDay, pg.length===1 && !preplanFor('duty', prevDay).groups? pg[0] : {groups:pg});
+    }
+    days.forEach(x=>{
+      const existing=peopleGroupsOf(preplanFor('duty', x.date)).map(g=>JSON.parse(JSON.stringify(g)));
+      let keep=[];
+      if(x.part==='first'){
+        // 交接前（前一組）留著；跨過交接時間的剪到交接時間
+        existing.forEach(g=>{
+          const gs=toMin(g.start||'00:00'), ge=toMinE(g.end||'24:00'), h=toMin(x.start);
+          if(gs>=h) return;
+          if(ge<=gs || ge>h) g.end=x.start;
+          keep.push(g);
+        });
+      } else if(x.part==='last'){
+        // 交接後（下一組）留著；跨過交接時間的剪成從交接時間開始
+        const h=toMin(x.end);
+        existing.forEach(g=>{
+          const gs=toMin(g.start||'00:00'), ge=toMinE(g.end||'24:00');
+          if(gs>=h){ keep.push(g); return; }
+          if(ge>gs && ge<=h) return; // 整段在交接前：換成這一組
+          g.start=x.end; keep.push(g);
+        });
       }
-      const existing = preplanFor('duty', d);
-      const existingGroups = peopleGroupsOf(existing);
-      setPreplan('duty', d, {groups:[...existingGroups, newGroup()]});
+      const ng=Object.assign(group(), {start:x.start, end:x.end});
+      const groups=[...keep, ng].sort((a,b)=>toMin(a.start||'00:00')-toMin(b.start||'00:00'));
+      setPreplan('duty', x.date, {groups});
     });
-    // 記住這段結束在哪一天+用的時間，下一段按「接續上一段」才能自動接上，
-    // 不用手動算「前一段結束日的隔天」是幾號
-    rememberPreplanDefaults('duty', {start, end});
     if(!state.preplanDefaults.duty) state.preplanDefaults.duty={};
-    state.preplanDefaults.duty.lastRangeFillTo = to;
+    state.preplanDefaults.duty.lastRangeFillTo = H==='00:00'? addDays(from, n) : days[days.length-1].date;
     saveState();
-    showAlert(`已套用到 ${dates.length} 天（${minguoLabel(from)}~${minguoLabel(to)}）${replace?'（取代原本內容）':'（新增一組，保留原本內容）'}。`);
     modal.remove();
     if(onDone) onDone();
+    const items=newPlanFacts(factsBefore, dates);
+    const msg=`已排好：${minguoLabel(from)} ${H} 接班 → ${minguoLabel(days[days.length-1].date)} ${H==='00:00'?'24:00':H} 交班（${n} 天）。`;
+    if(items.length) confirmPlanConflicts(items, null); else showAlert(msg);
   };
 }
 function openPreplanCalendar(key){
@@ -6499,12 +6931,11 @@ function openPreplanCalendar(key){
         ${cells.join('')}
       </div>
       <div class="hint" style="margin-bottom:8px">點日期輸入當天內容；已排的日期外框會變色。假日以紅字標示。名字顏色：<span style="color:var(--accent)">一般顏色</span>＝我們單位的人，<span class="cal-mark-outside">橘色斜體</span>＝找不到、可能是別單位支援的人。</div>
-      ${key==='duty'? `<button class="ghost" id="calDutyFill" style="width:100%;margin-bottom:6px">📝 直接設定範圍（選人＋起訖日＋起訖時間，一次套用）</button>` : ''}
+      ${key==='duty'? `<button class="ghost" id="calDutyFill" style="width:100%;margin-bottom:6px">📝 排一段值星（選人＋交接那天，照「一次值幾天」「交接時間」一次排好）</button>
+      <button class="ghost" id="calDutySettings" style="width:100%;margin-bottom:6px">⚙️ 值星設定（值星官／值星士官、一次值幾天、交接時間）</button>` : ''}
       ${key==='patrol'? `
       <button class="ghost" id="calPatrolSeqView" style="width:100%;margin-bottom:6px">🔁 查看本月單位輪值序列</button>
-      <button class="ghost" id="calPatrolSeqAnchor" style="width:100%;margin-bottom:6px">⚙️ 序列錨點設定</button>
-      <button class="ghost" id="calPatrolRankTargets" style="width:100%;margin-bottom:6px">⚙️ 查哨排班設定（補休、階級平均）</button>
-      <button class="ghost" id="calPatrolRange" style="width:100%;margin-bottom:6px">👥 候選名單範圍${state.patrolCandidateIds? `（目前 ${state.patrolCandidateIds.length} 人）` : '（目前：全部人員）'}</button>
+      <button class="ghost" id="calPatrolSettings" style="width:100%;margin-bottom:6px">⚙️ 查哨設定（補休、輪值單位、階級平均、候選名單）</button>
       <button class="primary" id="calPatrolAutoFill" style="width:100%;margin-bottom:6px">🎯 依規則自動排本月（本部連）</button>
       ` : ''}
       ${preplanSupportsTextFormat(type)? `
@@ -6514,12 +6945,13 @@ function openPreplanCalendar(key){
       <button class="ghost" id="calImport" style="width:100%;margin-bottom:6px">📥 本月整月重新套用到班表（含已過去的日期）</button>
       <button class="ghost" id="calCheckpoint" style="width:100%;margin-bottom:6px">📌 存檔點</button>
       <button class="ghost small danger" id="calClearMonth" style="width:100%">清空本月預排</button>`;
-    if(key==='duty') document.getElementById('calDutyFill').onclick=()=>openDutyRangeFillModal(()=>{ draw(); });
+    if(key==='duty'){
+      document.getElementById('calDutyFill').onclick=()=>openDutyRangeFillModal(()=>{ draw(); });
+      document.getElementById('calDutySettings').onclick=()=>openUnitRulesModal({dutyKey:'duty', onClose:()=>draw()});
+    }
     if(key==='patrol'){
       document.getElementById('calPatrolSeqView').onclick=()=>openPatrolSequenceViewModal(ym);
-      document.getElementById('calPatrolSeqAnchor').onclick=()=>openPatrolAnchorModal(()=>{ draw(); });
-      document.getElementById('calPatrolRankTargets').onclick=()=>openPatrolRankTargetsModal(()=>{ draw(); });
-      document.getElementById('calPatrolRange').onclick=()=>openPatrolRangeModal(()=>{ draw(); });
+      document.getElementById('calPatrolSettings').onclick=()=>openUnitRulesModal({dutyKey:'patrol', onClose:()=>draw()});
       document.getElementById('calPatrolAutoFill').onclick=()=>{
         const candSet=patrolCandidateIdSet();
         const candCount=candSet? candSet.size : state.personnel.length;
@@ -6542,7 +6974,8 @@ function openPreplanCalendar(key){
       (data)=>{ state.preplan[key]=data; draw(); });
     if(preplanSupportsTextFormat(type)){
       document.getElementById('calExportText').onclick=()=>{
-        openTextShareModal(`${type.name} 民國${y-1911}年${m}月`, generatePreplanFillText(key, ym));
+        if(key==='patrol') openPatrolExportModal(ym);
+        else openTextShareModal(`${type.name} 民國${y-1911}年${m}月`, generatePreplanFillText(key, ym));
       };
       document.getElementById('calImportText').onclick=()=>openPreplanTextImportModal(key, ym, draw);
     }
@@ -7114,6 +7547,42 @@ function preplanEligiblePeople(type){
   // they're not a qualification gap, they're not part of the roster anymore.
   return state.personnel.filter(p=>!isDeparted(p)).sort((a,b)=>groupIndex(a.group)-groupIndex(b.group)||rankIndex(a.rank)-rankIndex(b.rank));
 }
+/* v165：排預排的時候就處理衝突（長期事故、休假／事故、同時段、補休、準備
+   時間）：存檔前後比一次那幾天的「事實衝突」，這次新產生的列出來，選「忽略
+   一次」就先記好（跟排班頁的忽略一次同一種紀錄），排班頁不會再問。已經過
+   去的日期預排不會寫進班表，不檢查。 */
+function planFactSnapshot(dates){
+  invalidateRuleStatus();
+  const today=todayStr(), out={};
+  dates.forEach(d=>{ if(d>=today) out[d]=new Set(dayRuleStatus(d).facts.map(violationId)); });
+  return out;
+}
+function newPlanFacts(before, dates){
+  invalidateRuleStatus();
+  const today=todayStr(), items=[];
+  [...new Set(dates)].sort().forEach(d=>{
+    if(d<today) return;
+    const had=before[d]||new Set();
+    dayRuleStatus(d).facts.forEach(v=>{ if(!had.has(violationId(v))) items.push({date:d, v}); });
+  });
+  return items;
+}
+function confirmPlanConflicts(items, reopen, done){
+  if(!items.length){ if(done) done(); return; }
+  const ign=items.filter(x=>isIgnorableConflict(x.v)), hard=items.filter(x=>!isIgnorableConflict(x.v));
+  const line=x=>`・${shortDateLabel(x.date)} ${x.v.label||''}${x.v.pid? ' '+personName(x.v.pid) : ''}：${x.v.msg}`;
+  const list=arr=>arr.slice(0,12).map(line).join('\n')+(arr.length>12? `\n…還有 ${arr.length-12} 筆` : '');
+  const msg=`這次排的有衝突：\n${ign.length? list(ign) : ''}${hard.length? `${ign.length?'\n\n':''}不能忽略（要換人）：\n${list(hard)}` : ''}${ign.length? '\n\n「忽略一次」＝照排、只記錄有衝突，排班頁不會再問。' : ''}`;
+  const choices=[];
+  if(ign.length) choices.push({label: ign.length>1? `全部忽略一次（${ign.length} 筆）` : '忽略一次', primary:true, onPick:()=>{
+    ign.forEach(x=>addRuleException(x.date, x.v, 'ignored', '', 0, false));
+    invalidateRuleStatus(); saveState(); render();
+    showToast(`已記錄 ${ign.length} 筆忽略一次（有衝突）`);
+    if(done) done();
+  }});
+  if(reopen) choices.push({label:'回去改', onPick:reopen});
+  showChoice(msg, choices, {cancelLabel:'先這樣（排班頁再處理）', onCancel:done});
+}
 function openPreplanDayEditor(key, date, onSaved){
   if(key==='standby') return openStandbyEditor(date, onSaved);
   if(key==='leave') return openLeaveTableEditor(date, onSaved);
@@ -7122,6 +7591,26 @@ function openPreplanDayEditor(key, date, onSaved){
   const plan = preplanFor(key, date) || {};
   const pool = preplanEligiblePeople(type);
   const t0 = preset? (presetTimes(preset)[0]||{start:'',end:''}) : {start:'',end:''};
+  /* v165：這天這個時段誰有衝突（長期事故、休假／事故、其他勤務、補休）——不
+     算這個預排自己在班表上的項目。可以勾，存檔時會問要不要忽略一次。 */
+  const conflictFnFor=(st, en)=>{
+    if(!st || !en || date<todayStr()) return null;
+    const sMin=toMin(st), eMin=wrapEndMin(sMin, toMin(en));
+    const role=planRoleName(type);
+    const cache=new Map();
+    return p=>{
+      if(cache.has(p.id)) return cache.get(p.id);
+      const had=Object.prototype.hasOwnProperty.call(state.misc, date), saved=state.misc[date];
+      state.misc[date]=(saved||[]).filter(m=>!(m.role===role && !m.standbyAnchor));
+      let r=[];
+      try{ if(isPersonUnavailable(p.id, date, sMin, eMin)) r=unavailabilityReasonsInRange(p.id, date, sMin, eMin).filter(x=>x!=='不可排（原因不明）'); }
+      finally{ if(had) state.misc[date]=saved; else delete state.misc[date]; }
+      cache.set(p.id, r);
+      return r;
+    };
+  };
+  let rolesConflictFn=null; // 駕駛/車長清單共用（換駕駛時車長清單會重畫）
+  const conflictLine=(c)=>c && c.length? `<br><span class="warn pp-conflict" style="font-size:11px">⚠️ 這天有衝突：${esc(c.join('・'))}</span>` : '';
   const modal=document.createElement('div');
   modal.className='sheet-modal'; modal.style.zIndex='93';
   const searchBlock = (id)=>`<div class="row wrap" style="margin-bottom:6px">
@@ -7142,31 +7631,34 @@ function openPreplanDayEditor(key, date, onSaved){
     listEl.addEventListener('change', update);
     update();
   };
-  const checkRows = (selectedIds, cls, reasonsFn, nominalIds)=>{
+  const checkRows = (selectedIds, cls, reasonsFn, nominalIds, conflictFn)=>{
     if(!pool.length) return `<div class="empty">目前沒有人員</div>`;
     const nomSet = new Set(nominalIds||[]);
-    const withReasons = pool.map(p=>({p, reasons: reasonsFn? reasonsFn(p) : []}));
-    withReasons.sort((a,b)=>(a.reasons.length>0)-(b.reasons.length>0));
-    return withReasons.map(({p,reasons})=>`
+    const withReasons = pool.map(p=>({p, reasons: reasonsFn? reasonsFn(p) : [], conflicts: conflictFn? conflictFn(p) : []}));
+    // 可以排的在上面，有衝突的其次，不符合資格的最下面
+    const rankOf=x=>x.reasons.length? 2 : x.conflicts.length? 1 : 0;
+    withReasons.sort((a,b)=>rankOf(a)-rankOf(b));
+    return withReasons.map(({p,reasons,conflicts})=>`
       <label style="display:flex;align-items:flex-start;gap:6px;font-size:13px;padding:6px 0;border-bottom:1px solid var(--line);${reasons.length?'opacity:.6':''}">
         <input type="checkbox" class="${cls}" value="${p.id}" style="width:auto;flex-shrink:0;margin-top:2px" ${selectedIds.includes(p.id)?'checked':''}>
-        <span class="grow">${esc(p.name)}（${p.group||'未分組'}·${p.rank}${personBadges(p)}）${reasons.length? `<br><span class="warn" style="font-size:11px">🚫${esc(reasons.join('・'))}</span>`:''}</span>
+        <span class="grow">${esc(p.name)}（${p.group||'未分組'}·${p.rank}${personBadges(p)}）${reasons.length? `<br><span class="warn" style="font-size:11px">🚫${esc(reasons.join('・'))}</span>`:''}${conflictLine(conflicts)}</span>
         <label style="display:flex;align-items:center;gap:3px;font-size:11px;color:var(--dim);flex-shrink:0;margin-top:2px" title="掛名：排進去但不算忙碌，可以同時被排別的任務">
           <input type="checkbox" class="${cls}-nom" value="${p.id}" style="width:auto" ${nomSet.has(p.id)?'checked':''}>掛
         </label>
       </label>`).join('');
   };
-  const radioRows = (selectedId, cls, name, reasonsFn, nominalIds)=>{
+  const radioRows = (selectedId, cls, name, reasonsFn, nominalIds, conflictFn)=>{
     if(!pool.length) return `<div class="empty">沒有符合資格的人員</div>`;
     const nomSet = new Set(nominalIds||[]);
-    const withReasons = pool.map(p=>({p, reasons: reasonsFn? reasonsFn(p) : []}));
-    withReasons.sort((a,b)=>(a.reasons.length>0)-(b.reasons.length>0));
+    const withReasons = pool.map(p=>({p, reasons: reasonsFn? reasonsFn(p) : [], conflicts: conflictFn? conflictFn(p) : []}));
+    const rankOf=x=>x.reasons.length? 2 : x.conflicts.length? 1 : 0;
+    withReasons.sort((a,b)=>rankOf(a)-rankOf(b));
     return `<label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0">
         <input type="radio" name="${name}" class="${cls}" value="" style="width:auto" ${!selectedId?'checked':''}> （未指派）
-      </label>`+withReasons.map(({p,reasons})=>`
+      </label>`+withReasons.map(({p,reasons,conflicts})=>`
       <label style="display:flex;align-items:flex-start;gap:6px;font-size:13px;padding:6px 0;border-bottom:1px solid var(--line);${reasons.length?'opacity:.6':''}">
         <input type="radio" name="${name}" class="${cls}" value="${p.id}" style="width:auto;margin-top:2px" ${p.id===selectedId?'checked':''}>
-        <span class="grow">${esc(p.name)}（${p.group||'未分組'}·${p.rank}${personBadges(p)}）${reasons.length? `<br><span class="warn" style="font-size:11px">🚫${esc(reasons.join('・'))}</span>`:''}</span>
+        <span class="grow">${esc(p.name)}（${p.group||'未分組'}·${p.rank}${personBadges(p)}）${reasons.length? `<br><span class="warn" style="font-size:11px">🚫${esc(reasons.join('・'))}</span>`:''}${conflictLine(conflicts)}</span>
         <label style="display:flex;align-items:center;gap:3px;font-size:11px;color:var(--dim);flex-shrink:0;margin-top:2px" title="掛名：排進去但不算忙碌，可以同時被排別的任務">
           <input type="checkbox" class="${cls}-nom" value="${p.id}" style="width:auto" ${nomSet.has(p.id)?'checked':''}>掛
         </label>
@@ -7201,7 +7693,36 @@ function openPreplanDayEditor(key, date, onSaved){
     });
     return issues;
   }) : null;
-  const groupBlockHTML = (g, gi)=>`
+  /* v165：值星分值星官／值星士官時，每一組是兩個位置各選一人 */
+  // 舊預排某一組的人比位置多（例如兩人＋支援）：這天照舊不分位置，免得存檔時人不見
+  const dutyPosAll = key==='duty'? dutyPositions() : null;
+  const dutyPosFallback = !!(dutyPosAll && peopleGroupsOf(plan).some(g=>!dutyGroupPositionalIds(g, dutyPosAll)));
+  const dutyPos = dutyPosFallback? null : dutyPosAll;
+  const posBlockHTML=(g, gi)=>{
+    const sel=dutyGroupPositionalIds(g, dutyPos) || dutyPos.map(()=>null);
+    const cf=conflictFnFor(g.start||preplanDefault(key,'start',t0.start), g.end||preplanDefault(key,'end',t0.end));
+    const posReasons=pd=>p=>{
+      const r=driverQualificationIssues(p, Object.assign({}, preset||{}, {requiredRanks:[]}));
+      requiredSkillsForType.forEach(sk=>{ if(!(p.skills||[]).includes(sk) && !r.includes(skillRequirementLabel(sk))) r.push(skillRequirementLabel(sk)); });
+      if((pd.ranks||[]).length && !pd.ranks.includes(p.rank)) r.push(`${pd.name}需為${pd.ranks.join('或')}`);
+      return r;
+    };
+    return dutyPos.map((pd,pi)=>{
+      const cur=sel[pi];
+      return `<div class="hint" style="margin:6px 0 2px"><b>${esc(pd.name)}</b>${(pd.ranks||[]).length? `（需為${esc(pd.ranks.join('、'))}）`:''}</div>`
+        + searchBlock(`ppSearch${gi}-${pi}`)
+        + listBox(radioRows(cur && !isSupportId(cur)? cur : '', `pp-pos${gi}-${pi}`, `pppos${gi}-${pi}`, posReasons(pd), g.nominalIds, cf), `ppList${gi}-${pi}`)
+        + `<div class="row wrap" style="margin:0 0 6px"><div class="grow"><label>${esc(pd.name)}由支援的人擔任（別單位的人，手打姓名；會佔這個位置）</label><input type="text" class="pp-sup-people" id="ppRoleNotePos${gi}-${pi}" value="${esc(cur && isSupportId(cur)? supportNameOf(cur) : '')}" placeholder="例：王小明"></div></div>`;
+    }).join('');
+  };
+  const groupBlockHTML = (g, gi)=>dutyPos? `
+    <div class="pp-group" data-group-idx="${gi}" style="border:1px solid var(--line);border-radius:6px;padding:8px;margin-bottom:8px">
+      <div class="row" style="margin-bottom:6px;align-items:center"><span class="grow muted" style="font-weight:600">第${gi+1}組</span><button class="ghost small danger" data-remove-group="${gi}">移除這組</button></div>
+      ${timeRow('ppT'+gi, g.start||preplanDefault(key,'start',t0.start), g.end||preplanDefault(key,'end',t0.end))}
+      ${restRow('ppRest'+gi, g.restUntil||preplanDefault(key,'rest',(preset&&preset.restUntil)||''))}
+      ${supportRow('ppSupport'+gi, g.support)}
+      ${posBlockHTML(g, gi)}
+    </div>` : `
     <div class="pp-group" data-group-idx="${gi}" style="border:1px solid var(--line);border-radius:6px;padding:8px;margin-bottom:8px">
       <div class="row" style="margin-bottom:6px;align-items:center"><span class="grow muted" style="font-weight:600">第${gi+1}組</span><button class="ghost small danger" data-remove-group="${gi}">移除這組</button></div>
       ${type.editableTime? timeRow('ppT'+gi, g.start||preplanDefault(key,'start',t0.start), g.end||preplanDefault(key,'end',t0.end)) : ''}
@@ -7213,15 +7734,16 @@ function openPreplanDayEditor(key, date, onSaved){
         <button class="ghost small" data-select-all-group="${gi}">全選(顯示中)</button>
         <button class="ghost small" data-clear-all-group="${gi}">全部取消</button>
       </div>
-      ${listBox(checkRows(g.personIds||[], 'pp-person'+gi, presetReasonsFn, g.nominalIds), 'ppList'+gi)}
+      ${listBox(checkRows(g.personIds||[], 'pp-person'+gi, presetReasonsFn, g.nominalIds, conflictFnFor(type.editableTime? (g.start||preplanDefault(key,'start',t0.start)) : t0.start, type.editableTime? (g.end||preplanDefault(key,'end',t0.end)) : t0.end)), 'ppList'+gi)}
     </div>`;
   if(type.mode==='people'){
     const initialGroups = peopleGroupsOf(plan).length? peopleGroupsOf(plan) : [{}];
-    body = `<div id="ppGroupsWrap">${initialGroups.map((g,gi)=>groupBlockHTML(g,gi)).join('')}</div>
+    body = (dutyPosFallback? `<div class="badge-issue" style="margin-bottom:8px">這天的預排有一組人數比值星官／值星士官兩個位置多，這天先照舊不分位置；要分位置，請把多的人拿掉再存。</div>` : '') + `<div id="ppGroupsWrap">${initialGroups.map((g,gi)=>groupBlockHTML(g,gi)).join('')}</div>
       <button class="ghost" id="ppAddGroup" style="width:100%;margin-bottom:8px">＋新增一組（同一天不同時段/不同人時使用）</button>`;
   } else if(type.mode==='roles'){
     const driverIdx=type.roles.indexOf('駕駛'), chiefIdx=type.roles.indexOf('車長');
     const currentDriver = driverIdx>-1? state.personnel.find(p=>p.id===(plan.personIds||[])[driverIdx]) : null;
+    rolesConflictFn = conflictFnFor(type.editableTime? (plan.start||preplanDefault(key,'start',t0.start)) : t0.start, type.editableTime? (plan.end||preplanDefault(key,'end',t0.end)) : t0.end);
     body = (type.editableTime? timeRow('ppT', plan.start||preplanDefault(key,'start',t0.start), plan.end||preplanDefault(key,'end',t0.end)) : '')
       + restRow('ppRest', plan.restUntil||preplanDefault(key,'rest',(preset&&preset.restUntil)||''))
       + supportRow('ppSupport', plan.support)
@@ -7238,7 +7760,7 @@ function openPreplanDayEditor(key, date, onSaved){
           const selId=(plan.personIds||[])[i]||'';
           return `<div class="hint" style="margin:6px 0 2px"><b>${esc(r)}</b></div>`
             + searchBlock('ppSearch'+i)
-            + listBox(radioRows(selId, 'pp-role'+i, 'pprole'+i, reasonsFn, plan.nominalIds), 'ppList'+i)
+            + listBox(radioRows(selId, 'pp-role'+i, 'pprole'+i, reasonsFn, plan.nominalIds, rolesConflictFn), 'ppList'+i)
             + `<div class="row wrap" style="margin:6px 0 2px"><div class="grow"><label>${esc(r)}由支援的人擔任（別單位的人，手打姓名；會佔這個位置）</label><input type="text" class="pp-sup-people" id="ppRoleNote${i}" value="${esc((plan.notes||[])[i]||'')}" placeholder="例：王小明"></div></div>`;
         }).join('');
   } else if(type.mode==='dayNight'){
@@ -7248,13 +7770,13 @@ function openPreplanDayEditor(key, date, onSaved){
       + timeRow('ppDayT', plan.dayStart||preplanDefault(key,'dayStart',dt.start), plan.dayEnd||preplanDefault(key,'dayEnd',dt.end))
       + restRow('ppDayRest', plan.dayRestUntil||preplanDefault(key,'dayRest',''), '日班補休至（選填）')
       + searchBlock('ppSearchD')
-      + listBox(checkRows(plan.dayPersonIds||(plan.dayPersonId?[plan.dayPersonId]:[]), 'pp-day', presetReasonsFn, plan.dayNominalIds), 'ppListD')
+      + listBox(checkRows(plan.dayPersonIds||(plan.dayPersonId?[plan.dayPersonId]:[]), 'pp-day', presetReasonsFn, plan.dayNominalIds, conflictFnFor(plan.dayStart||preplanDefault(key,'dayStart',dt.start), plan.dayEnd||preplanDefault(key,'dayEnd',dt.end))), 'ppListD')
       + supPeopleRow('ppDayNote', plan.dayNote, '日班支援人員')
       + `<div class="divider"></div><div class="hint" style="margin:6px 0 2px"><b>夜班</b></div>`
       + timeRow('ppNightT', plan.nightStart||preplanDefault(key,'nightStart',nt.start), plan.nightEnd||preplanDefault(key,'nightEnd',nt.end))
       + restRow('ppNightRest', plan.nightRestUntil||preplanDefault(key,'nightRest',''), '夜班補休至（選填）')
       + searchBlock('ppSearchN')
-      + listBox(checkRows(plan.nightPersonIds||(plan.nightPersonId?[plan.nightPersonId]:[]), 'pp-night', presetReasonsFn, plan.nightNominalIds), 'ppListN')
+      + listBox(checkRows(plan.nightPersonIds||(plan.nightPersonId?[plan.nightPersonId]:[]), 'pp-night', presetReasonsFn, plan.nightNominalIds, conflictFnFor(plan.nightStart||preplanDefault(key,'nightStart',nt.start), plan.nightEnd||preplanDefault(key,'nightEnd',nt.end))), 'ppListN')
       + supPeopleRow('ppNightNote', plan.nightNote, '夜班支援人員')
       + supportRow('ppSupport', plan.support);
   } else if(type.mode==='fixedSlots'){
@@ -7281,7 +7803,7 @@ function openPreplanDayEditor(key, date, onSaved){
           <div class="pp-slot-body" data-slot-body="${i}" style="display:${on?'block':'none'}">
             ${restRow('ppSlotRest'+i, cfg.restUntil||preplanDefault(key,'slotRest'+i,''))}
             ${searchBlock('ppSearchS'+i)}
-            ${listBox(checkRows(ids, 'pp-slot'+i, presetReasonsFn, cfg.nominalIds), 'ppListS'+i)}
+            ${listBox(checkRows(ids, 'pp-slot'+i, presetReasonsFn, cfg.nominalIds, conflictFnFor(...sl.split('-'))), 'ppListS'+i)}
             ${supPeopleRow('ppSlotNote'+i, other? '' : cfg.note)}
           </div>
         </div>`;
@@ -7290,7 +7812,7 @@ function openPreplanDayEditor(key, date, onSaved){
   modal.innerHTML=`
     <div class="sheet-inner">
       <div class="section-title"><h2 style="margin:0">${type.icon} ${type.name}：${minguoLabel(date)}</h2><button class="ghost small" id="ppClose">關閉</button></div>
-      <div class="hint" style="margin-bottom:8px">${type.hint}</div>
+      <div class="hint" style="margin-bottom:8px">${type.hint}${date>=todayStr()? '<br>名單上標 ⚠️ 的人這天有衝突（長期事故、休假／事故、同時段的勤務…），還是可以勾；存檔時會列出來，問你要不要忽略一次。' : ''}</div>
       ${body}
       <div class="row wrap" style="margin-top:10px">
         <button class="ghost grow" id="ppCopy">複製到其他日期</button>
@@ -7314,7 +7836,8 @@ function openPreplanDayEditor(key, date, onSaved){
   if(type.mode==='people'){
     let groupCounter = modal.querySelectorAll('.pp-group').length;
     const wireGroup=(gi)=>{
-      wireSearch('ppSearch'+gi,'ppList'+gi); wireSelectedSummary('ppList'+gi);
+      if(dutyPos) dutyPos.forEach((_,pi)=>{ wireSearch(`ppSearch${gi}-${pi}`,`ppList${gi}-${pi}`); wireSelectedSummary(`ppList${gi}-${pi}`); });
+      else { wireSearch('ppSearch'+gi,'ppList'+gi); wireSelectedSummary('ppList'+gi); }
       const selAllBtn=modal.querySelector(`[data-select-all-group="${gi}"]`);
       const clrAllBtn=modal.querySelector(`[data-clear-all-group="${gi}"]`);
       if(selAllBtn) selAllBtn.onclick=()=>modal.querySelectorAll('.pp-person'+gi).forEach(cb=>{ if(cb.closest('label').style.display!=='none') cb.checked=true; });
@@ -7355,7 +7878,7 @@ function openPreplanDayEditor(key, date, onSaved){
           const chiefListEl=document.getElementById('ppList'+chiefIdx);
           const currentChief=modal.querySelector('.pp-role'+chiefIdx+':checked');
           const currentVal=currentChief? currentChief.value : '';
-          if(chiefListEl) chiefListEl.innerHTML=radioRows(currentVal, 'pp-role'+chiefIdx, 'pprole'+chiefIdx, reasonsFn, plan.nominalIds);
+          if(chiefListEl) chiefListEl.innerHTML=radioRows(currentVal, 'pp-role'+chiefIdx, 'pprole'+chiefIdx, reasonsFn, plan.nominalIds, rolesConflictFn);
         });
       });
     }
@@ -7404,6 +7927,15 @@ function openPreplanDayEditor(key, date, onSaved){
       const groupBlocks = [...modal.querySelectorAll('.pp-group')];
       const groups = groupBlocks.map(b=>{
         const gi = b.dataset.groupIdx;
+        if(dutyPos){
+          const picked=pi=>{ const r=modal.querySelector(`.pp-pos${gi}-${pi}:checked`); return r && r.value? r.value : null; };
+          const personIds=dutyPos.map((_,pi)=>picked(pi));
+          const posNotes=dutyPos.map((_,pi)=>{ const el=document.getElementById(`ppRoleNotePos${gi}-${pi}`); return el? el.value.trim() : ''; });
+          const nominalIds=dutyPos.map((_,pi)=>{ const v=picked(pi); return v && modal.querySelector(`.pp-pos${gi}-${pi}-nom[value="${v}"]:checked`)? v : null; }).filter(Boolean);
+          const supportEl=document.getElementById('ppSupport'+gi);
+          return {personIds, posNotes, positional:true, nominalIds, support:supportEl? supportEl.value : '',
+            start:getTimeSelectValue('ppT'+gi+'Start'), end:getTimeSelectValue('ppT'+gi+'End'), restUntil:getTimeSelectValue('ppRest'+gi)};
+        }
         const ids=[...modal.querySelectorAll('.pp-person'+gi+':checked')].map(cb=>cb.value);
         const nominalIds=[...modal.querySelectorAll('.pp-person'+gi+'-nom:checked')].map(cb=>cb.value).filter(id=>ids.includes(id));
         const supportEl=document.getElementById('ppSupport'+gi);
@@ -7415,7 +7947,7 @@ function openPreplanDayEditor(key, date, onSaved){
           end:type.editableTime? getTimeSelectValue('ppT'+gi+'End') : undefined,
           restUntil:getTimeSelectValue('ppRest'+gi),
         };
-      }).filter(g=>g.personIds.length || g.support || g.note);
+      }).filter(g=>g.personIds.some(Boolean) || g.support || g.note || (g.posNotes||[]).some(Boolean));
       if(!groups.length) return null;
       return {groups};
     }
@@ -7483,6 +8015,15 @@ function openPreplanDayEditor(key, date, onSaved){
   const supClashOk=()=>{
     const clash=rosterNameClash(supNamesNow().filter(n=>!supAtOpen.has(n)));
     if(clash.length){ showAlert(`「${clash.join('、')}」是名冊上的人，請直接在名單勾選，不要打在支援人員。`); return false; }
+    if(dutyPos){
+      const probs=[];
+      [...modal.querySelectorAll('.pp-group')].forEach(b=>{
+        const gi=b.dataset.groupIdx;
+        const vals=dutyPos.map((pd,pi)=>{ const r=modal.querySelector(`.pp-pos${gi}-${pi}:checked`); const el=document.getElementById(`ppRoleNotePos${gi}-${pi}`); if(r && r.value && el && el.value.trim()) probs.push(`${pd.name}同時選了人、又填了支援的人`); return r && r.value; }).filter(Boolean);
+        if(new Set(vals).size<vals.length) probs.push(`同一個人不能同時當${dutyPos.map(p=>p.name).join('跟')}`);
+      });
+      if(probs.length){ showAlert([...new Set(probs)].join('\n')+'\n\n一個位置只能一個人，請改一下再存。'); return false; }
+    }
     if(type.mode==='roles'){
       // 同一個位置只能一個人：選了我們的人就不能再填支援的人
       const both=type.roles.filter((_,i)=>{
@@ -7508,6 +8049,7 @@ function openPreplanDayEditor(key, date, onSaved){
   document.getElementById('ppSave').onclick=()=>{
     if(!supClashOk()) return;
     const value=collect();
+    const factsBefore=planFactSnapshot([date]);
     setPreplan(key, date, value);
     // remember the shape (times / rest) so the next day opens pre-filled
     if(value){
@@ -7524,6 +8066,7 @@ function openPreplanDayEditor(key, date, onSaved){
       }
     }
     saveState(); close(); if(onSaved) onSaved();
+    confirmPlanConflicts(newPlanFacts(factsBefore, [date]), ()=>openPreplanDayEditor(key, date, onSaved));
   };
 }
 /* copy one day's plan onto other dates — the common "20th is the same as
@@ -7568,6 +8111,7 @@ function openPreplanCopyModal(key, fromDate, onDone){
     const dates=[...modal.querySelectorAll('.pc-date:checked')].map(cb=>cb.value);
     if(!dates.length){ showAlert('請至少勾選一個日期'); return; }
     const src=preplanFor(key, fromDate);
+    const factsBefore=planFactSnapshot(dates);
     dates.forEach(d=>{
       const v=JSON.parse(JSON.stringify(src));
       if(type.mode==='fixedSlots'){
@@ -7582,8 +8126,10 @@ function openPreplanCopyModal(key, fromDate, onDone){
       setPreplan(key, d, v);
     });
     saveState();
-    showAlert(`已複製到 ${dates.length} 個日期。`);
     modal.remove(); if(onDone) onDone();
+    const items=newPlanFacts(factsBefore, dates);
+    if(items.length) confirmPlanConflicts(items, null);
+    else showAlert(`已複製到 ${dates.length} 個日期。`);
   };
 }
 /* 休假暨事故大表: pick a person, then tick every day they're off — the reverse of
@@ -7886,6 +8432,47 @@ function openLeaveTableEditor(date, onSaved, presetPid){
     if(!selectedPid) return;
     sessionDrafts[selectedCat] = {picked:new Set(picked), honorDates:new Set(honorDates), partialDates:new Map(partialDates), noteDraft};
   };
+  /* 某個類型（這個人、這個月）目前的內容：正在編輯的類型用畫面上的，點過
+     的其他類型用草稿，其他照存好的 */
+  const liveCatData=(catName)=>{
+    if(catName===selectedCat) return {picked, honorDates, partialDates, noteDraft};
+    if(sessionDrafts[catName]) return sessionDrafts[catName];
+    const rec=catRec(selectedPid, catName);
+    return {picked:new Set((rec.dates||[]).filter(d=>d.startsWith(ym))), honorDates:new Set((rec.honorDates||[]).filter(d=>d.startsWith(ym))),
+      partialDates:new Map(Object.entries(rec.partialTimes||{}).filter(([d])=>d.startsWith(ym))), noteDraft:rec.note||''};
+  };
+  /* v165：同一天已經有別的類型 → 那天從別的類型拿掉（改成草稿，按「確認」一起存） */
+  const removeDayFromOtherCat=(catName, ds)=>{
+    const d=liveCatData(catName);
+    const draft={picked:new Set(d.picked), honorDates:new Set(d.honorDates), partialDates:new Map(d.partialDates), noteDraft:d.noteDraft||''};
+    draft.picked.delete(ds); draft.honorDates.delete(ds); draft.partialDates.delete(ds);
+    sessionDrafts[catName]=draft;
+  };
+  const otherCatsOnDay=(ds)=>state.leaveCategories.filter(c=>c.name!==selectedCat).filter(c=>{ const d=liveCatData(c.name); return d.picked.has(ds) || d.partialDates.has(ds); }).map(c=>c.name);
+  /* 在已經有別的類型的日子登記：休假期間不會有事故（除非改休）；事故跟事故
+     可以取代或都保留 */
+  const resolveOverlap=(ds, doAdd)=>{
+    const others=otherCatsOnDay(ds);
+    if(!others.length){ doAdd(); return; }
+    const cur=categoryOf(selectedCat)||{};
+    const leaveLike=others.filter(n=>(categoryOf(n)||{}).buffer);
+    const day=minguoLabel(ds);
+    const replace=()=>{ others.forEach(n=>removeDayFromOtherCat(n, ds)); doAdd(); };
+    if(leaveLike.length && !cur.buffer){
+      showChoice(`${day}是${leaveLike.join('、')}。休假期間不會有事故，除非改休。\n\n改休＝把這天從${leaveLike.join('、')}拿掉（前後的假會自動變成兩段、各自有收假／放假時間），再登記成「${selectedCat}」。按「確認」才會存。`,
+        [{label:`改休，這天登記成${selectedCat}`, primary:true, onPick:replace}]);
+      return;
+    }
+    if(cur.buffer){
+      showChoice(`${day}已經有${others.join('、')}。休假跟事故不會在同一天，要改成「${selectedCat}」（拿掉${others.join('、')}）嗎？按「確認」才會存。`,
+        [{label:`改成${selectedCat}`, primary:true, onPick:replace}]);
+      return;
+    }
+    showChoice(`${day}已經有${others.join('、')}。`, [
+      {label:`改成${selectedCat}（取代${others.join('、')}）`, primary:true, onPick:replace},
+      {label:'兩個都保留', onPick:doAdd},
+    ]);
+  };
   /* 有沒有還沒按「確認」存進去的變更——包含目前正在編輯的這個類型（picked/
      honorDates/partialDates/noteDraft 都是本地變數，不會自動存檔），也
      包含本次session切換過但還沒存的其他類型草稿（sessionDrafts）。用來在
@@ -8026,7 +8613,7 @@ function openLeaveTableEditor(date, onSaved, presetPid){
     const otherCats=state.leaveCategories.filter(c=>!c.prominent);
     modal.innerHTML=`
       <div class="section-title"><h2 style="margin:0">🏖️ 休假暨事故大表</h2><button class="ghost small" id="ltClose">關閉</button></div>
-      <div class="hint" style="margin-bottom:8px">先選人、選類型，再點月曆登記那個類型的日子——月曆會同時顯示這個人這個月所有類型的記錄，但點擊只會動到目前選中的類型。有緩衝的類型（例如休假）點一天等於前後多算半天到一天，畫面上會用虛線框預覽緩衝落在哪一天；沒有緩衝的類型（例如受訓）就是單純整天登記。</div>
+      <div class="hint" style="margin-bottom:8px">先選人、選類型，再點月曆登記那個類型的日子——月曆會同時顯示這個人這個月所有類型的記錄，點擊只會動到目前選中的類型；那天如果已經有別的類型，會先問你要取代還是都保留（休假期間不會有事故，除非改休）。按「確認」會把這次點過的類型一起存；改到已經過去的日子，會問要不要連同那幾天的班表一起改。有緩衝的類型（例如休假）點一天等於前後多算半天到一天，畫面上會用虛線框預覽緩衝落在哪一天；沒有緩衝的類型（例如受訓）就是單純整天登記。</div>
       <div class="hint" style="margin-bottom:4px">類型（點哪個就切換到那個類型繼續操作）</div>
       <div class="row wrap" style="gap:6px;margin-bottom:8px">
         ${prominentCats.map(c=>`<button class="${c.name===selectedCat?'primary':'ghost'} small lt-cat-btn" data-lt-cat="${esc(c.name)}">${esc(c.name)}</button>`).join('')}
@@ -8238,8 +8825,7 @@ function openLeaveTableEditor(date, onSaved, presetPid){
         if(!d || !d.startsWith(ym)){ showAlert('請選擇這個月份內的日期'); return; }
         if(picked.has(d)){ showAlert('這天已經是整天登記，請先在月曆上點掉那天再新增部分時段。'); return; }
         const start=getTimeSelectValue('ltPartialStart'), end=getTimeSelectValue('ltPartialEnd');
-        partialDates.set(d, {start,end});
-        draw();
+        resolveOverlap(d, ()=>{ partialDates.set(d, {start,end}); draw(); });
       };
     }
     if(person){
@@ -8256,8 +8842,9 @@ function openLeaveTableEditor(date, onSaved, presetPid){
             // 整天（或榮譽假）格子：再點一下直接刪除
             picked.delete(ds); honorDates.delete(ds);
           } else {
-            // 空白格子：點一下＝整天登記
-            picked.add(ds);
+            // 空白格子：點一下＝整天登記（那天已經有別的類型時先問）
+            resolveOverlap(ds, ()=>{ picked.add(ds); draw(); });
+            return;
           }
           draw();
         };
@@ -8267,35 +8854,82 @@ function openLeaveTableEditor(date, onSaved, presetPid){
       modal.querySelector('#ltClearMonth').onclick=()=>{ picked=new Set(); honorDates=new Set(); partialDates=new Map(); draw(); };
       { const noteEl = modal.querySelector('#ltNote'); if(noteEl) noteEl.oninput=(e)=>{ noteDraft=e.target.value; }; }
       modal.querySelector('#ltSave').onclick=()=>{
-        const rec=catRec(selectedPid,selectedCat);
-        const curDates=(rec.dates||[]).filter(d=>!d.startsWith(ym));
-        const curHonor=(rec.honorDates||[]).filter(d=>!d.startsWith(ym));
-        const curApproved=rec.approvedRuns||[];
-        const curPartial=Object.fromEntries(Object.entries(rec.partialTimes||{}).filter(([d])=>!d.startsWith(ym)));
-        const mergedDates=[...curDates, ...picked].sort();
-        const mergedHonor=[...curHonor, ...honorDates].sort();
-        const mergedPartial={...curPartial, ...Object.fromEntries(partialDates)};
-        const runs = analyzeLeaveRuns(new Set(mergedDates), new Set(mergedHonor), curApproved, category);
-        const unapproved = runs.filter(r=>r.needsApproval && !r.isApproved);
-        const doSave=(approvedRuns)=>{
+        // v165：這次點過的每個類型一起存（例如「改休」把休假那天拿掉、同時登記事故）
+        saveDraftForCurrentCat();
+        const today=todayStr();
+        const monthKeys=(obj)=>Object.keys(obj||{}).filter(d=>d.startsWith(ym));
+        const plans=Object.entries(sessionDrafts).map(([catName, dr])=>{
+          const category=categoryOf(catName);
+          const rec=catRec(selectedPid,catName);
+          const curApproved=rec.approvedRuns||[];
+          const mergedDates=[...(rec.dates||[]).filter(d=>!d.startsWith(ym)), ...dr.picked].sort();
+          const mergedHonor=[...(rec.honorDates||[]).filter(d=>!d.startsWith(ym)), ...dr.honorDates].sort();
+          const mergedPartial={...Object.fromEntries(Object.entries(rec.partialTimes||{}).filter(([d])=>!d.startsWith(ym))), ...Object.fromEntries(dr.partialDates)};
+          // 有改到的日子（整天、榮譽假、部分時段）
+          const before=new Set([...(rec.dates||[]).filter(d=>d.startsWith(ym)).map(d=>'d'+d), ...(rec.honorDates||[]).filter(d=>d.startsWith(ym)).map(d=>'h'+d),
+            ...monthKeys(rec.partialTimes).map(d=>'p'+d+JSON.stringify(rec.partialTimes[d]))]);
+          const after=new Set([...[...dr.picked].map(d=>'d'+d), ...[...dr.honorDates].map(d=>'h'+d), ...[...dr.partialDates].map(([d,t])=>'p'+d+JSON.stringify(t))]);
+          const changedDays=[...new Set([...[...before].filter(x=>!after.has(x)), ...[...after].filter(x=>!before.has(x))].map(x=>x.slice(1,11)))].sort();
+          const noteChanged=(dr.noteDraft||'').trim()!==(rec.note||'');
+          const runs=analyzeLeaveRuns(new Set(mergedDates), new Set(mergedHonor), curApproved, category);
+          return {catName, category, curApproved, mergedDates, mergedHonor, mergedPartial, note:(dr.noteDraft||'').trim(), changedDays, noteChanged,
+            unapproved:runs.filter(r=>r.needsApproval && !r.isApproved), dr};
+        }).filter(pl=>pl.changedDays.length || pl.noteChanged || pl.catName===selectedCat);
+        const pastDays=[...new Set(plans.flatMap(pl=>pl.changedDays.filter(d=>d<today)))].sort();
+        const unapproved=plans.flatMap(pl=>pl.unapproved.map(r=>Object.assign({cat:pl.catName}, r)));
+        const commit=(withPast)=>{
           if(!state.preplan.leave) state.preplan.leave={};
           if(!state.preplan.leave[selectedPid]) state.preplan.leave[selectedPid]={};
-          if(mergedDates.length || Object.keys(mergedPartial).length) state.preplan.leave[selectedPid][selectedCat]={dates:mergedDates, honorDates:mergedHonor, approvedRuns, partialTimes:mergedPartial, note:noteDraft.trim()};
-          else delete state.preplan.leave[selectedPid][selectedCat];
-          delete sessionDrafts[selectedCat]; // now persisted — the draft shadow is no longer needed
+          plans.forEach(pl=>{
+            const approvedRuns=[...pl.curApproved, ...pl.unapproved.map(r=>({start:r.start, end:r.end}))];
+            if(pl.mergedDates.length || Object.keys(pl.mergedPartial).length) state.preplan.leave[selectedPid][pl.catName]={dates:pl.mergedDates, honorDates:pl.mergedHonor, approvedRuns, partialTimes:pl.mergedPartial, note:pl.note};
+            else delete state.preplan.leave[selectedPid][pl.catName];
+          });
+          // 連同已經過去的日子的班表一起改（從改到的最早那天的前一天開始，前緩衝也跟著對）
+          if(withPast && pastDays.length){
+            // 只重寫這次有改到過去日子的類型，從改到的最早那天的前一天開始
+            plans.forEach(pl=>{
+              const past=pl.changedDays.filter(d=>d<today);
+              if(past.length) applyLeavePlan(selectedPid, pl.catName, prevDateStr(past[0]));
+            });
+          }
+          sessionDrafts={};
+          markPlanSystemChange();
           saveState();
-          showAlert(`已儲存 ${person.name} 的${selectedCat}（本月整天 ${picked.size} 天${category&&category.honorOption?`，其中榮譽假 ${honorDates.size} 天`:''}${partialDates.size?`，部分時段 ${partialDates.size} 天`:''}），今天以後已直接生效到班表。`);
-          draw(); if(onSaved) onSaved();
+          const summary=plans.filter(pl=>pl.changedDays.length || pl.noteChanged).map(pl=>{
+            const d=pl.dr; return `${pl.catName}（本月整天 ${d.picked.size} 天${pl.category&&pl.category.honorOption?`，其中榮譽假 ${d.honorDates.size} 天`:''}${d.partialDates.size?`，部分時段 ${d.partialDates.size} 天`:''}）`;
+          });
+          showAlert(`已儲存 ${person.name} 的${summary.length? summary.join('、') : selectedCat}，今天以後已直接生效到班表${withPast && pastDays.length? '；已經過去的日子也照大表改了':''}。`);
+          loadCategory(selectedCat); draw(); if(onSaved) onSaved();
+        };
+        const afterApproval=()=>{
+          if(!pastDays.length){ commit(false); return; }
+          showChoice(`這次改到已經過去的日子（${pastDays.map(minguoLabel).join('、')}）。過去的班表平常鎖住不改，所以只改大表的話，下次打開大表又會照班表長回來。\n\n要連同那幾天的班表一起改嗎？`, [
+            {label:'連同過去的班表一起改', primary:true, onPick:()=>commit(true)},
+            {label:'過去的日子不改，只存今天以後的', onPick:()=>{
+              // 把過去日子的修改還原，其他照存
+              plans.forEach(pl=>{
+                const rec=catRec(selectedPid, pl.catName);
+                const pastSet=new Set(pastDays);
+                const keepPast=d=>pastSet.has(d);
+                pl.mergedDates=[...pl.mergedDates.filter(d=>!keepPast(d)), ...(rec.dates||[]).filter(keepPast)].sort();
+                pl.mergedHonor=[...pl.mergedHonor.filter(d=>!keepPast(d)), ...(rec.honorDates||[]).filter(keepPast)].sort();
+                Object.keys(pl.mergedPartial).filter(keepPast).forEach(d=>delete pl.mergedPartial[d]);
+                Object.entries(rec.partialTimes||{}).filter(([d])=>keepPast(d)).forEach(([d,t])=>{ pl.mergedPartial[d]=t; });
+                pl.dr.picked=new Set(pl.mergedDates.filter(d=>d.startsWith(ym)));
+                pl.dr.honorDates=new Set(pl.mergedHonor.filter(d=>d.startsWith(ym)));
+                pl.dr.partialDates=new Map(Object.entries(pl.mergedPartial).filter(([d])=>d.startsWith(ym)));
+                // 還原之後天數可能變了：同意的是「這次存的超過天數的段落」，照還原後的段落重算
+                if(pl.unapproved.length) pl.unapproved=analyzeLeaveRuns(new Set(pl.mergedDates), new Set(pl.mergedHonor), pl.curApproved, pl.category).filter(r=>r.needsApproval && !r.isApproved);
+              });
+              commit(false);
+            }},
+          ]);
         };
         if(unapproved.length){
-          const lines = unapproved.map(r=>`${minguoLabel(r.start)}~${minguoLabel(r.end)}（${r.effectiveDays}天${r.isHonor?'，含榮譽假0.5天':''}）`);
-          showConfirm(`以下這幾段超過天數上限，需要同意才能保留：\n${lines.join('\n')}\n\n確定已經過同意，要保留這個天數嗎？不同意的話請先縮短天數再儲存。`, ()=>{
-            const newlyApproved = unapproved.map(r=>({start:r.start, end:r.end}));
-            doSave([...curApproved, ...newlyApproved]);
-          });
-        } else {
-          doSave(curApproved);
-        }
+          const lines = unapproved.map(r=>`${r.cat}：${minguoLabel(r.start)}~${minguoLabel(r.end)}（${r.effectiveDays}天${r.isHonor?'，含榮譽假0.5天':''}）`);
+          showConfirm(`以下這幾段超過天數上限，需要同意才能保留：\n${lines.join('\n')}\n\n確定已經過同意，要保留這個天數嗎？不同意的話請先縮短天數再儲存。`, afterApproval);
+        } else afterApproval();
       };
     }
   };
@@ -8616,13 +9250,18 @@ function importPreplanForDate(key, date){
   if(type.mode==='people'){
     const groups = peopleGroupsOf(plan);
     let wroteAny=false;
+    const pos = key==='duty'? dutyPositions() : null;
     groups.forEach((g,gi)=>{
       // 預排上記的支援人員（g.note）佔名額，跟我們的人一起放進去
-      const ids=[...(g.personIds||[]).filter(Boolean), ...supportTokens(g.note).map(supportIdOf)];
-      if(!ids.length && !g.support) return;
+      let ids=[...(g.personIds||[]).filter(Boolean), ...supportTokens(g.note).map(supportIdOf)];
+      // 值星分值星官／值星士官：照位置放
+      const posIds = pos? dutyGroupPositionalIds(g, pos) : null;
+      if(posIds) ids=posIds;
+      if(!ids.some(Boolean) && !g.support) return;
       state.misc[date].push({id:uid(), role:roleName,
         start:g.start||plan.start||t0.start, end:g.end||plan.end||t0.end,
         restUntil:g.restUntil||plan.restUntil||(preset&&preset.restUntil)||'', personIds:ids,
+        ...(posIds? {roles:pos.map(p=>p.name)} : {}),
         nominalIds:g.nominalIds||[], fromPreplan:true, ...mergeSupport(g.support),
         ...(planImportTagging? {pp:{kind:'group', gi}} : {})});
       wroteAny=true;
@@ -9278,8 +9917,9 @@ function purgePersonEverywhere(personId){
       // that slot is cleared rather than removed; every other personIds-like
       // field (留守名單, dayNight的日/夜班) is an unordered list and should
       // just have the person filtered out entirely
-      if(type && type.mode==='roles' && Array.isArray(plan.personIds)){
-        plan.personIds = plan.personIds.map(id=>id===personId? undefined : id);
+      if(type && (type.mode==='roles' || plan.positional) && Array.isArray(plan.personIds)){
+        // 值星分位置的（文字匯入的單組直接存成這天的預排）也一樣看位置
+        plan.personIds = plan.personIds.map(id=>id===personId? (plan.positional? null : undefined) : id);
       } else if(Array.isArray(plan.personIds)){
         plan.personIds = plan.personIds.filter(id=>id!==personId);
       }
@@ -9290,7 +9930,8 @@ function purgePersonEverywhere(personId){
       // 把已經刪掉的人寫回班表（顯示成「—」）
       if(Array.isArray(plan.groups)) plan.groups.forEach(g=>{
         if(!g) return;
-        if(Array.isArray(g.personIds)) g.personIds=g.personIds.filter(id=>id!==personId);
+        // 值星分位置的組：清成空位，不能往前移（不然值星士官會變成值星官）
+        if(Array.isArray(g.personIds)) g.personIds=g.positional? g.personIds.map(id=>id===personId? null : id) : g.personIds.filter(id=>id!==personId);
         if(Array.isArray(g.nominalIds)) g.nominalIds=g.nominalIds.filter(id=>id!==personId);
       });
       if(plan.slots) Object.values(plan.slots).forEach(s=>{
@@ -10099,53 +10740,56 @@ function notInCampList(date){
   const onDutyIds = new Set(onDutyList(date).map(p=>p.id));
   return state.personnel.filter(p=>!onDutyIds.has(p.id));
 }
-function personAwayReason(personId, date){
-  const dayEntries = (state.unavail[date]||[]).filter(u=>u.personId===personId && u.allDay);
-  const away = dayEntries.find(u=>isLeaveReason(u.reason) || u.inCamp===false);
-  if(away) return (away.reason || '（未指定原因）') + (away.note? `（${away.note}）`:'');
-  const person = state.personnel.find(p=>p.id===personId);
-  if(person){
-    const lt = effectiveLongTerm(person, date);
-    if(lt.mode==='allday' && !lt.inCamp) return lt.reason || '長期事故';
-  }
-  return '（原因不明）';
+/* v165：一個人某天不在營可能同時有好幾個原因（例如自己的休假＋留守期間
+   放假），以前只拿「第一筆」記錄，記錄先後一換顯示跟篩選就不一樣。現在全
+   部列出來、篩選看任一類別。 */
+function honorLeaveIdSet(){
+  const out=new Set();
+  Object.values(state.unavail).forEach(arr=>(arr||[]).forEach(u=>{ if(u.leaveId && u.reason==='榮譽假') out.add(u.leaveId); }));
+  return out;
 }
-function personAwayReasonCategory(personId, date){
-  const dayEntries = (state.unavail[date]||[]).filter(u=>u.personId===personId && u.allDay);
+function personAwayEntries(personId, date){
   const leaveCatNames=state.leaveCategories.map(c=>c.name);
-  const away = dayEntries.find(u=>isLeaveReason(u.reason) || u.inCamp===false || leaveCatNames.includes(u.reason));
-  if(away && away.reason){
-    // 「榮譽假」現在只標記在前一天那半天緩衝上（見createLeaveSegment），
-    // 這天本身的整天記錄一律是類別名稱（例如「休假」）——要知道這天是不是
-    // 榮譽假的一部分，得找同一個leaveId的前緩衝記錄，不能只看這天自己的
-    // reason
-    if(away.leaveId){
-      const isHonor = Object.values(state.unavail).some(arr=>(arr||[]).some(u=>u.leaveId===away.leaveId && u.reason==='榮譽假'));
-      if(isHonor) return '榮譽假';
-    }
-    // 先比對正式類別名稱（精準比對），不是先看文字裡有沒有「假」字——不然
-    // 「事假」這種名字本身也帶「假」字的正式類別，會在isLeaveReason那關就
-    // 被誤判成「休假」，永遠輪不到後面比對到自己真正的類別名稱。只有完全
-    // 不在正式類別清單裡的舊資料／自由輸入文字，才退回用「有沒有假字」這
-    // 種寬鬆判斷歸到休假。
-    if(leaveCatNames.includes(away.reason)) return away.reason;
-    if(isLeaveReason(away.reason)) return '休假';
-    return '其他事故';
-  }
+  return (state.unavail[date]||[]).filter(u=>u.personId===personId && u.allDay && (isLeaveReason(u.reason) || u.inCamp===false || leaveCatNames.includes(u.reason)));
+}
+function personAwayReason(personId, date){
+  const parts=[];
+  // 自己的休假／事故（大表來的）排前面，留守期間放假這種整批的排後面
+  const hon=honorLeaveIdSet();
+  personAwayEntries(personId, date).slice().sort((x,y)=>(x.leaveId?0:1)-(y.leaveId?0:1)).forEach(u=>{
+    const t=(u.reason || '（未指定原因）') + (u.leaveId && hon.has(u.leaveId)? '（榮譽假）' : '') + (u.note? `（${u.note}）`:'');
+    if(!parts.includes(t)) parts.push(t);
+  });
   const person = state.personnel.find(p=>p.id===personId);
   if(person){
     const lt = effectiveLongTerm(person, date);
-    if(lt.mode==='allday' && !lt.inCamp){
-      // 長期事故的原因如果剛好也是一個正式的休假暨事故類型名稱（例如
-      // 「受訓」——有些人是用長期狀態記整段受訓，不是逐日登記），分類要
-      // 跟著顯示的原因走，不然篩選「受訓」會漏掉這些人，只能篩到「長期
-      // 事故」，兩邊文字對不起來
-      if(lt.reason && leaveCatNames.includes(lt.reason)) return lt.reason;
-      return '長期事故';
-    }
+    if(lt.mode==='allday' && !lt.inCamp){ const t=lt.reason || '長期事故'; if(!parts.includes(t)) parts.push(t); }
   }
-  return '其他事故';
+  return parts.length? parts.join('、') : '（原因不明）';
 }
+/* 篩選用的類別（可以好幾個）：榮譽假那段同時算「休假」跟「榮譽假」；正式
+   類別名稱照名稱；舊資料／自由輸入有「假」字的算休假；其他算其他事故 */
+function personAwayReasonCategories(personId, date, honorIds){
+  const out=new Set();
+  const leaveCatNames=state.leaveCategories.map(c=>c.name);
+  const hon=honorIds||null;
+  personAwayEntries(personId, date).forEach(u=>{
+    const r=u.reason||'';
+    if(leaveCatNames.includes(r)) out.add(r);
+    else if(isLeaveReason(r)) out.add('休假');
+    else out.add('其他事故');
+    if(u.leaveId && (hon? hon.has(u.leaveId) : Object.values(state.unavail).some(arr=>(arr||[]).some(x=>x.leaveId===u.leaveId && x.reason==='榮譽假')))) out.add('榮譽假');
+  });
+  const person = state.personnel.find(p=>p.id===personId);
+  if(person){
+    const lt = effectiveLongTerm(person, date);
+    if(lt.mode==='allday' && !lt.inCamp) out.add(lt.reason && leaveCatNames.includes(lt.reason)? lt.reason : '長期事故');
+  }
+  if(!out.size) out.add('其他事故');
+  return [...out];
+}
+/* 舊的單一類別（其他地方還在用的話）：第一個類別 */
+function personAwayReasonCategory(personId, date){ return personAwayReasonCategories(personId, date)[0]; }
 /* 依排組分組（預設），或依具體原因分組（篩選「其他事故」時用，取代原本
    獨立的「其他事故/管制分類」卡片——那張卡片本來就是把同一天的事故依
    「具體原因」分組顯示，現在併進不在營名單，篩選到其他事故時用同樣的
@@ -10192,7 +10836,7 @@ function notInCampCardHTML(){
   if(notInCampFilterState.group==='__none') list = list.filter(p=>!p.group);
   else if(notInCampFilterState.group) list = list.filter(p=>p.group===notInCampFilterState.group);
   const reasonCats=notInCampFilterState.reasons||[];
-  if(reasonCats.length) list = list.filter(p=>reasonCats.includes(personAwayReasonCategory(p.id, date)));
+  if(reasonCats.length){ const hon=honorLeaveIdSet(); list = list.filter(p=>personAwayReasonCategories(p.id, date, hon).some(c=>reasonCats.includes(c))); }
   const rankTotal=rankGenderBreakdown(list);
   // 依leaveCategories動態產生，不是寫死的固定清單——這樣之後不管是內建
   // 的「事假」還是單位自己新增的自訂類型，都會自動出現在篩選選項裡，不
@@ -10242,7 +10886,7 @@ function wireNotInCampCardEvents(){
     if(notInCampFilterState.group==='__none') list = list.filter(p=>!p.group);
     else if(notInCampFilterState.group) list = list.filter(p=>p.group===notInCampFilterState.group);
     const reasonCats=notInCampFilterState.reasons||[];
-    if(reasonCats.length) list = list.filter(p=>reasonCats.includes(personAwayReasonCategory(p.id, date)));
+    if(reasonCats.length){ const hon=honorLeaveIdSet(); list = list.filter(p=>personAwayReasonCategories(p.id, date, hon).some(c=>reasonCats.includes(c))); }
     const rankTotal=rankGenderBreakdown(list);
     document.getElementById('notInCampSummary').textContent = `篩選出 ${list.length} / 共 ${fullList.length} 人不在營・${fmtRankBreakdown(rankTotal)}`;
     document.getElementById('notInCampItems').innerHTML = notInCampItemsHTML(list, date, reasonCats.length===1 && reasonCats[0]==='其他事故');
@@ -10265,7 +10909,7 @@ function wireNotInCampCardEvents(){
    everyday 事故 entries only (not 休假 leaveId blocks, which are edited
    exclusively through 休假暨事故大表 now — a person with an active leaveId
    should be routed there instead via "去休假暨事故大表改"). */
-function openQuickIncidentModal(personId, date, onDone){
+function openQuickIncidentModal(personId, date, onDone, prefill){
   const person = state.personnel.find(p=>p.id===personId);
   if(!person) return;
   const existing = (state.unavail[date]||[]).filter(u=>u.personId===personId && !u.leaveId && !isLeaveBufferEntry(u));
@@ -10328,6 +10972,14 @@ function openQuickIncidentModal(personId, date, onDone){
   document.body.appendChild(modal);
   let editingId=null;
   const refresh=()=>{ modal.remove(); openQuickIncidentModal(personId, date, onDone); };
+  // v165：從「指定時間查詢」的臨時事故過來：預先填好從那個時間開始、不是全天
+  if(prefill && prefill.start){
+    document.getElementById('qiAllDay').checked=false;
+    document.getElementById('qiTimeRow').style.display='flex';
+    document.getElementById('qiRestRow').style.display='flex';
+    setTimeSelectValue('qiStart', prefill.start);
+    if(prefill.end) setTimeSelectValue('qiEnd', prefill.end);
+  }
   document.getElementById('closeModal').onclick=()=>{ modal.remove(); if(onDone) onDone(); };
   document.getElementById('qiAllDay').onchange=(e)=>{
     document.getElementById('qiTimeRow').style.display = e.target.checked? 'none':'flex';
@@ -11280,6 +11932,21 @@ function showConfirm(message, onConfirm, opts){
   dialogEl(modal,'confirmCancel').onclick=()=>{ modal.remove(); if(opts.onCancel) opts.onCancel(); };
   dialogEl(modal,'confirmOk').onclick=()=>{ modal.remove(); onConfirm(); };
 }
+/* 三個以上選項的對話框：choices=[{label, primary, onPick}]，最下面固定一顆「取消」 */
+function showChoice(message, choices, opts){
+  opts=opts||{};
+  const modal=document.createElement('div');
+  modal.style.cssText=`position:fixed;inset:0;background:var(--scrim);z-index:${opts.zIndex||200};display:flex;align-items:center;justify-content:center;padding:20px;`;
+  modal.innerHTML=`
+    <div class="dialog-box" style="background:var(--panel);max-width:340px;width:100%;border-radius:10px;padding:16px;border:1px solid var(--line);max-height:85vh;overflow:auto">
+      <div style="margin-bottom:14px;font-size:14px;line-height:1.5;color:var(--text);white-space:pre-wrap">${esc(message)}</div>
+      ${choices.map((c,i)=>`<button class="${c.primary?'primary':'ghost'}" data-choice="${i}" style="width:100%;margin-bottom:6px">${esc(c.label)}</button>`).join('')}
+      <button class="ghost" id="choiceCancel" style="width:100%">${esc(opts.cancelLabel||'取消')}</button>
+    </div>`;
+  document.body.appendChild(modal);
+  modal.querySelectorAll('[data-choice]').forEach(b=>{ b.onclick=()=>{ modal.remove(); choices[Number(b.dataset.choice)].onPick(); }; });
+  dialogEl(modal,'choiceCancel').onclick=()=>{ modal.remove(); if(opts.onCancel) opts.onCancel(); };
+}
 function showPrompt(message, defaultValue, onSubmit){
   const modal=document.createElement('div');
   modal.style.cssText='position:fixed;inset:0;background:var(--scrim);z-index:200;display:flex;align-items:center;justify-content:center;padding:20px;';
@@ -11623,7 +12290,10 @@ function renderStats(){
   const notInCampHTML = notInCampCardHTML();
   const outingHTML = renderOutingCardHTML();
   const exStatsYm = monthOf(currentDate);
-  const exceptionStatsHTML = collapsibleCardHTML('ruleExceptionStats', `${ico('shield')}破例紀錄（${exStatsYm.replace('-','年')}月）`, ()=>monthExceptionStatsHTML(exStatsYm));
+  // v165：可以看當天（跟著上面選的日期），也可以看整個月
+  const exDayMode = exceptionStatsMode!=='month';
+  const exToggle = `<div class="row" style="gap:6px;margin-bottom:8px"><button class="${exDayMode?'primary':'ghost'} small" data-ex-mode="day">當天（${esc(shortDateLabel(currentDate))}）</button><button class="${exDayMode?'ghost':'primary'} small" data-ex-mode="month">整個月（${exStatsYm.split('-')[1].replace(/^0/,'')}月）</button></div>`;
+  const exceptionStatsHTML = collapsibleCardHTML('ruleExceptionStats', `${ico('shield')}破例紀錄（${exDayMode? minguoLabel(currentDate) : exStatsYm.replace('-','年')+'月'}）`, ()=>exToggle + (exDayMode? dayExceptionStatsHTML(currentDate) : monthExceptionStatsHTML(exStatsYm)));
   // 休假人員已經併進「不在營名單」（勾選休假/榮譽假篩選就能看到同樣的清單），
   // 不再需要獨立一張卡片重複顯示同一批人；長期事故也一樣：真的不在營的人
   // 一樣併進「不在營名單」，人還在營但被長期事故排除排班的人，改成在「在
@@ -11644,6 +12314,7 @@ function renderStats(){
   wireCardListDrag('statsCardsContainer', 'stats', cardDefs);
   document.getElementById('queryClearFilter').onclick=()=>{
     queryFilterState={time:'08:00',group:'',rank:''};
+    queryAdjust=null;
     document.getElementById('queryResult').innerHTML='';
     render();
   };
@@ -11654,6 +12325,22 @@ function renderStats(){
     if(groupEl) groupEl.onchange=(e)=>{ hourlyPeopleFilterState.group=e.target.value; document.getElementById('hourPeopleList-'+h).innerHTML=hourlyAvailablePeopleHTML(h); };
   });
   wireNotInCampCardEvents();
+  document.querySelectorAll('[data-ex-mode]').forEach(b=>{ b.onclick=()=>{ exceptionStatsMode=b.dataset.exMode; render(); }; });
+  document.querySelectorAll('[data-ex-del]').forEach(b=>{
+    b.onclick=()=>{
+      const [d, i]=b.dataset.exDel.split('|');
+      const list=(state.ruleExceptions||{})[d]||[];
+      const r=list[Number(i)];
+      if(!r) return;
+      const isIgnore=r.reason==='ignored';
+      showConfirm(`確定要取消這筆紀錄嗎？\n${r.label||''}${r.personId? ' '+personName(r.personId):''}：${r.rules.map(k=>ruleDef(k).name).join('、')}\n\n取消之後，這個${isIgnore?'衝突':'破例'}會重新出現在排班頁的規則問題裡，要再處理一次。`, ()=>{
+        list.splice(Number(i),1);
+        if(!list.length) delete state.ruleExceptions[d];
+        invalidateRuleStatus(); saveState(); render();
+        showToast('已取消這筆紀錄');
+      }, {confirmLabel:'取消這筆紀錄', cancelLabel:'保留'});
+    };
+  });
   wireOnDutyCardEvents();
   wireGroupTimelineEvents();
   wireQuickIncidentButtons();
@@ -11661,59 +12348,90 @@ function renderStats(){
   wireGotoLeaveTableButtons();
   document.getElementById('queryBtn').onclick=()=>{
     const t=getTimeSelectValue('queryTime');
-    const qMin=toMin(t);
     const gf=document.getElementById('queryGroupFilter').value;
     const rkf=document.getElementById('queryRankFilter').value;
     queryFilterState={time:t, group:gf, rank:rkf};
-    const groupMatch = p=>{
-      if(gf==='__none' && p.group) return false;
-      if(gf && gf!=='__none' && p.group!==gf) return false;
-      if(rkf && rankCategory(p.rank)!==rkf) return false;
-      return true;
-    };
-    const free = state.personnel
-      .filter(groupMatch)
-      .map(p=>({p, dur:freeDurationFrom(p.id,currentDate,qMin)}))
-      .filter(x=>x.dur>0)
-      .sort((a,b)=>b.dur-a.dur);
-    const resultEl=document.getElementById('queryResult');
-    if(!state.personnel.length){ resultEl.innerHTML=`<div class="empty">尚未新增人員</div>`; return; }
-    const groupsForTable = groups.length? groups : [''];
-    const rows = groupsForTable.map(g=>{
-      const members = state.personnel.filter(p=>p.group===g);
-      const total = rankGenderBreakdown(members);
-      const absentMembers = members.filter(p=>isPersonUnavailable(p.id,currentDate,qMin,qMin+1));
-      const absent = rankGenderBreakdown(absentMembers);
-      const present = {};
-      Object.keys(total).forEach(k=>{ present[k]=total[k]-absent[k]; });
-      return {label:g||'未分組', total, absent, present};
-    });
-    const totalAll = rankGenderBreakdown(state.personnel);
-    const absentAll = rankGenderBreakdown(state.personnel.filter(p=>isPersonUnavailable(p.id,currentDate,qMin,qMin+1)));
-    const presentAll = {};
-    Object.keys(totalAll).forEach(k=>{ presentAll[k]=totalAll[k]-absentAll[k]; });
-    const fmtRank=fmtRankBreakdown;
-    const busyList = state.personnel
-      .filter(groupMatch)
-      .filter(p=>isPersonUnavailable(p.id,currentDate,qMin,qMin+1))
-      .map(p=>({p, reasons: unavailabilityReasonsInRange(p.id,currentDate,qMin,qMin+1)}))
-      .sort((a,b)=>groupIndex(a.p.group)-groupIndex(b.p.group) || rankIndex(a.p.rank)-rankIndex(b.p.rank));
-    resultEl.innerHTML = `
-      <div class="muted" style="margin-bottom:6px">${t} 有空：${free.length} / ${state.personnel.filter(groupMatch).length} 人${gf?'（已篩選排組）':''}</div>
-      <table class="hr-table" style="margin-bottom:10px">
-        <tr><th style="text-align:left">排組</th><th>應到</th><th>事故</th><th>實到</th></tr>
-        ${rows.map(r=>`<tr><td style="text-align:left">${esc(r.label)}</td><td>${fmtRank(r.total)}</td><td>${fmtRank(r.absent)}</td><td>${fmtRank(r.present)}</td></tr>`).join('')}
-        <tr style="font-weight:600"><td style="text-align:left">總計</td><td>${fmtRank(totalAll)}</td><td>${fmtRank(absentAll)}</td><td>${fmtRank(presentAll)}</td></tr>
-      </table>
-      <div class="muted" style="margin:8px 0 4px"><b>有空人員</b></div>
-      ${free.length? free.map(x=>`<div class="list-item"><span class="grow">${esc(x.p.name)}（${x.p.group||'未分組'}·${x.p.rank}）</span><span class="muted">空 ${Math.floor(x.dur/60)}小時${x.dur%60?x.dur%60+'分':''}</span></div>`).join('') : `<div class="empty">此時間無人有空</div>`}
-      <div class="muted" style="margin:12px 0 4px"><b>事故人員</b></div>
-      ${busyList.length? busyList.map(x=>`<div class="list-item" style="flex-direction:column;align-items:stretch">
-          <div class="row"><span class="grow">${esc(x.p.name)}（${x.p.group||'未分組'}·${x.p.rank}）</span></div>
-          ${x.reasons.map(r=>`<div class="muted">・${esc(r)}</div>`).join('')}
-        </div>`).join('') : `<div class="empty">此時間無人有事故</div>`}
-    `;
+    renderQueryResult();
   };
+  // 換日期或重畫之後，查過的結果（含臨時增減）照樣顯示
+  if(queryAdjust && queryAdjust.date===currentDate && queryAdjust.time===queryFilterState.time) renderQueryResult();
+}
+/* v165：點名時臨時增減——「臨時事故」「已回來」只算這次查詢（同一天同一個時
+   間），不改班表；臨時事故可以順便登記成真的事故。 */
+let queryAdjust=null; // {date, time, out:Set, back:Set}
+function queryAdjustFor(date, time){
+  if(!queryAdjust || queryAdjust.date!==date || queryAdjust.time!==time) queryAdjust={date, time, out:new Set(), back:new Set()};
+  return queryAdjust;
+}
+function renderQueryResult(){
+  const resultEl=document.getElementById('queryResult');
+  if(!resultEl) return;
+  const t=queryFilterState.time, gf=queryFilterState.group, rkf=queryFilterState.rank;
+  const qMin=toMin(t);
+  const adj=queryAdjustFor(currentDate, t);
+  const groupMatch = p=>{
+    if(gf==='__none' && p.group) return false;
+    if(gf && gf!=='__none' && p.group!==gf) return false;
+    if(rkf && rankCategory(p.rank)!==rkf) return false;
+    return true;
+  };
+  if(!state.personnel.length){ resultEl.innerHTML=`<div class="empty">尚未新增人員</div>`; return; }
+  const sysAbsent = p=>isPersonUnavailable(p.id,currentDate,qMin,qMin+1);
+  const absentNow = p=> adj.out.has(p.id) || (sysAbsent(p) && !adj.back.has(p.id));
+  const free = state.personnel.filter(groupMatch).filter(p=>!absentNow(p))
+    .map(p=>({p, dur: adj.back.has(p.id)? null : freeDurationFrom(p.id,currentDate,qMin)}))
+    .sort((a,b)=>(b.dur===null?1e9:b.dur)-(a.dur===null?1e9:a.dur));
+  const groups = [...new Set(state.personnel.map(p=>p.group).filter(Boolean))].sort((a,b)=>groupIndex(a)-groupIndex(b));
+  const groupsForTable = groups.length? groups : [''];
+  const rows = groupsForTable.map(g=>{
+    const members = state.personnel.filter(p=>p.group===g);
+    const total = rankGenderBreakdown(members);
+    const absent = rankGenderBreakdown(members.filter(absentNow));
+    const present = {};
+    Object.keys(total).forEach(k=>{ present[k]=total[k]-absent[k]; });
+    return {label:g||'未分組', total, absent, present};
+  });
+  const totalAll = rankGenderBreakdown(state.personnel);
+  const absentAll = rankGenderBreakdown(state.personnel.filter(absentNow));
+  const presentAll = {};
+  Object.keys(totalAll).forEach(k=>{ presentAll[k]=totalAll[k]-absentAll[k]; });
+  const fmtRank=fmtRankBreakdown;
+  const busyList = state.personnel.filter(groupMatch).filter(absentNow)
+    .map(p=>({p, temp:adj.out.has(p.id), reasons: adj.out.has(p.id)? [] : unavailabilityReasonsInRange(p.id,currentDate,qMin,qMin+1)}))
+    .sort((a,b)=>(b.temp-a.temp) || groupIndex(a.p.group)-groupIndex(b.p.group) || rankIndex(a.p.rank)-rankIndex(b.p.rank));
+  const nAdj=adj.out.size+adj.back.size;
+  resultEl.innerHTML = `
+    <div class="muted" style="margin-bottom:6px">${t} 有空：${free.length} / ${state.personnel.filter(groupMatch).length} 人${gf?'（已篩選排組）':''}</div>
+    ${nAdj? `<div class="badge-issue q-adj-note" style="margin-bottom:8px">✏️ 有臨時調整 ${nAdj} 人（臨時事故 ${adj.out.size}、已回來 ${adj.back.size}），只算這次點名、沒有改班表 <button class="ghost small" id="qAdjReset" style="margin-left:4px">全部還原</button></div>` : ''}
+    <table class="hr-table" style="margin-bottom:10px">
+      <tr><th style="text-align:left">排組</th><th>應到</th><th>事故</th><th>實到</th></tr>
+      ${rows.map(r=>`<tr><td style="text-align:left">${esc(r.label)}</td><td>${fmtRank(r.total)}</td><td>${fmtRank(r.absent)}</td><td>${fmtRank(r.present)}</td></tr>`).join('')}
+      <tr style="font-weight:600"><td style="text-align:left">總計</td><td>${fmtRank(totalAll)}</td><td>${fmtRank(absentAll)}</td><td>${fmtRank(presentAll)}</td></tr>
+    </table>
+    <div class="muted" style="margin:8px 0 4px"><b>有空人員</b><span class="hint">　點名時誰突然有事，按「臨時事故」</span></div>
+    ${free.length? free.map(x=>`<div class="list-item"><span class="grow">${esc(x.p.name)}（${x.p.group||'未分組'}·${x.p.rank}）${x.dur===null? ' <span class="tag">已回來（臨時）</span>' : ''}</span>${x.dur===null? `<button class="ghost small" data-q-undo="${x.p.id}">還原</button>` : `<span class="muted">空 ${Math.floor(x.dur/60)}小時${x.dur%60?x.dur%60+'分':''}</span><button class="ghost small" data-q-out="${x.p.id}">臨時事故</button>`}</div>`).join('') : `<div class="empty">此時間無人有空</div>`}
+    <div class="muted" style="margin:12px 0 4px"><b>事故人員</b><span class="hint">　任務提早結束、人出現了，按「已回來」</span></div>
+    ${busyList.length? busyList.map(x=>`<div class="list-item" style="flex-direction:column;align-items:stretch">
+        <div class="row"><span class="grow">${esc(x.p.name)}（${x.p.group||'未分組'}·${x.p.rank}）${x.temp? ' <span class="tag">臨時事故</span>' : ''}</span>
+          ${x.temp? `<button class="ghost small" data-q-reg="${x.p.id}">也登記到班表</button><button class="ghost small" data-q-undo="${x.p.id}">還原</button>` : `<button class="ghost small" data-q-back="${x.p.id}">已回來</button>`}</div>
+        ${x.temp? `<div class="muted">・臨時事故（這次點名，還沒登記到班表）</div>` : x.reasons.map(r=>`<div class="muted">・${esc(r)}</div>`).join('')}
+      </div>`).join('') : `<div class="empty">此時間無人有事故</div>`}
+  `;
+  const redraw=()=>renderQueryResult();
+  resultEl.querySelectorAll('[data-q-out]').forEach(b=>{ b.onclick=()=>{ adj.out.add(b.dataset.qOut); adj.back.delete(b.dataset.qOut); redraw(); }; });
+  resultEl.querySelectorAll('[data-q-back]').forEach(b=>{ b.onclick=()=>{ adj.back.add(b.dataset.qBack); adj.out.delete(b.dataset.qBack); redraw(); }; });
+  resultEl.querySelectorAll('[data-q-undo]').forEach(b=>{ b.onclick=()=>{ adj.out.delete(b.dataset.qUndo); adj.back.delete(b.dataset.qUndo); redraw(); }; });
+  resultEl.querySelectorAll('[data-q-reg]').forEach(b=>{ b.onclick=()=>{
+    const pid=b.dataset.qReg;
+    const endMin=Math.min(qMin+60, 1440);
+    openQuickIncidentModal(pid, currentDate, ()=>{
+      // 登記好了就是班表上的事故，不用再當臨時的
+      if(isPersonUnavailable(pid, currentDate, qMin, qMin+1)) adj.out.delete(pid);
+      render();
+    }, {start:t, end:`${String(Math.floor(endMin/60)).padStart(2,'0')}:${String(endMin%60).padStart(2,'0')}`});
+  }; });
+  const rs=document.getElementById('qAdjReset');
+  if(rs) rs.onclick=()=>{ adj.out.clear(); adj.back.clear(); redraw(); };
 }
 
 /* ---- SCHEDULE TAB (stage 2) ---- */
@@ -13965,7 +14683,7 @@ function miscEntryEditorHTML(m){
         if(driverIdx>-1) driver = state.personnel.find(p=>p.id===m.personIds[driverIdx]);
       }
       const otherSelectedIds = m.personIds.filter((pid,idx)=>idx!==i && pid);
-      const reasonsFn = p=>roleIneligibilityReasons(p, r, preset, driver, currentDate, sMin, eMinRaw, m.id, otherSelectedIds);
+      const reasonsFn = p=>roleIneligibilityReasons(p, r, preset, driver, currentDate, sMin, eMinRaw, m.id, otherSelectedIds, m);
       return `<div class="row wrap" style="margin-bottom:6px">
         <div class="grow"><label>${esc(r)}</label>
           ${rolePickerHTML('inlineRoleSel-'+m.id+'-'+i, m.personIds[i]||'', reasonsFn)}
@@ -14007,8 +14725,11 @@ function miscEntryEditorHTML(m){
     </div>
   </div>`;
 }
-function roleIneligibilityReasons(person, role, preset, driver, date, s, eRaw, excludeMiscId, otherSelectedIds){
+function roleIneligibilityReasons(person, role, preset, driver, date, s, eRaw, excludeMiscId, otherSelectedIds, entry){
   const reasons=[];
+  // 值星分位置：看那個位置的階級要求
+  const posDef=entry? dutyPositionFor(entry, role) : null;
+  if(posDef && (posDef.ranks||[]).length && !posDef.ranks.includes(person.rank)) reasons.push(`${role}需為${posDef.ranks.join('或')}`);
   if(otherSelectedIds && otherSelectedIds.includes(person.id)) reasons.push('已擔任這個項目的其他角色');
   if(role==='駕駛'){
     driverQualificationIssues(person, preset).forEach(r=>reasons.push(r));
@@ -14030,7 +14751,7 @@ function roleIneligibilityReasons(person, role, preset, driver, date, s, eRaw, e
   }
   if(preset && personHasConflictingStandby(person.id, date, preset, excludeMiscId)) reasons.push('今天已擔任其他全天待命勤務，資格衝突');
   if(isPersonOnExclusiveStandby(person.id, date, excludeMiscId)) reasons.push('今天已擔任只能待命的勤務，不能再接其他任務');
-  if(role!=='值星' && isDutyOfficer(person.id, date)) reasons.push('今日值星，原則上不自行出勤');
+  if(role!=='值星' && !posDef && isDutyOfficer(person.id, date)) reasons.push('今日值星，原則上不自行出勤');
   return [...new Set(reasons)];
 }
 /* single-person picker rendered as a searchable tap-list — same look as
