@@ -344,6 +344,12 @@ select[data-assign-cat]:has(option[value=""]:checked){background-color:var(--war
 .cal-cell.leave-partial-marked{border-color:var(--warn);border-style:dashed;background:var(--warn-soft);box-shadow:none;}
 .cal-cell.leave-partial-marked .cal-mark{color:var(--warn);font-style:italic;}
 .cal-cell.incident-marked{border-color:var(--warn);background:var(--warn-soft);box-shadow:none;}
+/* v167：留守期間自動算的休假（淡一點）、標成不休的日子、點起訖的起點 */
+.cal-cell.derived-leave{border-color:color-mix(in srgb,var(--accent) 45%,transparent);background:color-mix(in srgb,var(--accent-soft) 55%,var(--panel));box-shadow:none;}
+.cal-cell.derived-leave .cal-mark{color:var(--dim);}
+.cal-cell.leave-off{border-color:var(--line-strong);border-style:dashed;background:var(--panel);box-shadow:none;}
+.cal-cell.leave-off .cal-mark{color:var(--dim);text-decoration:line-through;}
+.cal-cell.range-start{box-shadow:0 0 0 2.5px var(--accent);border-color:var(--accent);}
 .cal-cell.standby-marked .cal-mark{color:var(--ok);}
 .cal-cell.holiday .cal-day{color:var(--danger);}
 .cal-day{font-size:12px;font-weight:700;color:var(--dim);line-height:1.2;}
@@ -365,7 +371,7 @@ select[data-assign-cat]:has(option[value=""]:checked){background-color:var(--war
       <span class="unit-banner-badge"><i data-ico="star"></i></span>
       <span class="unit-banner-titles">
         <span class="unit-banner-text">陸軍第八軍團 本部連</span>
-        <h1 id="pageTitle">衛哨排班系統 <span class="muted">v166</span></h1>
+        <h1 id="pageTitle">衛哨排班系統 <span class="muted">v167</span></h1>
       </span>
     </span>
     <span class="banner-side right">
@@ -1205,17 +1211,25 @@ function minguoLabel(dateStr){
   const [y,m,d]=dateStr.split('-').map(Number);
   return `民國${y-1911}年${m}月${d}日`;
 }
+// v167：前一天／隔天很常用（休假整段、留守期間），算過的記起來
+const __prevDateMemo=new Map(), __nextDateMemo=new Map();
 function prevDateStr(dateStr){
+  let r=__prevDateMemo.get(dateStr); if(r) return r;
   const d=new Date(dateStr+'T00:00:00');
   d.setDate(d.getDate()-1);
   const p=n=>String(n).padStart(2,'0');
-  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`;
+  r=`${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`;
+  if(__prevDateMemo.size<20000) __prevDateMemo.set(dateStr, r);
+  return r;
 }
 function nextDateStr(dateStr){
+  let r=__nextDateMemo.get(dateStr); if(r) return r;
   const d=new Date(dateStr+'T00:00:00');
   d.setDate(d.getDate()+1);
   const p=n=>String(n).padStart(2,'0');
-  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`;
+  r=`${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`;
+  if(__nextDateMemo.size<20000) __nextDateMemo.set(dateStr, r);
+  return r;
 }
 /* every date strictly between start and end (inclusive), as an array of
    'YYYY-MM-DD' strings, in order */
@@ -1428,6 +1442,8 @@ if(!state.unitRules.leaveBuffer) state.unitRules.leaveBuffer = {
   strictStart: '08:00',  // 嚴格（取消緩衝後）：完全沒有前一天緩衝，當天這個時間才開始
   backEnd: '07:30',       // 所有層級共用：最後一天隔天這個時間結束
 };
+// v167：義務役收假時間（國軍軍官士官士兵休請假作業規定：義務役人員於休假結束當日二十一時前返營）
+if(!state.unitRules.leaveBuffer.conscriptBackEnd) state.unitRules.leaveBuffer.conscriptBackEnd='21:00';
 /* 留守的預設時間——原本寫死在程式碼裡（STANDBY_DEFAULTS 常數），新增留守
    區塊時如果沒有另外指定，就是套用這裡的值；改到這裡管理，以後要調整不
    用改程式碼。 */
@@ -1752,7 +1768,10 @@ function planSigsNow(){
     types[t.key]=m;
   });
   // 留守期間「非留守人員放假」是依整份名冊產生的，名冊有人加入/刪除也要重算
-  return {types, roster: (state.personnel||[]).map(p=>p.id).join(',')};
+  // v167：役別（義務役收假時間不同）、休假緩衝時間也算在內（留守期間放假會用到）
+  const lb=(state.unitRules||{}).leaveBuffer||{};
+  return {types, roster: (state.personnel||[]).map(p=>p.id+(isConscript(p)?'*':'')).join(','),
+    leaveRules:[lb.honorStart, lb.normalStart, lb.backEnd, lb.conscriptBackEnd].join('|')};
 }
 function initPlanSync(){
   PLAN_SYNC={planSig:planSigsNow(), linkedSig:{}};
@@ -1865,11 +1884,11 @@ function resyncStandby(oldPlans){
   });
   standbyImportMinDate=today; // 已經過去的日期一律不寫
   try{
-    blocks.forEach(([anchor,p])=>{
+    withDerivedPass(()=>blocks.forEach(([anchor,p])=>{
       const range=standbyRangeOf(p);
       if(!range.length || range[range.length-1]<today) return; // 整段都已經過去
       importPreplanForDate('standby', anchor);
-    });
+    }));
   } finally { standbyImportMinDate=null; }
   // 新寫的子勤務沿用舊的編號；內容一樣就直接放回原本那筆
   Object.keys(oldEntries).forEach(d=>{
@@ -1889,7 +1908,13 @@ function runPlanSync(){
   const now=planSigsNow(), before=PLAN_SYNC.planSig, today=todayStr();
   let changed=false;
   const sbKeys=diffKeys(before.types.standby, now.types.standby);
-  if(sbKeys.length || before.roster!==now.roster){
+  // 名冊有人加入/刪除、役別、休假緩衝時間改了，留守期間放假也要重算
+  const sbAll = sbKeys.length || before.roster!==now.roster || before.leaveRules!==now.leaveRules;
+  // v167：役別改了的人——休假的收假方式（隔天07:30／當天21:00）整個重寫
+  const consSet=r=>new Set(String(r||'').split(',').filter(x=>x.endsWith('*')).map(x=>x.slice(0,-1)));
+  const cb=consSet(before.roster), cn=consSet(now.roster);
+  const svcChanged=[...new Set([...cb,...cn])].filter(id=>cb.has(id)!==cn.has(id));
+  if(sbAll){
     // 名冊有人加入/刪除也算系統動作：留守放假重算後不能被誤判成「手改」
     changed=true;
     const oldPlans=sbKeys.map(a=>(before.types.standby||{})[a]).filter(Boolean).map(s=>JSON.parse(s));
@@ -1902,26 +1927,295 @@ function runPlanSync(){
     keys.filter(d=>d>=today).forEach(d=>syncPlanDate(t, d));
   });
   const lvKeys=diffKeys(before.types.leave, now.types.leave);
-  if(lvKeys.length){
-    changed=true;
-    lvKeys.forEach(k=>{ const i=k.indexOf('|'); applyLeavePlan(k.slice(0,i), k.slice(i+1)); });
+  if(lvKeys.length) changed=true;
+  /* 要重新套用的休假：
+     - 大表改了的那幾筆
+     - 同一個人改了別的類型：自動休假可能被取代，連起來的整段變了 → 他的休假也要
+     - 留守表／名冊改了：每個人連起來的整段都可能變了（榮譽假、5天）→ 每個有休假的人
+     - 役別改了的人：全部類型、強制重寫 */
+  const apply=new Map(); // key → force
+  lvKeys.forEach(k=>{ apply.set(k,false); apply.set(k.slice(0,k.indexOf('|'))+'|'+DERIVED_LEAVE_CAT, false); });
+  if(sbAll) Object.entries((state.preplan||{}).leave||{}).forEach(([pid,c])=>{ if(c && c[DERIVED_LEAVE_CAT]) apply.set(pid+'|'+DERIVED_LEAVE_CAT, false); });
+  svcChanged.forEach(pid=>Object.keys(((state.preplan||{}).leave||{})[pid]||{}).forEach(cat=>apply.set(pid+'|'+cat, true)));
+  if(apply.size){
+    const index=leaveEntryIndex();
+    const downgraded=[];
+    apply.forEach((force,k)=>{
+      const i=k.indexOf('|');
+      const r=applyLeavePlan(k.slice(0,i), k.slice(i+1), undefined, {force, index});
+      if(sbAll && !lvKeys.includes(k) && r && r.downgraded) downgraded.push(...r.downgraded);
+    });
+    // v167：大表改了（某天不算休假、別的類型、榮譽假）→ 這幾個人留守期間的自動休假跟著重寫
+    if(!sbAll && lvKeys.length) resyncDerivedLeaveFor([...new Set(lvKeys.map(k=>k.slice(0,k.indexOf('|'))))]);
+    // 留守名單改了之後，有人連同假日超過5天、榮譽假變成要同意：告訴使用者
+    if(downgraded.length) setTimeout(()=>showAlert(`留守名單改了之後，下面這幾段休假連同留守期間的假日超過5天，榮譽假先改成一般（前一天18:00起）。如果已經同意，請到休假暨事故大表按「確認」保留：\n${downgraded.slice(0,8).map(d=>`・${d.name}：${minguoLabel(d.start)}~${minguoLabel(d.end)}`).join('\n')}${downgraded.length>8?`\n…還有 ${downgraded.length-8} 段`:''}`), 0);
   }
   PLAN_SYNC.planSig=now;
   return changed;
 }
+/* 每個人大表產生的休假/事故記錄（leaveId），一次掃完給 applyLeavePlan 用，不用每個人各掃一次 */
+function leaveEntryIndex(){
+  const m=new Map();
+  Object.keys(state.unavail).forEach(d=>(state.unavail[d]||[]).forEach(u=>{
+    if(!u.leaveId || !u.personId) return;
+    let l=m.get(u.personId); if(!l) m.set(u.personId, l=[]);
+    l.push({d,u});
+  }));
+  return m;
+}
+
+/* ---------- v167：假日的休假跟著留守名單 ----------
+   留守期間（留守表的起訖日）不在留守名單上的人，自動算休假，大表不用再一
+   天一天點假日。個別的人可以在大表改：某天標「不算休假」（holidayOff），
+   或那天整天登記別的類型（受訓等）取代。大表上自己登的休假照舊保留（包含
+   假日——那是使用者自己的意思，留守表之後怎麼改都不會把它弄丟），跟前後的
+   自動休假連成一段——5天規則、榮譽假都照連起來的整段算。 */
+const DERIVED_LEAVE_CAT='休假';
+const STANDBY_LEAVE_TAG='休假（留守期間非留守人員）';
+// 留守表清單（每次比對起訖日的簽章，改了才重建）
+let __sbListCache={src:null, keys:null, spans:null, list:[]};
+function standbyPlanList(){
+  const sb=((state.preplan||{}).standby)||{};
+  const c=__sbListCache;
+  // 整批重算期間留守表不會變：直接用
+  if(__dlPass && c.src===sb) return c.list;
+  if(c.src===sb && c.keys){
+    let same=true, i=0;
+    for(const k in sb){ const p=sb[k]; if(c.keys[i]!==k || c.spans[i]!==p || !p || c.spans[i].__s!==p.startDate || c.spans[i].__e!==p.endDate){ same=false; break; } i++; }
+    if(same && i===c.keys.length) return c.list;
+  }
+  const keys=Object.keys(sb), spans=keys.map(k=>sb[k]);
+  spans.forEach(p=>{ if(p){ Object.defineProperty(p,'__s',{value:p.startDate, writable:true, configurable:true, enumerable:false}); Object.defineProperty(p,'__e',{value:p.endDate, writable:true, configurable:true, enumerable:false}); } });
+  const list=Object.values(sb).filter(p=>p && p.startDate && p.endDate && p.startDate<=p.endDate);
+  // 每一天有哪幾段留守表（查「這天是不是留守期間」不用每次掃全部）
+  const byDate=new Map();
+  list.forEach(p=>dateRangeList(p.startDate,p.endDate).forEach(d=>{ let a=byDate.get(d); if(!a) byDate.set(d, a=[]); a.push(p); }));
+  __sbListCache={src:sb, keys, spans, list, byDate};
+  return list;
+}
+function standbyPlansOn(date){ standbyPlanList(); return __sbListCache.byDate.get(date)||[]; }
+let __personMapCache={src:null, len:-1, map:null};
+function personById(id){
+  const arr=state.personnel||[];
+  if(__personMapCache.src!==arr || __personMapCache.len!==arr.length) __personMapCache={src:arr, len:arr.length, map:new Map(arr.map(p=>[p.id,p]))};
+  return __personMapCache.map.get(id);
+}
+/* 這天在某段留守期間、而且不在那段的留守名單上 → 回傳那段留守表 */
+function standbyOffPlanFor(pid, date){
+  for(const p of standbyPlansOn(date)){ if(!(p.personIds||[]).includes(pid)) return p; }
+  return null;
+}
+function inAnyStandbyBlock(date){ return standbyPlansOn(date).length>0; }
+/* 放假的日子（扣假天數不算）：假日設定裡的假日，或留守期間 */
+function isHolidayish(date){ return isHolidayDate(date) || inAnyStandbyBlock(date); }
+function isConscript(p){ return !!p && p.serviceType==='義務役'; }
+function shiftDays(date, n){ const d=new Date(date+'T00:00:00'); d.setDate(d.getDate()+n); const p=x=>String(x).padStart(2,'0'); return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`; }
+/* 大表的一筆有沒有內容（日期、部分時段、不算休假、榮譽假任何一樣有就算有） */
+function leaveRecEmpty(rec){ return !rec || (!(rec.dates||[]).length && !Object.keys(rec.partialTimes||{}).length && !(rec.holidayOff||[]).length && !(rec.honorDates||[]).length); }
+/* 讀大表的「看法」：view(類型) → {dates, partial, off, honor, approved}。預設讀存好的；
+   大表編輯中可以傳入含草稿的版本 */
+function leaveStoreView(pid){
+  const recs=((state.preplan||{}).leave||{})[pid]||{}, memo={};
+  return cat=>{
+    if(memo[cat]) return memo[cat];
+    const r=recs[cat]||{};
+    return memo[cat]={dates:new Set(r.dates||[]), partial:new Set(Object.keys(r.partialTimes||{})), off:new Set(r.holidayOff||[]), honor:new Set(r.honorDates||[]), approved:r.approvedRuns||[]};
+  };
+}
+/* 這天是不是「留守期間自動休假」（沒被改掉的）。別的類型要「整天」登記才會取代；
+   不到一天的部分時段不會把整天的假拿掉（大表上要改休才會標成不算休假） */
+function derivedLeaveOn(pid, date, view, opts){
+  const person=personById(pid);
+  if(!person) return false;
+  // 已離退的人本來就整天不可排；班表上照舊寫（跟以前一樣），大表跟統計不算他
+  if(person.departureDate && date>=person.departureDate && !(opts && opts.includeDeparted)) return false;
+  if(!standbyOffPlanFor(pid, date)) return false;
+  view=view||leaveStoreView(pid);
+  if(view(DERIVED_LEAVE_CAT).off.has(date)) return false;
+  for(const c of state.leaveCategories){
+    if(c.name===DERIVED_LEAVE_CAT) continue;
+    if(view(c.name).dates.has(date)) return false; // 那天整天登記了別的類型：以那個類型為準
+  }
+  return true;
+}
+/* win={from,to}：只看跟這段日期有重疊的留守表（大表畫面看一個月、班表只看要寫的那段附近） */
+function derivedLeaveDays(pid, view, win, opts){
+  view=view||leaveStoreView(pid);
+  const out=new Set();
+  standbyPlanList().forEach(p=>{
+    if(win && (p.endDate<win.from || p.startDate>win.to)) return;
+    dateRangeList(p.startDate,p.endDate).forEach(d=>{ if(!out.has(d) && derivedLeaveOn(pid,d,view,opts)) out.add(d); });
+  });
+  return out;
+}
+/* 休假（大表登的＋自動的）連起來的每一段：5天規則、榮譽假都照這個算。
+   整段都是留守期間的假日（自己沒登任何一天）不用同意——那是連上的放假。 */
+function combinedLeaveRuns(pid, view, win){
+  view=view||leaveStoreView(pid);
+  const v=view(DERIVED_LEAVE_CAT);
+  const w=win? {from:shiftDays(win.from,-60), to:shiftDays(win.to,60)} : null;
+  const derived=derivedLeaveDays(pid, view, w);
+  const all=[...new Set([...v.dates, ...derived])].sort();
+  const cat=state.leaveCategories.find(c=>c.name===DERIVED_LEAVE_CAT)||{};
+  const runs=[];
+  let cur=null;
+  const flush=()=>{
+    if(!cur) return;
+    const days=daysBetweenInclusive(cur.start, cur.end);
+    const honor=!!(cat.honorOption && v.honor.has(cur.start));
+    const effectiveDays=days+(honor?0.5:0);
+    const approved=v.approved.some(r=>r.start===cur.start && r.end===cur.end);
+    const needsApproval=!!cat.fiveDayRule && effectiveDays>5 && cur.explicit.length>0;
+    runs.push(Object.assign(cur, {days, honor, effectiveDays, approved, needsApproval, honorApplies: honor && (!needsApproval || approved)}));
+    cur=null;
+  };
+  all.forEach(d=>{
+    if(cur && d===nextDateStr(cur.end)){ cur.end=d; }
+    else { flush(); cur={start:d, end:d, explicit:[], derived:[]}; }
+    if(v.dates.has(d)) cur.explicit.push(d); else cur.derived.push(d);
+  });
+  flush();
+  return runs;
+}
+/* 某個人這個月：休假的扣假天數（平日）跟假日天數、其他類型天數 */
+function leaveMonthSummary(pid, ym, view){
+  view=view||leaveStoreView(pid);
+  const out={deduct:0, holiday:0, others:[]};
+  const v=view(DERIVED_LEAVE_CAT);
+  v.dates.forEach(d=>{ if(!d.startsWith(ym)) return; if(isHolidayish(d)) out.holiday++; else out.deduct++; });
+  const monthWin={from:ym+'-01', to:ym+'-31'};
+  derivedLeaveDays(pid, view, monthWin).forEach(d=>{ if(d.startsWith(ym) && !v.dates.has(d)) out.holiday++; });
+  state.leaveCategories.forEach(c=>{
+    if(c.name===DERIVED_LEAVE_CAT) return;
+    const cv=view(c.name);
+    const n=[...cv.dates].filter(d=>d.startsWith(ym)).length + [...cv.partial].filter(d=>d.startsWith(ym) && !cv.dates.has(d)).length;
+    if(n) out.others.push({name:c.name, n});
+  });
+  return out;
+}
+function leaveMonthSummaryText(sm){
+  const parts=[];
+  if(sm.deduct || sm.holiday) parts.push(`休 扣${sm.deduct}＋假${sm.holiday}`);
+  sm.others.forEach(o=>parts.push(`${o.name.slice(0,2)}${o.n}`));
+  return parts.join('・');
+}
+/* 同一次整批重算留守期間放假時（resyncStandby／resyncDerivedLeaveFor），每個人的自動休假、
+   連起來的整段只算一次（大表、留守表在這段期間不會變） */
+let __dlPass=null;
+function derivedInfoFor(pid, win){
+  if(__dlPass && __dlPass.has(pid)) return __dlPass.get(pid);
+  const view=leaveStoreView(pid);
+  const info={view, derived:derivedLeaveDays(pid, view, __dlPass? null : win, {includeDeparted:true}), combined:combinedLeaveRuns(pid, view, __dlPass? undefined : win)};
+  if(__dlPass) __dlPass.set(pid, info);
+  return info;
+}
+function withDerivedPass(fn){
+  const outer=__dlPass;
+  if(!outer){ __dlPass=null; standbyPlanList(); __dlPass=new Map(); } // 開始前先確認留守表清單是最新的
+  try{ return fn(); } finally{ if(!outer) __dlPass=null; }
+}
+/* 留守期間：寫某一個非留守人員的自動休假（整段裡被改掉的日子會斷成好幾小段，
+   每小段各自有放假／收假時間；義務役最後一天 21:00 收假、不用隔天早上——隔天
+   還在休假就不算最後一天） */
+function writeDerivedLeaveForPerson(plan, p, pushU){
+  if((plan.personIds||[]).includes(p.id)) return;
+  const {view, derived, combined}=derivedInfoFor(p.id, {from:plan.startDate, to:plan.endDate});
+  const days=dateRangeList(plan.startDate, plan.endDate).filter(d=>derived.has(d));
+  if(!days.length) return;
+  const buf=state.unitRules.leaveBuffer, sbd=state.unitRules.standbyDefaults;
+  const conscript=isConscript(p);
+  const leaveNext=d=>view(DERIVED_LEAVE_CAT).dates.has(d) || derived.has(d);
+  const runs=[]; let cur=null;
+  days.forEach(d=>{ if(cur && d===nextDateStr(cur.end)) cur.end=d; else { cur={start:d,end:d}; runs.push(cur); } });
+  runs.forEach(r=>{
+    const cr=combined.find(c=>c.start<=r.start && c.end>=r.end);
+    const honorRun=!!(cr && cr.honorApplies);
+    const extra=honorRun? {honor:true} : {};
+    const startT = honorRun && cr.start===r.start? buf.honorStart : (r.start===plan.startDate? (plan.leaveStartTime||sbd.leaveStartTime) : buf.normalStart);
+    pushU(prevDateStr(r.start), Object.assign({id:uid(),personId:p.id,allDay:false,start:startT,end:'24:00',reason:STANDBY_LEAVE_TAG}, extra));
+    const list=dateRangeList(r.start, r.end);
+    const continues=leaveNext(nextDateStr(r.end));
+    list.forEach((d,i)=>{
+      if(conscript && !continues && i===list.length-1) pushU(d, Object.assign({id:uid(),personId:p.id,allDay:false,start:'00:00',end:buf.conscriptBackEnd||'21:00',reason:STANDBY_LEAVE_TAG,conscriptLast:true}, extra));
+      else pushU(d, Object.assign({id:uid(),personId:p.id,allDay:true,start:'',end:'',reason:STANDBY_LEAVE_TAG}, extra));
+    });
+    if(!conscript){
+      const endT = r.end===plan.endDate? (plan.endTime||sbd.endTime) : buf.backEnd;
+      pushU(nextDateStr(r.end), {id:uid(),personId:p.id,allDay:false,start:'00:00',end:endT,reason:STANDBY_LEAVE_TAG});
+    }
+  });
+}
+/* 只重寫這幾個人的留守期間自動休假：今天以後全部；fromDate 在過去時，另外重寫
+   fromDate～toDate 這幾天（只動改到的那幾天，更早、更晚的歷史不碰） */
+function resyncDerivedLeaveFor(pids, fromDate, toDate){
+  if(!pids || !pids.length) return;
+  const today=todayStr();
+  const from=(fromDate && fromDate<today)? fromDate : today;
+  const inRange=d=> d>=today || (d>=from && (!toDate || d<=toDate));
+  const set=new Set(pids);
+  Object.keys(state.unavail).forEach(d=>{
+    if(!inRange(d)) return;
+    const arr=state.unavail[d]||[];
+    const next=arr.filter(u=>!(set.has(u.personId) && u.reason===STANDBY_LEAVE_TAG));
+    if(next.length!==arr.length){ if(next.length) state.unavail[d]=next; else delete state.unavail[d]; }
+  });
+  const pushU=(d,e)=>{ if(!inRange(d)) return; if(!state.unavail[d]) state.unavail[d]=[]; state.unavail[d].push(e); };
+  withDerivedPass(()=>standbyPlanList().forEach(plan=>{
+    if(nextDateStr(plan.endDate)<from) return;
+    if(toDate && from<today && prevDateStr(plan.startDate)>toDate && nextDateStr(plan.endDate)<today) return;
+    pids.forEach(pid=>{ const p=personById(pid); if(p) writeDerivedLeaveForPerson(plan, p, pushU); });
+  }));
+}
+/* v167 開 App 時一次：
+   - v166 已經照榮譽假寫進班表、但連同留守期間的假日算起來超過5天的段落：當作已經同意（沿用，不偷偷改）
+   - 留守期間自動休假照新規則重寫（跟改留守表時一樣，本來就是整批重算的）
+   大表上自己登的日子一天都不動。 */
+function migrateLeaveModelV2(){
+  if(!state.preplan || state.leaveModelV>=2) return false;
+  Object.entries(state.preplan.leave||{}).forEach(([pid,byCat])=>{
+    const rec=byCat && byCat[DERIVED_LEAVE_CAT];
+    if(!rec) return;
+    combinedLeaveRuns(pid).forEach(r=>{
+      if(!r.needsApproval || r.approved) return;
+      // 以前同意過的段落，連上留守期間的假日之後變長了：沿用原本的同意
+      const hadApproval=(rec.approvedRuns||[]).some(a=>a.start<=r.end && a.end>=r.start);
+      const hadHonor=r.honor && (state.unavail[prevDateStr(r.start)]||[]).some(u=>u.personId===pid && u.reason==='榮譽假');
+      if(hadApproval || hadHonor) (rec.approvedRuns=rec.approvedRuns||[]).push({start:r.start, end:r.end});
+    });
+  });
+  state.leaveModelV=2;
+  resyncDerivedLeaveFor(state.personnel.map(p=>p.id));
+  return true;
+}
+/* 這天是不是在「有榮譽假」的連續休假裡（大表登的跟留守期間自動休假連起來算） */
+function honorOnDate(pid, date){
+  const cr=combinedLeaveRuns(pid, undefined, {from:date, to:date}).find(r=>r.start<=date && r.end>=date);
+  return !!(cr && cr.honorApplies);
+}
+/* 一整天不在（整天的記錄，或義務役收假那天 00:00-21:00） */
+function isAwayDayEntry(u){ return !!u && (u.allDay || !!u.conscriptLast); }
 
 /* ---------- 休假暨事故大表 → 班表 ---------- */
 /* 某人某類型：照大表算出「今天以後還有效」的每一段，跟班表現有的段落比，
    一樣的保留原樣，不一樣的刪掉重建；整段已經過去的不動。 */
-function leaveRunsFromPlan(rec, category){
+function leaveRunsFromPlan(rec, category, pid){
   const runs=[], partials=[];
   if(!rec) return {runs, partials};
   const dates=(rec.dates||[]).slice().sort();
   const honorSet=new Set(rec.honorDates||[]);
   const approvedRuns=rec.approvedRuns||[];
+  // v167：休假跟留守期間的自動休假連成一段時，榮譽假、5天規則照連起來的整段算
+  const combined=(pid && category.name===DERIVED_LEAVE_CAT && dates.length)? combinedLeaveRuns(pid, undefined, {from:dates[0], to:dates[dates.length-1]}) : null;
   if(dates.length){
     let runStart=dates[0], prev=dates[0];
     const flush=(end)=>{
+      const cr=combined && combined.find(c=>c.start<=runStart && c.end>=end);
+      if(cr && (cr.start!==runStart || cr.end!==end)){
+        // 這段是連假的一部分：只有整段的第一天是這段的第一天時，榮譽假才落在這段的前一天
+        const honorReq=cr.start===runStart && cr.honor;
+        runs.push({start:runStart, end, honorReq, honorApplies: !!(category.buffer && category.honorOption && honorReq && cr.honorApplies), approved:cr.approved, continues: cr.end>end});
+        return;
+      }
       const approved=approvedRuns.some(r=>r.start===runStart && r.end===end);
       const honorReq=honorSet.has(runStart);
       const honorApplies=!!(category.buffer && category.honorOption && honorReq && ((daysBetweenInclusive(runStart,end)+0.5)<=5 || approved));
@@ -1941,13 +2235,18 @@ function leaveRunPreview(pid, r, category, note){
   const real=state.unavail;
   let res, out;
   state.unavail={};
-  try{ res=createLeaveSegment(pid, r.start, r.end, category, r.honorReq?'honor':'normal', r.approved, note); out=state.unavail; }
+  try{
+    // v167：榮譽假有沒有效在 leaveRunsFromPlan 就照整段（含自動休假）決定好了
+    res=createLeaveSegment(pid, r.start, r.end, category, r.honorApplies?'honor':'normal', true, note, {continues:!!r.continues}); out=state.unavail;
+    res.honorDowngraded=!!(r.honorReq && !r.honorApplies);
+  }
   finally{ state.unavail=real; }
   const flat=[];
   Object.entries(out).forEach(([d,arr])=>(arr||[]).forEach(u=>flat.push({d,u})));
   return {flat, res};
 }
-function applyLeavePlan(pid, catName, fromDate){
+function applyLeavePlan(pid, catName, fromDate, opts){
+  const force=!!(opts && opts.force); // v167：役別改了之類——今天以後的段落一律照大表重寫
   // fromDate：使用者在大表明確說要連同過去的班表一起改時，從這天開始照大表重寫
   const today=(fromDate && fromDate<todayStr())? fromDate : todayStr();
   const category=state.leaveCategories.find(c=>c.name===catName);
@@ -1956,14 +2255,16 @@ function applyLeavePlan(pid, catName, fromDate){
   const rec=((state.preplan.leave||{})[pid]||{})[catName]||null;
   const reasons=category.honorOption? [catName,'榮譽假'] : [catName];
   const blocks={};
-  Object.keys(state.unavail).forEach(d=>{
-    (state.unavail[d]||[]).forEach(u=>{
-      if(u.personId!==pid || !u.leaveId || !reasons.includes(u.reason)) return;
-      const b=blocks[u.leaveId]||(blocks[u.leaveId]={entries:[], start:u.leaveStart||d, end:u.leaveEnd||d});
-      b.entries.push({d,u});
-    });
-  });
-  const {runs, partials}=leaveRunsFromPlan(rec, category);
+  const addToBlock=(d,u)=>{
+    if(u.personId!==pid || !u.leaveId || !reasons.includes(u.reason)) return;
+    // 用 index 時，同一次同步裡被前面刪掉的記錄不算
+    if(opts && opts.index && !(state.unavail[d]||[]).includes(u)) return;
+    const b=blocks[u.leaveId]||(blocks[u.leaveId]={entries:[], start:u.leaveStart||d, end:u.leaveEnd||d});
+    b.entries.push({d,u});
+  };
+  if(opts && opts.index) (opts.index.get(pid)||[]).forEach(({d,u})=>addToBlock(d,u));
+  else Object.keys(state.unavail).forEach(d=>(state.unavail[d]||[]).forEach(u=>addToBlock(d,u)));
+  const {runs, partials}=leaveRunsFromPlan(rec, category, pid);
   const note=(rec&&rec.note)||'';
   const person=state.personnel.find(p=>p.id===pid);
   // 只處理「今天以後還會寫出記錄」的段落（含隔天早上的收假緩衝）
@@ -2001,26 +2302,32 @@ function applyLeavePlan(pid, catName, fromDate){
       if(!past.length){ deleteLeaveById(lid); return; }
       // 大表拿掉了今天以後的部分：今天以後的記錄拿掉，已經過去的保留
       removeEntries(lid, d=>d>=today);
-      const lastDay=past.filter(x=>x.u.allDay).map(x=>x.d).sort().pop()||b.start;
+      const lastDay=past.filter(x=>isAwayDayEntry(x.u)).map(x=>x.d).sort().pop()||b.start;
       past.forEach(({u})=>{ u.leaveEnd=lastDay; });
       return;
     }
     const ri=runInfo[j]; usedRun.add(j);
     const exact = ri.r.start===b.start && ri.r.end===b.end;
     const hOk = honorOk(b, ri);
+    // v167：義務役／志願役的收假方式不一樣（最後一天 21:00 vs 隔天 07:30）→ 整段重寫
+    const bCons=b.entries.some(x=>x.u.conscriptLast), rCons=ri.flat.some(x=>x.u.conscriptLast);
+    const shapeOk = bCons===rCons;
+    // 義務役的段落長短改了：最後一天的樣子（21:00 收假）跟著變，整段重寫
+    const full = force || !shapeOk || (!exact && (bCons || rCons));
     // 原本是「部分時段」的那一天，大表改成整天：照大表重寫（開始延後的那一
     // 天結束一定是24:00；部分時段不是，或帶有部分時段的記號）
-    const wasPartial = b.start===b.end && b.entries.length===1 && !b.entries[0].u.allDay && (b.entries[0].u.partial || b.entries[0].u.end!=='24:00');
+    // （義務役一天的假＋開始延後，也是單獨一筆非整天、結束不是 24:00，但它是整天登記的那一段，不是部分時段）
+    const wasPartial = b.start===b.end && b.entries.length===1 && !b.entries[0].u.allDay && !b.entries[0].u.conscriptLast && (b.entries[0].u.partial || b.entries[0].u.end!=='24:00');
     if(wasPartial){
       out.count++;
       removeEntries(lid, d=>d>=today);
       addEntries(ri.future, lid, ri.r.start, ri.r.end);
       return;
     }
-    if(exact && hOk){ setNote(b); return; } // 同一段：原封不動（開始延後／收假提早的調整保留），只更新備註
+    if(exact && hOk && !full){ setNote(b); return; } // 同一段：原封不動（開始延後／收假提早的調整保留），只更新備註
     if(ri.res.honorDowngraded) out.downgraded.push({personId:pid, name:person?person.name:pid, start:ri.r.start, end:ri.r.end});
     out.count++;
-    if(ri.r.start===b.start){
+    if(ri.r.start===b.start && !full){
       /* 開始日沒變（只是延長、縮短、或榮譽假改了）：兩邊都有的那幾天原封不動
          （開始延後的調整留著），只重寫多出來／少掉的尾巴跟收假緩衝；榮譽假
          改了就換前一天的前緩衝。已經過去的日期一律不動。 */
@@ -2064,7 +2371,8 @@ function applyLeavePlanAll(){
     (state.unavail[d]||[]).forEach(u=>{ if(u.leaveId && u.personId) keys.add(u.personId+'|'+(u.reason==='榮譽假'?'休假':u.reason)); });
   });
   const out={count:0, downgraded:[]};
-  keys.forEach(k=>{ const i=k.indexOf('|'); const r=applyLeavePlan(k.slice(0,i), k.slice(i+1)); out.count+=r.count; out.downgraded.push(...r.downgraded); });
+  const index=leaveEntryIndex();
+  keys.forEach(k=>{ const i=k.indexOf('|'); const r=applyLeavePlan(k.slice(0,i), k.slice(i+1), undefined, {index}); out.count+=r.count; out.downgraded.push(...r.downgraded); });
   return out;
 }
 /* 今天以後全部照預排重算一次（第一次使用這版、或使用者按「全部照預排」） */
@@ -2564,17 +2872,20 @@ function leavePlanFromActual(pid, catName){
   if(!state.preplan.leave[pid]) state.preplan.leave[pid]={};
   const rec=state.preplan.leave[pid][catName]||{dates:[],honorDates:[],approvedRuns:[],partialTimes:{},note:''};
   const dates=new Set((rec.dates||[]).filter(d=>d<cutoff));
-  const honor=new Set((rec.honorDates||[]).filter(d=>d<cutoff));
+  // v167：榮譽假也可能落在留守期間自動休假的第一天（班表上沒有自己的段落）→ 照留著
+  const liveDays=new Set(live.flatMap(b=>dateRangeList(b.start, b.end)));
+  const honor=new Set((rec.honorDates||[]).filter(d=>d<cutoff || !liveDays.has(d)));
   const partial=Object.fromEntries(Object.entries(rec.partialTimes||{}).filter(([d])=>d<cutoff));
   live.forEach(b=>{
-    const isPartial=b.entries.length===1 && !b.entries[0].u.allDay;
+    // （義務役一天的假＋開始延後也是單獨一筆非整天，但不是部分時段）
+    const isPartial=b.entries.length===1 && !b.entries[0].u.allDay && !b.entries[0].u.conscriptLast;
     if(isPartial){ partial[b.start]={start:b.entries[0].u.start, end:b.entries[0].u.end}; return; }
     // 整段的日期用記錄上的起訖（開始延後的第一天不是整天記錄，但仍是這段假的一天）
     dateRangeList(b.start, b.end).forEach(d=>dates.add(d));
     if(b.entries.some(({d,u})=>u.reason==='榮譽假' && d===prevDateStr(b.start))) honor.add(b.start);
   });
   const next=Object.assign({}, rec, {dates:[...dates].sort(), honorDates:[...honor].sort(), partialTimes:partial});
-  if(!next.dates.length && !Object.keys(partial).length) delete state.preplan.leave[pid][catName];
+  if(leaveRecEmpty(next)) delete state.preplan.leave[pid][catName];
   else state.preplan.leave[pid][catName]=next;
 }
 /* 套用使用者在不一致清單裡的選擇：先把「以班表為準」的寫回預排，再把其他
@@ -2803,7 +3114,7 @@ function personalViolations(ctx, pid){
     // 沒有時段的項目：至少整天不在的（整天休假／事故、全天長期事故）一定排不了
     const lt=effectiveLongTerm(person, date);
     if(lt.mode==='allday') add('leave', `長期事故：全天不可排${lt.reason?`（${lt.reason}）`:''}`);
-    (state.unavail[date]||[]).forEach(u=>{ if(u.personId===pid && u.allDay) add('leave', `全天${u.reason?`（${u.reason}）`:'（事故）'}`); });
+    (state.unavail[date]||[]).forEach(u=>{ if(u.personId===pid && isAwayDayEntry(u)) add('leave', `${u.allDay?'全天':`${u.start}-${u.end}`}${u.reason?`（${u.reason}）`:'（事故）'}`); });
   }
   // 3 同一班（或同一個多人項目）重複排了同一個人；車長＋駕駛同一人由規則16管
   if(ctx.kind==='cat' && ((((state.assign[date]||{})[ctx.cat.id])||{})[ctx.shift.id]||[]).some((id,i)=>id===pid && i!==ctx.idx && i<ctx.shift.count)) add('overlap', '這一班已經排了他（同一人排兩格）', {hard:true});
@@ -3846,6 +4157,8 @@ function openAutoAssignLeftoverModal(date, leftovers){
 // undoing all the way back never lands on a state missing required fields
 cleanupOtherUnitPatrolEntries();
 migrateSupportOccupants();
+// v167：假日的休假改成跟著留守名單自動算——舊資料大表上手點的假日拿掉（班表結果完全一樣）
+if(migrateLeaveModelV2()) writeStateToStorage(JSON.stringify(state));
 lastSavedSnapshot = JSON.stringify(state);
 initPlanSync();
 /* 事故/請假 (uses a preset reason list or a custom typed one) */
@@ -5587,20 +5900,25 @@ function openUnitRulesModal(opts){
         <div class="grow"><label>一般（預設）前一天</label><input type="text" id="urNormalStart" value="${esc(buf.normalStart)}" placeholder="18:00"></div>
       </div>
       <div class="row wrap" style="margin-bottom:8px">
-        <div class="grow"><label>所有層級共用：最後一天隔天結束於</label><input type="text" id="urBackEnd" value="${esc(buf.backEnd)}" placeholder="07:30"></div>
+        <div class="grow"><label>志願役：最後一天隔天結束於</label><input type="text" id="urBackEnd" value="${esc(buf.backEnd)}" placeholder="07:30"></div>
       </div>
+      <div class="row wrap" style="margin-bottom:8px">
+        <div class="grow"><label>義務役：最後一天當天結束於</label><input type="text" id="urConscriptBackEnd" value="${esc(buf.conscriptBackEnd||'21:00')}" placeholder="21:00"></div>
+      </div>
+      <div class="hint" style="margin-bottom:8px">依國軍軍官士官士兵休請假作業規定：志願役「休假結束之翌日七時三十分前返營」，義務役「休假結束當日二十一時前返營」。役別在人員名冊裡設定。</div>
       <button class="primary" id="urSaveBuffer" style="width:100%">儲存</button>`;
     document.getElementById('urBack').onclick=()=>{ section=null; draw(); };
     document.getElementById('urSaveBuffer').onclick=()=>{
       const honorStart=document.getElementById('urHonorStart').value.trim();
       const normalStart=document.getElementById('urNormalStart').value.trim();
       const backEnd=document.getElementById('urBackEnd').value.trim();
+      const conscriptBackEnd=document.getElementById('urConscriptBackEnd').value.trim();
       const timeRe=/^([01]\d|2[0-3]):[0-5]\d$/;
-      if(![honorStart,normalStart,backEnd].every(t=>timeRe.test(t))){
+      if(![honorStart,normalStart,backEnd,conscriptBackEnd].every(t=>timeRe.test(t))){
         showAlert('時間格式要是 HH:MM（例如 08:00），請檢查每一格。');
         return;
       }
-      state.unitRules.leaveBuffer={...state.unitRules.leaveBuffer, honorStart,normalStart,backEnd};
+      state.unitRules.leaveBuffer={...state.unitRules.leaveBuffer, honorStart,normalStart,backEnd,conscriptBackEnd};
       saveState();
       showAlert('已儲存。之後新登記或重新匯入的休假才會套用新時間，已經匯入過的舊資料不會自動改。');
     };
@@ -5869,8 +6187,9 @@ function openPreplanDrawer(){
        counting keys the same way as the other types badly undercounts
        a multi-day block — and that span only partially overlapping the
        viewed month still needs just the overlapping days counted. */
+    // v167：休假含留守期間自動休假（不在留守名單的人）
     const planned = t.key==='leave'
-      ? Object.values(store).filter(byCat=>Object.values(byCat||{}).some(r=>(r.dates||[]).some(d=>d.startsWith(ym)))).length
+      ? state.personnel.filter(p=>!p.departureDate || p.departureDate>ym+'-01').filter(p=>{ const sm=leaveMonthSummary(p.id, ym); return sm.deduct || sm.holiday || sm.others.length; }).length
       : t.key==='standby'
       ? Object.values(store).filter(plan=>plan && preplanCellMark(t, plan)).reduce((sum,plan)=>sum+dateRangeList(plan.startDate, plan.endDate).filter(d=>d.startsWith(ym)).length, 0)
       : Object.keys(store).filter(d=>d.startsWith(ym) && preplanCellMark(t, store[d])).length;
@@ -7090,7 +7409,7 @@ function openStandbyEditor(date, onSaved){
     const subRoles = state.standbySubRoles||[];
     modal.innerHTML=`
       <div class="section-title"><h2 style="margin:0">🏠 留守</h2><button class="ghost small" id="sbClose">關閉</button></div>
-      <div class="hint" style="margin-bottom:8px">留守人員從「起始日前一天」的指定時間開始算留守，到「結束日隔天」的指定時間為止；沒留守的人則從前一天的放假時間開始休假。時間都可以改。</div>
+      <div class="hint" style="margin-bottom:8px">留守人員從「起始日前一天」的指定時間開始算留守，到「結束日隔天」的指定時間為止；<b>不在留守名單上的人一律自動算休假</b>（休假暨事故大表不用再點這幾天，個別的人可以在大表改），從前一天的放假時間開始。假日在營值勤的人（例如伙房）請放進留守名單，留守勤務從這份名單排。時間都可以改。</div>
       <div class="row wrap" style="margin-bottom:8px">
         <div class="grow"><label>例假日第一天</label><input type="date" id="sbStartDate" value="${plan.startDate}"></div>
         <div class="grow"><label>例假日最後一天</label><input type="date" id="sbEndDate" value="${plan.endDate}"></div>
@@ -7100,7 +7419,7 @@ function openStandbyEditor(date, onSaved){
         <div class="grow"><label>放假開始（${shortDateLabel(prevDateStr(plan.startDate))}）</label>${timeSelectHTML('sbLeave', plan.leaveStartTime)}</div>
         <div class="grow"><label>結束（${shortDateLabel(nextDateStr(plan.endDate))}）</label>${timeSelectHTML('sbEnd', plan.endTime)}</div>
       </div>
-      <div class="hint" style="margin-bottom:10px">目前設定：留守 ${shortDateLabel(prevDateStr(plan.startDate))}（${weekdayLabel(prevDateStr(plan.startDate))}）${plan.startTime} → ${shortDateLabel(nextDateStr(plan.endDate))}（${weekdayLabel(nextDateStr(plan.endDate))}）${plan.endTime}；其餘人員 ${shortDateLabel(prevDateStr(plan.startDate))} ${plan.leaveStartTime} 起放假。</div>
+      <div class="hint" style="margin-bottom:10px">目前設定：留守 ${shortDateLabel(prevDateStr(plan.startDate))}（${weekdayLabel(prevDateStr(plan.startDate))}）${plan.startTime} → ${shortDateLabel(nextDateStr(plan.endDate))}（${weekdayLabel(nextDateStr(plan.endDate))}）${plan.endTime}；其餘人員 ${shortDateLabel(prevDateStr(plan.startDate))} ${plan.leaveStartTime} 起放假${state.personnel.some(isConscript)? `（義務役 ${shortDateLabel(plan.endDate)} ${esc(state.unitRules.leaveBuffer.conscriptBackEnd||'21:00')} 前返營）`:''}。</div>
       ${(()=>{ const notHol=blockDates.filter(d=>!isHolidayDate(d)); return notHol.length? `<div class="badge-issue" style="margin-bottom:10px">📅 ${notHol.map(shortDateLabel).join('、')} 在「假日設定」裡不是假日。留守期間「僅平日不可排」的人一律照假日算；但查哨的平日／假日輪值、外散宿還是照假日設定。如果這幾天是國定假日（例如中秋），建議設為假日。<button class="ghost small" id="sbMarkHoliday" style="margin-top:6px">把 ${notHol.map(shortDateLabel).join('、')} 設為假日</button></div>` : ''; })()}
       <div class="divider"></div>
       <div class="section-title"><h3 style="margin:0">留守名單（${staying.length}人）</h3><button class="ghost small" id="sbPickPeople">選擇人員</button></div>
@@ -7110,7 +7429,8 @@ function openStandbyEditor(date, onSaved){
           if(!p) return '';
           const ov=plan.overrides[pid]||{};
           const blockDates=(plan.startDate<=plan.endDate)? dateRangeList(plan.startDate,plan.endDate):[];
-          const leaveDates=((state.preplan.leave||{})[pid]||{}).dates||[];
+          // v167 修正：大表是「每個類型一筆」，以前這裡讀不到日期、衝突永遠不會顯示
+          const leaveDates=Object.values(((state.preplan.leave||{})[pid])||{}).flatMap(r=>(r&&r.dates)||[]);
           const clash=blockDates.filter(d=>leaveDates.includes(d));
           return `<div class="list-item" style="flex-direction:column;align-items:stretch">
             <div class="row"><span class="grow">${esc(p.name)}（<span class="nw">${esc(p.group||'未分組')}</span>·<span class="nw">${esc(p.rank)}</span>）</span>
@@ -7235,7 +7555,7 @@ function openStandbyPeoplePicker(plan, onDone){
              say so here — otherwise it's easy to put someone on standby who
              the 休假暨事故大表 already sent home */
           const blockDates=(plan.startDate&&plan.endDate&&plan.startDate<=plan.endDate)? dateRangeList(plan.startDate,plan.endDate):[];
-          const leaveDates=((state.preplan.leave||{})[p.id]||{}).dates||[];
+          const leaveDates=Object.values(((state.preplan.leave||{})[p.id])||{}).flatMap(r=>(r&&r.dates)||[]);
           const clash=blockDates.filter(d=>leaveDates.includes(d));
           const skillIssues = skillIssuesOf(p);
           return `<label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0;${skillIssues.length?'opacity:.6':''}">
@@ -8217,6 +8537,14 @@ function leaveRunWarnings(pickedSet, honorSet, approvedRuns, category){
     return `⚠️ ${minguoLabel(r.start)}~${minguoLabel(r.end)}（${dayLabel}）超過5天上限，按「確認」時需要再確認同意才能保留這個天數。`;
   });
 }
+/* v167：休假照「大表登的＋留守期間自動休假」連起來的整段算 5 天 */
+function combinedLeaveWarnings(runs){
+  return (runs||[]).filter(r=>r.needsApproval).map(r=>{
+    const notes=[r.honor? '榮譽假12:00起多算0.5天' : '', r.derived.length? `含留守期間假日 ${r.derived.length} 天` : ''].filter(Boolean);
+    const span=`${minguoLabel(r.start)}~${minguoLabel(r.end)}（${r.effectiveDays}天${notes.length? '：'+notes.join('、') : ''}）`;
+    return r.approved? `✅ ${span}已經過同意，維持這個天數。` : `⚠️ ${span}超過5天上限，按「確認」時需要再確認同意才能保留這個天數。`;
+  });
+}
 /* B選項：新增自訂不在營類型時可以直接勾「設為預設」，讓它跟休假/受訓這些
    內建類型一樣排在類別選單前面、比較顯眼；不勾就跟其他冷門類型一起收在分
    隔線下面。緩衝跟5天同意規則都是獨立勾選，不綁定任何特定名稱。 */
@@ -8278,7 +8606,7 @@ function openEarlyReturnModal(defaultDate, onDone){
     modal.innerHTML=`
       <div class="sheet-inner">
         <div class="section-title"><h2 style="margin:0">↩️ 收假提早</h2><button class="ghost small" id="erClose">關閉</button></div>
-        <div class="hint" style="margin-bottom:8px">選這批人原本該「隔天0730收假」的那一天，勾選要提早收假的人，套用後這些人休假的最後一天會從紀錄中整天拿掉，改成前一天24:00前就算收假——休假暨事故大表月曆會真的少一天，不是只拿掉看不見的緩衝。</div>
+        <div class="hint" style="margin-bottom:8px">選這批人原本該「隔天0730收假」的那一天，勾選要提早收假的人，套用後這些人休假的最後一天會從紀錄中整天拿掉，改成前一天24:00前就算收假（義務役：前一天21:00前返營）——休假暨事故大表月曆會真的少一天，不是只拿掉看不見的緩衝。</div>
         <div class="row wrap" style="margin-bottom:8px">
           <div class="grow"><label>日期（原本的收假日）</label><input type="date" id="erDate" value="${date}"></div>
         </div>
@@ -8410,6 +8738,9 @@ function openLeaveTableEditor(date, onSaved, presetPid){
   let honorDates = new Set();   // subset of picked that are 榮譽假（最寬鬆，前一天12:00起）— only meaningful if category.honorOption
   let partialDates = new Map(); // date -> {start,end} — this day only, not a full day, no buffer even if the category has one
   let noteDraft = ''; // 備註——只有沒有前後緩衝的類型(受訓/出國/懷孕/住院/事假/其他事故)才有這個欄位，整個類型這次編輯共用一則備註，不分段
+  let holidayOff = new Set();   // v167（只有休假）：留守期間自動休假、但這個人這天「不算休假」的日子
+  let rangeStart = null;        // v167：點起訖——已經點了起點、等點終點
+  let rangeIncludeHol = false;  // v167：受訓等類型點一段時，要不要連假日一起登（預設跳過假日）
   /* switching categories used to reload straight from the SAVED store,
      which silently discarded whatever you'd just tapped for the category
      you were leaving if you hadn't hit 確認 yet — so the merged calendar
@@ -8444,7 +8775,7 @@ function openLeaveTableEditor(date, onSaved, presetPid){
     const relevantReasons = category&&category.honorOption? [cat,'榮譽假'] : [cat];
     Object.entries(state.unavail).forEach(([d,arr])=>{
       (arr||[]).forEach(u=>{
-        if(u.personId===pid && u.leaveId && u.allDay && relevantReasons.includes(u.reason)){
+        if(u.personId===pid && u.leaveId && isAwayDayEntry(u) && relevantReasons.includes(u.reason)){
           found.add(d);
           if(u.reason==='榮譽假') foundHonor.add(d);
         }
@@ -8456,30 +8787,55 @@ function openLeaveTableEditor(date, onSaved, presetPid){
       if(!state.preplan.leave) state.preplan.leave={};
       if(!state.preplan.leave[pid]) state.preplan.leave[pid]={};
       const mergedHonor=new Set([...(rec.honorDates||[]), ...foundHonor]);
-      state.preplan.leave[pid][cat]={dates:[...known].sort(), honorDates:[...mergedHonor].sort(), approvedRuns:rec.approvedRuns||[], partialTimes:rec.partialTimes||{}};
+      state.preplan.leave[pid][cat]=Object.assign({}, rec, {dates:[...known].sort(), honorDates:[...mergedHonor].sort(), approvedRuns:rec.approvedRuns||[], partialTimes:rec.partialTimes||{}});
     }
   };
   const saveDraftForCurrentCat=()=>{
     if(!selectedPid) return;
-    sessionDrafts[selectedCat] = {picked:new Set(picked), honorDates:new Set(honorDates), partialDates:new Map(partialDates), noteDraft};
+    sessionDrafts[selectedCat] = {picked:new Set(picked), honorDates:new Set(honorDates), partialDates:new Map(partialDates), noteDraft, holidayOff:new Set(holidayOff)};
   };
   /* 某個類型（這個人、這個月）目前的內容：正在編輯的類型用畫面上的，點過
      的其他類型用草稿，其他照存好的 */
   const liveCatData=(catName)=>{
-    if(catName===selectedCat) return {picked, honorDates, partialDates, noteDraft};
+    if(catName===selectedCat) return {picked, honorDates, partialDates, noteDraft, holidayOff};
     if(sessionDrafts[catName]) return sessionDrafts[catName];
     const rec=catRec(selectedPid, catName);
     return {picked:new Set((rec.dates||[]).filter(d=>d.startsWith(ym))), honorDates:new Set((rec.honorDates||[]).filter(d=>d.startsWith(ym))),
-      partialDates:new Map(Object.entries(rec.partialTimes||{}).filter(([d])=>d.startsWith(ym))), noteDraft:rec.note||''};
+      partialDates:new Map(Object.entries(rec.partialTimes||{}).filter(([d])=>d.startsWith(ym))), noteDraft:rec.note||'',
+      holidayOff:new Set((rec.holidayOff||[]).filter(d=>d.startsWith(ym)))};
+  };
+  /* v167：這個人目前（含還沒存的草稿）的大表內容，給「留守期間自動休假」「連起來的整段」用 */
+  const edView=()=>{
+    const memo={};
+    return cat=>{
+      if(memo[cat]) return memo[cat];
+      const rec=catRec(selectedPid, cat), live=liveCatData(cat), inM=d=>d.startsWith(ym);
+      return memo[cat]={
+        dates:new Set([...(rec.dates||[]).filter(d=>!inM(d)), ...live.picked]),
+        partial:new Set([...Object.keys(rec.partialTimes||{}).filter(d=>!inM(d)), ...live.partialDates.keys()]),
+        off:new Set([...(rec.holidayOff||[]).filter(d=>!inM(d)), ...(live.holidayOff||[])]),
+        honor:new Set([...(rec.honorDates||[]).filter(d=>!inM(d)), ...live.honorDates]),
+        approved:rec.approvedRuns||[],
+      };
+    };
   };
   /* v165：同一天已經有別的類型 → 那天從別的類型拿掉（改成草稿，按「確認」一起存） */
   const removeDayFromOtherCat=(catName, ds)=>{
+    // v167：留守期間自動休假的日子「改休」＝那天標成不算休假（不然登一個部分時段，整天的假還在）
+    const wasDerived = catName===DERIVED_LEAVE_CAT && derivedLeaveDays(selectedPid, edView(), {from:ds, to:ds}).has(ds);
     const d=liveCatData(catName);
-    const draft={picked:new Set(d.picked), honorDates:new Set(d.honorDates), partialDates:new Map(d.partialDates), noteDraft:d.noteDraft||''};
+    const draft={picked:new Set(d.picked), honorDates:new Set(d.honorDates), partialDates:new Map(d.partialDates), noteDraft:d.noteDraft||'', holidayOff:new Set(d.holidayOff||[])};
     draft.picked.delete(ds); draft.honorDates.delete(ds); draft.partialDates.delete(ds);
-    sessionDrafts[catName]=draft;
+    if(wasDerived) draft.holidayOff.add(ds);
+    if(catName===selectedCat){ picked=draft.picked; honorDates=draft.honorDates; partialDates=draft.partialDates; holidayOff=draft.holidayOff; }
+    else sessionDrafts[catName]=draft;
   };
-  const otherCatsOnDay=(ds)=>state.leaveCategories.filter(c=>c.name!==selectedCat).filter(c=>{ const d=liveCatData(c.name); return d.picked.has(ds) || d.partialDates.has(ds); }).map(c=>c.name);
+  const otherCatsOnDay=(ds)=>{
+    const out=state.leaveCategories.filter(c=>c.name!==selectedCat).filter(c=>{ const d=liveCatData(c.name); return d.picked.has(ds) || d.partialDates.has(ds); }).map(c=>c.name);
+    // v167：留守期間自動休假的日子也算「休假」（休假期間不會有事故，除非改休）
+    if(selectedCat!==DERIVED_LEAVE_CAT && !out.includes(DERIVED_LEAVE_CAT) && derivedLeaveDays(selectedPid, edView(), {from:ds, to:ds}).has(ds)) out.push(DERIVED_LEAVE_CAT);
+    return out;
+  };
   /* 在已經有別的類型的日子登記：休假期間不會有事故（除非改休）；事故跟事故
      可以取代或都保留 */
   const resolveOverlap=(ds, doAdd)=>{
@@ -8512,7 +8868,7 @@ function openLeaveTableEditor(date, onSaved, presetPid){
     if(!selectedPid) return false;
     const catsToCheck = new Set([selectedCat, ...Object.keys(sessionDrafts)]);
     for(const cat of catsToCheck){
-      const live = cat===selectedCat? {picked, honorDates, partialDates, noteDraft} : sessionDrafts[cat];
+      const live = cat===selectedCat? {picked, honorDates, partialDates, noteDraft, holidayOff} : sessionDrafts[cat];
       if(!live) continue;
       const rec = catRec(selectedPid, cat);
       const recDates=new Set((rec.dates||[]).filter(d=>d.startsWith(ym)));
@@ -8521,6 +8877,7 @@ function openLeaveTableEditor(date, onSaved, presetPid){
       const setsDiffer=(a,b)=> a.size!==b.size || [...a].some(x=>!b.has(x));
       if(setsDiffer(live.picked, recDates)) return true;
       if(setsDiffer(live.honorDates, recHonor)) return true;
+      if(setsDiffer(live.holidayOff||new Set(), new Set((rec.holidayOff||[]).filter(d=>d.startsWith(ym))))) return true;
       if(live.partialDates.size!==recPartial.size) return true;
       for(const [d,t] of live.partialDates){
         const rt=recPartial.get(d);
@@ -8538,11 +8895,14 @@ function openLeaveTableEditor(date, onSaved, presetPid){
     scanForOrphaned(selectedPid, selectedCat);
     const rec=catRec(selectedPid, selectedCat);
     picked = new Set((rec.dates||[]).filter(d=>d.startsWith(ym)));
-    honorDates = new Set((rec.honorDates||[]).filter(d=>picked.has(d)));
+    honorDates = new Set((rec.honorDates||[]).filter(d=>d.startsWith(ym))); // v167：榮譽假也可能落在留守期間自動休假的第一天
     partialDates = new Map(Object.entries(rec.partialTimes||{}).filter(([d])=>d.startsWith(ym)));
     noteDraft = rec.note||'';
+    holidayOff = new Set((rec.holidayOff||[]).filter(d=>d.startsWith(ym)));
+    rangeStart=null;
   };
   const loadCategory=(cat)=>{
+    rangeStart=null;
     // switching categories for the SAME person — prefer this session's
     // unsaved draft for that category if there is one, so taps made
     // before hitting 確認 aren't silently lost when you switch away
@@ -8552,13 +8912,15 @@ function openLeaveTableEditor(date, onSaved, presetPid){
       honorDates = new Set(sessionDrafts[cat].honorDates);
       partialDates = new Map(sessionDrafts[cat].partialDates);
       noteDraft = sessionDrafts[cat].noteDraft||'';
+      holidayOff = new Set(sessionDrafts[cat].holidayOff||[]);
       return;
     }
     const rec=catRec(selectedPid, cat);
     picked = new Set((rec.dates||[]).filter(d=>d.startsWith(ym)));
-    honorDates = new Set((rec.honorDates||[]).filter(d=>picked.has(d)));
+    honorDates = new Set((rec.honorDates||[]).filter(d=>d.startsWith(ym)));
     partialDates = new Map(Object.entries(rec.partialTimes||{}).filter(([d])=>d.startsWith(ym)));
     noteDraft = rec.note||'';
+    holidayOff = new Set((rec.holidayOff||[]).filter(d=>d.startsWith(ym)));
   };
   if(selectedPid) loadPerson();
   const draw=()=>{
@@ -8573,17 +8935,13 @@ function openLeaveTableEditor(date, onSaved, presetPid){
     // Buffer preview is computed for EVERY category that has one, not just
     // the selected category, so switching categories never makes an
     // already-ticked category's buffer preview disappear from view.
-    const categoryDataFor = (catName)=>{
-      if(catName===selectedCat) return {picked, honorDates, partialDates, noteDraft};
-      if(sessionDrafts[catName]) return sessionDrafts[catName];
-      const rec=catRec(selectedPid, catName);
-      return {
-        picked: new Set((rec.dates||[]).filter(d=>d.startsWith(ym))),
-        honorDates: new Set((rec.honorDates||[]).filter(d=>d.startsWith(ym))),
-        partialDates: new Map(Object.entries(rec.partialTimes||{}).filter(([d])=>d.startsWith(ym))),
-        noteDraft: rec.note||'',
-      };
-    };
+    const categoryDataFor = (catName)=>liveCatData(catName);
+    // v167：留守期間自動休假、連起來的整段（含還沒存的草稿）
+    const view = person? edView() : null;
+    const derivedSet = person? derivedLeaveDays(person.id, view) : new Set();
+    const combinedRuns = person? combinedLeaveRuns(person.id, view) : [];
+    const runAt = ds=>combinedRuns.find(r=>r.start<=ds && r.end>=ds);
+    const conscript = isConscript(person);
     const bufferPreviewFor = (cat, pickedSet)=>{
       const preview={};
       if(!cat || !cat.buffer || !pickedSet.size) return preview;
@@ -8602,7 +8960,13 @@ function openLeaveTableEditor(date, onSaved, presetPid){
     };
     const allCatInfo = person? state.leaveCategories.map(c=>{
       const data=categoryDataFor(c.name);
-      return {cat:c, data, buf:bufferPreviewFor(c, data.picked)};
+      let buf;
+      if(c.name===DERIVED_LEAVE_CAT && c.buffer){
+        // 休假的緩衝預覽照「連起來的整段」：整段前一天、整段隔天（義務役沒有隔天）
+        buf={};
+        combinedRuns.forEach(r=>{ buf[prevDateStr(r.start)]='front'; if(!conscript) buf[nextDateStr(r.end)]='back'; });
+      } else buf=bufferPreviewFor(c, data.picked);
+      return {cat:c, data, buf};
     }) : [];
     const cells=[];
     for(let i=0;i<firstDow;i++) cells.push('<div class="cal-cell empty"></div>');
@@ -8614,28 +8978,34 @@ function openLeaveTableEditor(date, onSaved, presetPid){
       // one gets shown, none summarized away behind a "+N"
       const fragments=[];
       allCatInfo.forEach(({cat, data, buf})=>{
+        const isLeaveCat=cat.name===DERIVED_LEAVE_CAT;
+        const cr=isLeaveCat? runAt(ds) : null;
+        const honorHere = isLeaveCat? !!(cr && cr.start===ds && cr.honor) : data.honorDates.has(ds);
         if(data.partialDates.has(ds)){
           const pt=data.partialDates.get(ds);
           fragments.push({text:`${cat.name.slice(0,1)}${pt.start}-${pt.end}`, cls:'leave-partial-marked'});
         } else if(data.picked.has(ds)){
-          const isHonor=data.honorDates.has(ds);
-          const label = isHonor? '12'+cat.name.slice(0,1) : cat.name.slice(0,2);
-          fragments.push({text: label, cls:'has'});
+          fragments.push({text: honorHere? '12'+cat.name.slice(0,1) : cat.name.slice(0,2), cls:'has'});
+        } else if(isLeaveCat && derivedSet.has(ds)){
+          fragments.push({text: honorHere? '12休' : '休假', cls:'derived'});
+        } else if(isLeaveCat && data.holidayOff && data.holidayOff.has(ds) && standbyOffPlanFor(person.id, ds)){
+          fragments.push({text:'不休', cls:'off'});
         } else if(buf[ds]){
           fragments.push({text:`${cat.name.slice(0,1)}緩衝${buf[ds]==='front'?'前':'後'}`, cls:'leave-partial-marked'});
         }
+        if(isLeaveCat && conscript && cr && cr.end===ds) fragments.push({text:`${(state.unitRules.leaveBuffer.conscriptBackEnd||'21:00').slice(0,2)}收`, cls:'note'});
       });
       let mark, cls;
       if(fragments.length){
         mark = fragments.map(f=>`<span class="cm-line">${esc(f.text)}</span>`).join('');
-        cls = fragments.some(f=>f.cls==='has')? 'has' : 'leave-partial-marked';
+        cls = fragments.some(f=>f.cls==='has')? 'has' : fragments.some(f=>f.cls==='derived')? 'derived-leave' : fragments.some(f=>f.cls==='off')? 'leave-off' : 'leave-partial-marked';
       } else if(sb==='staying'){
         mark = '留守';
         cls = 'standby-marked';
       } else {
         mark=''; cls='';
       }
-      cells.push(`<div class="cal-cell ${cls} ${hol?'holiday':''}" data-lt-date="${ds}">
+      cells.push(`<div class="cal-cell ${cls} ${hol?'holiday':''} ${rangeStart===ds?'range-start':''}" data-lt-date="${ds}">
         <div class="cal-day">${d}</div><div class="cal-mark">${calMarkLinesHTML(mark)}</div>
       </div>`);
     }
@@ -8657,13 +9027,9 @@ function openLeaveTableEditor(date, onSaved, presetPid){
       <div id="ltPeople" style="max-height:22vh;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:8px;margin-bottom:8px">
         ${state.personnel.slice().sort((a,b)=>groupIndex(a.group)-groupIndex(b.group)||rankIndex(a.rank)-rankIndex(b.rank))
           .map(p=>{
-            const catCounts = state.leaveCategories.map(c=>{
-              const rec=catRec(p.id, c.name);
-              const cnt=(rec.dates||[]).filter(d=>d.startsWith(ym)).length + Object.keys(rec.partialTimes||{}).filter(d=>d.startsWith(ym)).length;
-              return {name:c.name, cnt};
-            }).filter(x=>x.cnt>0);
-            const totalCnt = catCounts.reduce((s,x)=>s+x.cnt,0);
-            const summary = catCounts.length? ` <span class="ok nw">${catCounts.map(x=>`${x.name.slice(0,1)}${x.cnt}`).join('・')}（共${totalCnt}天）</span>` : '';
+            // v167：休假分開顯示「扣假（平日）＋假日」，假日含留守期間自動休假
+            const smText = leaveMonthSummaryText(leaveMonthSummary(p.id, ym));
+            const summary = smText? ` <span class="ok nw">${esc(smText)}</span>` : '';
             return `<label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0">
               <input type="radio" name="ltp" class="lt-person" value="${p.id}" style="width:auto" ${p.id===selectedPid?'checked':''}>
               <span class="grow">${esc(p.name)}（<span class="nw">${esc(p.group||'未分組')}</span>·<span class="nw">${esc(p.rank)}</span>）${summary}</span>
@@ -8673,23 +9039,27 @@ function openLeaveTableEditor(date, onSaved, presetPid){
       ${person? `
         <div class="row" style="gap:6px;align-items:center;margin-bottom:6px">
           <button class="ghost small" id="ltPrev">◀</button>
-          <span class="grow" style="text-align:center;font-weight:600">${esc(person.name)}・${esc(selectedCat)}　民國${y-1911}年${m}月<br><span class="hint">本類型本月整天 ${picked.size} 天${partialDates.size?`・部分時段 ${partialDates.size} 天`:''}・累計 ${allDates.length} 天</span></span>
+          <span class="grow" style="text-align:center;font-weight:600">${esc(person.name)}${isConscript(person)?'（義務役）':''}・${esc(selectedCat)}　民國${y-1911}年${m}月<br><span class="hint">${selectedCat===DERIVED_LEAVE_CAT? (()=>{ const sm=leaveMonthSummary(person.id, ym, view); return `本月扣假 ${sm.deduct} 天・假日 ${sm.holiday} 天`; })() : `本類型本月整天 ${picked.size} 天${partialDates.size?`・部分時段 ${partialDates.size} 天`:''}・累計 ${allDates.length} 天`}</span></span>
           <button class="ghost small" id="ltNext">▶</button>
         </div>
         <div class="cal-grid" style="margin-bottom:6px">
           ${['日','一','二','三','四','五','六'].map(w=>`<div class="cal-head">${w}</div>`).join('')}
           ${cells.join('')}
         </div>
-        ${leaveRunWarnings(
+        ${rangeStart? `<div class="badge-issue lt-range-hint" style="margin-bottom:6px">起點：${esc(shortDateLabel(rangeStart))}，再點結束那天（只休一天就再點同一天） <button class="ghost small" id="ltRangeCancel" style="margin-left:4px">取消</button></div>` : ''}
+        ${(selectedCat===DERIVED_LEAVE_CAT? combinedLeaveWarnings(combinedRuns) : leaveRunWarnings(
             new Set([...(catRec(selectedPid,selectedCat).dates||[]).filter(d=>!d.startsWith(ym)), ...picked]),
             new Set([...(catRec(selectedPid,selectedCat).honorDates||[]).filter(d=>!d.startsWith(ym)), ...honorDates]),
             catRec(selectedPid,selectedCat).approvedRuns||[],
             category
-          ).map(w=>`<div class="${w.startsWith('✅')?'hint':'badge-issue'}">${esc(w)}</div>`).join('')}
+          )).map(w=>`<div class="${w.startsWith('✅')?'hint':'badge-issue'}">${esc(w)}</div>`).join('')}
+        ${category && selectedCat!==DERIVED_LEAVE_CAT? `<label style="display:flex;align-items:center;gap:6px;font-size:13px;margin-bottom:6px"><input type="checkbox" id="ltRangeHol" style="width:auto" ${rangeIncludeHol?'checked':''}> 點一段時連假日一起登（沒勾：假日跳過，照留守名單算休假）</label>` : ''}
         <div class="hint" style="margin-bottom:8px">
-          ${category&&category.buffer? `這個類型有前後緩衝：點一天＝整天登記（前一天18:00起）${category.honorOption?'；再點一次＝榮譽假（前一天12:00起，比一般多算0.5天）；再點一次取消。':'；再點一次取消。'}虛線框是緩衝預覽，時間可以在右上角⚙️「我們的規則」調整。如果某段假期因為任務/處罰需要更晚才開始休假、或提早收假，用下面「特殊狀況調整」的「⏰開始延後」「↩️收假提早」個別調整那一段。` : `這個類型沒有前後緩衝，點一天就是那天整天不可排，再點一次取消。`}
-          ${category&&category.fiveDayRule? ' 超過5天（含緩衝的有效天數）需要同意才能保留。' : ''}
-          「留守」＝留守表已排他這天留守，跟這裡無關聯除非你也點成這個類型。虛線框的部分時段格子點一下會直接刪除。
+          <b>點起點、再點終點</b>＝登記一整段（只休一天就同一天點兩下）；點已經登記的日子可以刪這段、只刪那天${category&&category.honorOption?'、改榮譽假':''}。
+          ${selectedCat===DERIVED_LEAVE_CAT? `淡色框的「休假」是留守期間自動算的（不在留守名單的人），不用點；點一下可以改成「不休」或榮譽假。平日多休的日子才要登，會跟前後的假日自動連成一段。` : `假日預設跳過（假日照留守名單算休假）。`}
+          ${category&&category.buffer? `虛線框是緩衝預覽（前一天18:00起，榮譽假12:00起${conscript?`；義務役最後一天 ${esc(state.unitRules.leaveBuffer.conscriptBackEnd||'21:00')} 前返營`:'，收假隔天07:30'}），時間可以在⚙️「我們的規則」調整；個別要晚一點開始或提早收假，用下面「特殊狀況調整」。` : `這個類型沒有前後緩衝，範圍內每天整天不可排。`}
+          ${category&&category.fiveDayRule? ' 超過5天（連同前後假日算）需要同意才能保留。' : ''}
+          「留守」＝這天在留守名單上。部分時段（虛線框）點一下會直接刪除。
         </div>
         ${category && !category.buffer? `
         <div class="row wrap" style="margin-bottom:8px">
@@ -8810,7 +9180,7 @@ function openLeaveTableEditor(date, onSaved, presetPid){
             rec.dates=(rec.dates||[]).filter(d=>!blockDates.includes(d));
             if(rec.honorDates) rec.honorDates=rec.honorDates.filter(d=>!blockDates.includes(d));
             if(rec.partialTimes) blockDates.forEach(d=>{ delete rec.partialTimes[d]; });
-            if(!rec.dates.length && !Object.keys(rec.partialTimes||{}).length) delete state.preplan.leave[ownerPid][ownerCat];
+            if(leaveRecEmpty(rec)) delete state.preplan.leave[ownerPid][ownerCat];
           }
           saveState();
           if(selectedPid) loadPerson();
@@ -8860,29 +9230,96 @@ function openLeaveTableEditor(date, onSaved, presetPid){
       };
     }
     if(person){
+      const isLeaveCat = selectedCat===DERIVED_LEAVE_CAT;
+      const derivedNow = ds=>derivedLeaveDays(person.id, edView()).has(ds);
+      /* v167 點起訖：一次登一整段。休假：留守期間自動休假的日子不用登（標過「不休」的恢復）；
+         其他類型：預設跳過假日（假日照留守名單算休假）。有別的類型的日子一次問完。 */
+      const addRange=(a,b)=>{
+        let days=dateRangeList(a,b);
+        if(isLeaveCat){
+          // 休假：整段照點的登（連假日一起，是自己的意思，留守表之後怎麼改都不會弄丟）；標過「不休」的恢復
+          days.forEach(d=>holidayOff.delete(d));
+        } else if(!rangeIncludeHol){
+          const keep=days.filter(d=>!(isHolidayDate(d) || standbyOffPlanFor(person.id, d)));
+          if(keep.length) days=keep; // 整段都是假日：照點的登
+        }
+        if(!days.length){ draw(); return; }
+        const conflicts=days.map(d=>({d, others:otherCatsOnDay(d)})).filter(x=>x.others.length);
+        const doAdd=()=>{ days.forEach(d=>{ picked.add(d); partialDates.delete(d); }); draw(); };
+        if(!conflicts.length){ doAdd(); return; }
+        const names=[...new Set(conflicts.flatMap(x=>x.others))];
+        const cur=category||{};
+        const leaveLike=names.filter(n=>(categoryOf(n)||{}).buffer);
+        const span=conflicts.map(x=>shortDateLabel(x.d)).join('、');
+        const replace=()=>{ conflicts.forEach(x=>x.others.forEach(n=>removeDayFromOtherCat(n, x.d))); doAdd(); };
+        if(leaveLike.length && !cur.buffer){
+          showChoice(`${span} 是${leaveLike.join('、')}。休假期間不會有事故，除非改休。\n\n改休＝把這幾天從${leaveLike.join('、')}拿掉（前後的假會自動分段、各自有收假／放假時間），再登記成「${selectedCat}」。按「確認」才會存。`,
+            [{label:`改休，這幾天登記成${selectedCat}`, primary:true, onPick:replace}]);
+          return;
+        }
+        if(cur.buffer){
+          showChoice(`${span} 已經有${names.join('、')}。休假跟事故不會在同一天，要改成「${selectedCat}」（拿掉${names.join('、')}）嗎？按「確認」才會存。`,
+            [{label:`改成${selectedCat}`, primary:true, onPick:replace}]);
+          return;
+        }
+        showChoice(`${span} 已經有${names.join('、')}。`, [
+          {label:`改成${selectedCat}（取代${names.join('、')}）`, primary:true, onPick:replace},
+          {label:'兩個都保留', onPick:doAdd},
+        ]);
+      };
+      const runOfPicked=(ds)=>{ let a=ds, b=ds; while(picked.has(prevDateStr(a))) a=prevDateStr(a); while(picked.has(nextDateStr(b))) b=nextDateStr(b); return {a,b}; };
+      // 榮譽假落在「連起來的整段」的第一天（那天要在這個月才能在這裡改）
+      const honorChoice=(ds)=>{
+        if(!(category && category.honorOption)) return null;
+        const cr=isLeaveCat? combinedLeaveRuns(person.id, edView()).find(r=>r.start<=ds && r.end>=ds) : null;
+        const start=cr? cr.start : runOfPicked(ds).a;
+        if(!start.startsWith(ym)) return null;
+        const on=honorDates.has(start);
+        return {label: on? `改回一般（${shortDateLabel(prevDateStr(start))} 18:00 起）` : `改成榮譽假（${shortDateLabel(prevDateStr(start))} 12:00 起）`,
+          onPick:()=>{ if(on) honorDates.delete(start); else honorDates.add(start); draw(); }};
+      };
       modal.querySelectorAll('[data-lt-date]').forEach(c=>{
         c.onclick=()=>{
           const ds=c.dataset.ltDate;
-          if(partialDates.has(ds)){
-            // 虛線框的部分時段格子：點一下直接刪除
-            partialDates.delete(ds);
-          } else if(picked.has(ds) && category && category.honorOption && !honorDates.has(ds)){
-            // 整天 → 榮譽假（只有有榮譽假選項的類型，例如休假）
-            honorDates.add(ds);
-          } else if(picked.has(ds)){
-            // 整天（或榮譽假）格子：再點一下直接刪除
-            picked.delete(ds); honorDates.delete(ds);
-          } else {
-            // 空白格子：點一下＝整天登記（那天已經有別的類型時先問）
-            resolveOverlap(ds, ()=>{ picked.add(ds); draw(); });
+          if(rangeStart){
+            const a=rangeStart<ds? rangeStart : ds, b=rangeStart<ds? ds : rangeStart;
+            rangeStart=null; addRange(a,b); return;
+          }
+          if(partialDates.has(ds)){ partialDates.delete(ds); draw(); return; } // 部分時段：點一下直接刪除
+          if(picked.has(ds)){
+            const {a,b}=runOfPicked(ds);
+            const opts=[];
+            if(a!==b) opts.push({label:`刪除這段（${shortDateLabel(a)}～${shortDateLabel(b)}）`, primary:true, onPick:()=>{ dateRangeList(a,b).forEach(d=>{ picked.delete(d); honorDates.delete(d); }); draw(); }});
+            opts.push({label: a!==b? `只刪 ${shortDateLabel(ds)} 這天` : `刪除 ${shortDateLabel(ds)}`, primary:a===b, onPick:()=>{ picked.delete(ds); honorDates.delete(ds); draw(); }});
+            const h=honorChoice(ds); if(h) opts.push(h);
+            showChoice(`${person.name}・${selectedCat}　${minguoLabel(ds)}`, opts);
             return;
           }
-          draw();
+          if(isLeaveCat && derivedNow(ds)){
+            const plan=standbyOffPlanFor(person.id, ds);
+            const blockDays=dateRangeList(plan.startDate, plan.endDate).filter(d=>d.startsWith(ym) && derivedNow(d));
+            const opts=[{label:`這天不算休假（${shortDateLabel(ds)}）`, primary:true, onPick:()=>{ holidayOff.add(ds); draw(); }}];
+            if(blockDays.length>1) opts.push({label:`這段留守期間都不算休假（${shortDateLabel(blockDays[0])}～${shortDateLabel(blockDays[blockDays.length-1])}）`, onPick:()=>{ blockDays.forEach(d=>holidayOff.add(d)); draw(); }});
+            const h=honorChoice(ds); if(h) opts.push(h);
+            showChoice(`${minguoLabel(ds)}：${person.name} 不在這段留守名單上，自動算休假。\n\n假日在營值勤的人請直接加進留守名單（留守勤務從留守名單排）；「不算休假」是給其他情況用的。`, opts);
+            return;
+          }
+          if(isLeaveCat && holidayOff.has(ds) && standbyOffPlanFor(person.id, ds)){
+            showChoice(`${minguoLabel(ds)}：目前標成「不算休假」。`, [{label:'恢復成休假（留守期間自動休假）', primary:true, onPick:()=>{ holidayOff.delete(ds); draw(); }}]);
+            return;
+          }
+          rangeStart=ds; draw();
         };
       });
-      modal.querySelector('#ltPrev').onclick=()=>{ ym=shiftMonth(ym,-1); preplanMonth=ym; loadPerson(); draw(); };
-      modal.querySelector('#ltNext').onclick=()=>{ ym=shiftMonth(ym,1); preplanMonth=ym; loadPerson(); draw(); };
-      modal.querySelector('#ltClearMonth').onclick=()=>{ picked=new Set(); honorDates=new Set(); partialDates=new Map(); draw(); };
+      { const rc=modal.querySelector('#ltRangeCancel'); if(rc) rc.onclick=()=>{ rangeStart=null; draw(); }; }
+      { const rh=modal.querySelector('#ltRangeHol'); if(rh) rh.onchange=(e)=>{ rangeIncludeHol=e.target.checked; }; }
+      const navMonth=(delta)=>{
+        const go=()=>{ ym=shiftMonth(ym,delta); preplanMonth=ym; loadPerson(); draw(); };
+        if(hasUnsavedChanges()) showConfirm('這個月有點過還沒按「確認」的地方，換月份的話會不見。確定要換嗎？', go); else go();
+      };
+      modal.querySelector('#ltPrev').onclick=()=>navMonth(-1);
+      modal.querySelector('#ltNext').onclick=()=>navMonth(1);
+      modal.querySelector('#ltClearMonth').onclick=()=>{ picked=new Set(); honorDates=new Set(); partialDates=new Map(); holidayOff=new Set(); rangeStart=null; draw(); };
       { const noteEl = modal.querySelector('#ltNote'); if(noteEl) noteEl.oninput=(e)=>{ noteDraft=e.target.value; }; }
       modal.querySelector('#ltSave').onclick=()=>{
         // v165：這次點過的每個類型一起存（例如「改休」把休假那天拿掉、同時登記事故）
@@ -8896,16 +9333,30 @@ function openLeaveTableEditor(date, onSaved, presetPid){
           const mergedDates=[...(rec.dates||[]).filter(d=>!d.startsWith(ym)), ...dr.picked].sort();
           const mergedHonor=[...(rec.honorDates||[]).filter(d=>!d.startsWith(ym)), ...dr.honorDates].sort();
           const mergedPartial={...Object.fromEntries(Object.entries(rec.partialTimes||{}).filter(([d])=>!d.startsWith(ym))), ...Object.fromEntries(dr.partialDates)};
-          // 有改到的日子（整天、榮譽假、部分時段）
+          const mergedOff=[...(rec.holidayOff||[]).filter(d=>!d.startsWith(ym)), ...(dr.holidayOff||[])].sort();
+          // 有改到的日子（整天、榮譽假、部分時段、v167 不算休假）
           const before=new Set([...(rec.dates||[]).filter(d=>d.startsWith(ym)).map(d=>'d'+d), ...(rec.honorDates||[]).filter(d=>d.startsWith(ym)).map(d=>'h'+d),
-            ...monthKeys(rec.partialTimes).map(d=>'p'+d+JSON.stringify(rec.partialTimes[d]))]);
-          const after=new Set([...[...dr.picked].map(d=>'d'+d), ...[...dr.honorDates].map(d=>'h'+d), ...[...dr.partialDates].map(([d,t])=>'p'+d+JSON.stringify(t))]);
+            ...monthKeys(rec.partialTimes).map(d=>'p'+d+JSON.stringify(rec.partialTimes[d])), ...(rec.holidayOff||[]).filter(d=>d.startsWith(ym)).map(d=>'o'+d)]);
+          const after=new Set([...[...dr.picked].map(d=>'d'+d), ...[...dr.honorDates].map(d=>'h'+d), ...[...dr.partialDates].map(([d,t])=>'p'+d+JSON.stringify(t)), ...[...(dr.holidayOff||[])].map(d=>'o'+d)]);
           const changedDays=[...new Set([...[...before].filter(x=>!after.has(x)), ...[...after].filter(x=>!before.has(x))].map(x=>x.slice(1,11)))].sort();
           const noteChanged=(dr.noteDraft||'').trim()!==(rec.note||'');
-          const runs=analyzeLeaveRuns(new Set(mergedDates), new Set(mergedHonor), curApproved, category);
-          return {catName, category, curApproved, mergedDates, mergedHonor, mergedPartial, note:(dr.noteDraft||'').trim(), changedDays, noteChanged,
-            unapproved:runs.filter(r=>r.needsApproval && !r.isApproved), dr};
+          return {catName, category, curApproved, mergedDates, mergedHonor, mergedPartial, mergedOff, note:(dr.noteDraft||'').trim(), changedDays, noteChanged, unapproved:[], dr};
         }).filter(pl=>pl.changedDays.length || pl.noteChanged || pl.catName===selectedCat);
+        /* 超過5天：休假照「大表＋留守期間自動休假」連起來的整段算（用這次要存的內容），其他類型照舊 */
+        const computeUnapproved=()=>{
+          const byCat={}; plans.forEach(pl=>{ byCat[pl.catName]=pl; });
+          const store=leaveStoreView(selectedPid);
+          const planView=cat=>{ const pl=byCat[cat]; if(!pl) return store(cat);
+            return {dates:new Set(pl.mergedDates), partial:new Set(Object.keys(pl.mergedPartial)), off:new Set(pl.mergedOff), honor:new Set(pl.mergedHonor), approved:pl.curApproved}; };
+          // 只問這次有改到的那幾段（以前的舊段落不重問）
+          const touched=[...new Set(plans.flatMap(pl=>pl.changedDays))];
+          plans.forEach(pl=>{
+            if(pl.catName===DERIVED_LEAVE_CAT) pl.unapproved=combinedLeaveRuns(selectedPid, planView).filter(r=>r.needsApproval && !r.approved && touched.some(d=>d>=r.start && d<=r.end))
+              .map(r=>({start:r.start, end:r.end, effectiveDays:r.effectiveDays, isHonor:r.honor, derivedDays:r.derived.length}));
+            else pl.unapproved=analyzeLeaveRuns(new Set(pl.mergedDates), new Set(pl.mergedHonor), pl.curApproved, pl.category).filter(r=>r.needsApproval && !r.isApproved);
+          });
+        };
+        computeUnapproved();
         const pastDays=[...new Set(plans.flatMap(pl=>pl.changedDays.filter(d=>d<today)))].sort();
         const unapproved=plans.flatMap(pl=>pl.unapproved.map(r=>Object.assign({cat:pl.catName}, r)));
         const commit=(withPast)=>{
@@ -8913,7 +9364,11 @@ function openLeaveTableEditor(date, onSaved, presetPid){
           if(!state.preplan.leave[selectedPid]) state.preplan.leave[selectedPid]={};
           plans.forEach(pl=>{
             const approvedRuns=[...pl.curApproved, ...pl.unapproved.map(r=>({start:r.start, end:r.end}))];
-            if(pl.mergedDates.length || Object.keys(pl.mergedPartial).length) state.preplan.leave[selectedPid][pl.catName]={dates:pl.mergedDates, honorDates:pl.mergedHonor, approvedRuns, partialTimes:pl.mergedPartial, note:pl.note};
+            if(pl.mergedDates.length || Object.keys(pl.mergedPartial).length || pl.mergedOff.length || pl.mergedHonor.length){
+              const rec={dates:pl.mergedDates, honorDates:pl.mergedHonor, approvedRuns, partialTimes:pl.mergedPartial, note:pl.note};
+              if(pl.mergedOff.length) rec.holidayOff=pl.mergedOff;
+              state.preplan.leave[selectedPid][pl.catName]=rec;
+            }
             else delete state.preplan.leave[selectedPid][pl.catName];
           });
           // 連同已經過去的日子的班表一起改（從改到的最早那天的前一天開始，前緩衝也跟著對）
@@ -8923,12 +9378,16 @@ function openLeaveTableEditor(date, onSaved, presetPid){
               const past=pl.changedDays.filter(d=>d<today);
               if(past.length) applyLeavePlan(selectedPid, pl.catName, prevDateStr(past[0]));
             });
+            // v167：留守期間的自動休假也照改過的大表重寫
+            resyncDerivedLeaveFor([selectedPid], prevDateStr(pastDays[0]), nextDateStr(pastDays[pastDays.length-1]));
           }
           sessionDrafts={};
           markPlanSystemChange();
           saveState();
           const summary=plans.filter(pl=>pl.changedDays.length || pl.noteChanged).map(pl=>{
-            const d=pl.dr; return `${pl.catName}（本月整天 ${d.picked.size} 天${pl.category&&pl.category.honorOption?`，其中榮譽假 ${d.honorDates.size} 天`:''}${d.partialDates.size?`，部分時段 ${d.partialDates.size} 天`:''}）`;
+            const d=pl.dr;
+            if(pl.catName===DERIVED_LEAVE_CAT){ const sm=leaveMonthSummary(selectedPid, ym); return `${pl.catName}（本月扣假 ${sm.deduct} 天・假日 ${sm.holiday} 天${d.partialDates.size?`，部分時段 ${d.partialDates.size} 天`:''}）`; }
+            return `${pl.catName}（本月整天 ${d.picked.size} 天${d.partialDates.size?`，部分時段 ${d.partialDates.size} 天`:''}）`;
           });
           showAlert(`已儲存 ${person.name} 的${summary.length? summary.join('、') : selectedCat}，今天以後已直接生效到班表${withPast && pastDays.length? '；已經過去的日子也照大表改了':''}。`);
           loadCategory(selectedCat); draw(); if(onSaved) onSaved();
@@ -8945,20 +9404,22 @@ function openLeaveTableEditor(date, onSaved, presetPid){
                 const keepPast=d=>pastSet.has(d);
                 pl.mergedDates=[...pl.mergedDates.filter(d=>!keepPast(d)), ...(rec.dates||[]).filter(keepPast)].sort();
                 pl.mergedHonor=[...pl.mergedHonor.filter(d=>!keepPast(d)), ...(rec.honorDates||[]).filter(keepPast)].sort();
+                pl.mergedOff=[...pl.mergedOff.filter(d=>!keepPast(d)), ...(rec.holidayOff||[]).filter(keepPast)].sort();
                 Object.keys(pl.mergedPartial).filter(keepPast).forEach(d=>delete pl.mergedPartial[d]);
                 Object.entries(rec.partialTimes||{}).filter(([d])=>keepPast(d)).forEach(([d,t])=>{ pl.mergedPartial[d]=t; });
                 pl.dr.picked=new Set(pl.mergedDates.filter(d=>d.startsWith(ym)));
                 pl.dr.honorDates=new Set(pl.mergedHonor.filter(d=>d.startsWith(ym)));
                 pl.dr.partialDates=new Map(Object.entries(pl.mergedPartial).filter(([d])=>d.startsWith(ym)));
-                // 還原之後天數可能變了：同意的是「這次存的超過天數的段落」，照還原後的段落重算
-                if(pl.unapproved.length) pl.unapproved=analyzeLeaveRuns(new Set(pl.mergedDates), new Set(pl.mergedHonor), pl.curApproved, pl.category).filter(r=>r.needsApproval && !r.isApproved);
+                pl.dr.holidayOff=new Set(pl.mergedOff.filter(d=>d.startsWith(ym)));
               });
+              // 還原之後天數可能變了：同意的是「這次存的超過天數的段落」，照還原後的段落重算
+              if(unapproved.length) computeUnapproved();
               commit(false);
             }},
           ]);
         };
         if(unapproved.length){
-          const lines = unapproved.map(r=>`${r.cat}：${minguoLabel(r.start)}~${minguoLabel(r.end)}（${r.effectiveDays}天${r.isHonor?'，含榮譽假0.5天':''}）`);
+          const lines = unapproved.map(r=>`${r.cat}：${minguoLabel(r.start)}~${minguoLabel(r.end)}（${r.effectiveDays}天${r.derivedDays?`，含留守期間假日${r.derivedDays}天`:''}${r.isHonor?'，含榮譽假0.5天':''}）`);
           showConfirm(`以下這幾段超過天數上限，需要同意才能保留：\n${lines.join('\n')}\n\n確定已經過同意，要保留這個天數嗎？不同意的話請先縮短天數再儲存。`, afterApproval);
         } else afterApproval();
       };
@@ -8996,22 +9457,59 @@ function openLeaveTableEditor(date, onSaved, presetPid){
    訊組訊息。 */
 function commitQuickLeave(pid, catName, s, e, honor, note, approved){
   const category = state.leaveCategories.find(c=>c.name===catName);
-  const newDates = dateRangeList(s,e);
-  const r = createLeaveSegment(pid, s, e, category, honor?'honor':'normal', approved, note);
   if(!state.preplan.leave) state.preplan.leave={};
   if(!state.preplan.leave[pid]) state.preplan.leave[pid]={};
   const rec = state.preplan.leave[pid][catName]||{dates:[],honorDates:[],approvedRuns:[],partialTimes:{},note:''};
-  const mergedDates=[...new Set([...(rec.dates||[]), ...newDates])].sort();
-  const mergedHonor=new Set(rec.honorDates||[]);
-  if(r.tierApplied==='honor') mergedHonor.add(s);
-  const mergedApproved=[...(rec.approvedRuns||[])];
-  if(approved && !mergedApproved.some(x=>x.start===s&&x.end===e)) mergedApproved.push({start:s,end:e});
-  state.preplan.leave[pid][catName]={
-    dates:mergedDates, honorDates:[...mergedHonor].sort(), approvedRuns:mergedApproved,
+  let days = dateRangeList(s,e);
+  if(catName!==DERIVED_LEAVE_CAT){
+    // v167：受訓等類型假日跳過（假日照留守名單算休假）；整段都是假日就照填的登
+    const keep=days.filter(d=>!(isHolidayDate(d) || standbyOffPlanFor(pid, d)));
+    if(keep.length) days=keep;
+  }
+  const next={
+    dates:[...new Set([...(rec.dates||[]), ...days])].sort(),
+    honorDates:[...(rec.honorDates||[])], approvedRuns:[...(rec.approvedRuns||[])],
     partialTimes:rec.partialTimes||{}, note:(note||rec.note||''),
   };
+  let off=rec.holidayOff||[];
+  if(catName===DERIVED_LEAVE_CAT) off=off.filter(d=>d<s || d>e); // 這段裡標過「不休」的恢復
+  if(off.length) next.holidayOff=off;
+  state.preplan.leave[pid][catName]=next;
+  // 榮譽假／5天同意：休假照「連起來的整段」，其他類型照這段本身
+  const info=quickLeaveRunInfo(pid, catName, s, e, honor);
+  const honorOn=!!(honor && category && category.honorOption && (!info.needsApproval || info.approved || approved));
+  if(honor && category && category.honorOption && !next.honorDates.includes(info.start)) next.honorDates.push(info.start);
+  next.honorDates.sort();
+  if(approved && !next.approvedRuns.some(x=>x.start===info.start && x.end===info.end)) next.approvedRuns.push({start:info.start, end:info.end});
+  // 立即生效：這段照填的寫進班表（跟以前一樣，已經過去的日子也寫、其他段落不動）；
+  // 存檔時今天以後會照大表整理（跟前後的假連起來、榮譽假照整段）
+  const segs=[]; days.forEach(d=>{ const last=segs[segs.length-1]; if(last && d===nextDateStr(last.end)) last.end=d; else segs.push({start:d, end:d}); });
+  const leaveNext=d=>catName===DERIVED_LEAVE_CAT && (next.dates.includes(d) || derivedLeaveOn(pid, d));
+  segs.forEach(g=>createLeaveSegment(pid, g.start, g.end, category, (honorOn && g.start===info.start)? 'honor':'normal', true, note, {continues:leaveNext(nextDateStr(g.end))}));
+  // 已經過去的日子：只重寫這段附近的留守期間自動休假（別的類型取代、不休恢復）
+  const today=todayStr();
+  if(prevDateStr(s)<today) resyncDerivedLeaveFor([pid], prevDateStr(s), nextDateStr(e));
+  markPlanSystemChange();
   saveState();
-  return r;
+  return {honorDowngraded: !!(honor && category && category.honorOption && !honorOn), tierApplied: honorOn? 'honor':'normal', leaveId: findLeaveIdForPerson(pid, days[0]||s)};
+}
+/* v167：快速登記這一段，連同前後的休假（含留守期間自動休假）是哪一整段、要不要同意 */
+function quickLeaveRunInfo(pid, catName, s, e, honor){
+  const category=state.leaveCategories.find(c=>c.name===catName)||{};
+  if(catName!==DERIVED_LEAVE_CAT){
+    const {effectiveDays, needsApproval}=quickLeaveNeedsApproval(category, s, e, honor);
+    const rec=(((state.preplan||{}).leave||{})[pid]||{})[catName]||{};
+    return {start:s, end:e, effectiveDays, needsApproval, approved:(rec.approvedRuns||[]).some(r=>r.start===s && r.end===e), derivedDays:0};
+  }
+  const base=leaveStoreView(pid), range=dateRangeList(s,e);
+  const view=cat=>{
+    const v=base(cat);
+    if(cat!==DERIVED_LEAVE_CAT) return v;
+    return {dates:new Set([...v.dates, ...range]), partial:v.partial, off:new Set([...v.off].filter(d=>d<s || d>e)), honor:v.honor, approved:v.approved};
+  };
+  const cr=combinedLeaveRuns(pid, view).find(r=>r.start<=s && r.end>=s) || {start:s, end:e, days:daysBetweenInclusive(s,e), derived:[], approved:false};
+  const effectiveDays=cr.days+(honor?0.5:0);
+  return {start:cr.start, end:cr.end, effectiveDays, needsApproval: !!category.fiveDayRule && effectiveDays>5, approved:!!cr.approved, derivedDays:cr.derived.length};
 }
 /* 這段期間（有緩衝的類型，含前後各一天緩衝）這個人是不是已經有其他不在
    營記錄——快速登記略過休假暨事故大表逐天點選看月曆的過程，比較容易看
@@ -9023,6 +9521,7 @@ function quickLeaveExistingInRange(pid, s, e, category){
   const byDate={};
   checkDates.forEach(d=>{
     (state.unavail[d]||[]).forEach(u=>{
+      if(u.reason===STANDBY_LEAVE_TAG) return; // v167：留守期間自動休假會自己跟著調整，不用問
       if(u.personId===pid){ if(!byDate[d]) byDate[d]=new Set(); byDate[d].add(u.reason||'（未指定原因）'); }
     });
   });
@@ -9070,11 +9569,9 @@ function openQuickLeaveModal(presetPid){
       <div id="qlPeople" style="max-height:24vh;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:8px;margin-bottom:8px">
         ${state.personnel.slice().sort((a,b)=>groupIndex(a.group)-groupIndex(b.group)||rankIndex(a.rank)-rankIndex(b.rank))
           .map(p=>{
-            const catCounts = state.leaveCategories.map(c=>{
-              const rec=((state.preplan.leave&&state.preplan.leave[p.id])||{})[c.name]||{dates:[]};
-              return {name:c.name, cnt:(rec.dates||[]).length};
-            }).filter(x=>x.cnt>0);
-            const summary = catCounts.length? ` <span class="ok">${catCounts.map(x=>`${x.name.slice(0,1)}${x.cnt}`).join('・')}</span>` : '';
+            // v167：這個月的休假（扣假＋假日）、其他類型天數
+            const smText = leaveMonthSummaryText(leaveMonthSummary(p.id, monthOf(currentDate)));
+            const summary = smText? ` <span class="ok nw">${esc(smText)}</span>` : '';
             return `<label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0">
               <input type="radio" name="qlp" class="ql-person" value="${p.id}" style="width:auto" ${p.id===selectedPid?'checked':''}>
               <span class="grow">${esc(p.name)}（<span class="nw">${esc(p.group||'未分組')}</span>·<span class="nw">${esc(p.rank)}</span>）${summary}</span>
@@ -9098,8 +9595,8 @@ function openQuickLeaveModal(presetPid){
           <div class="grow"><label>備註（選填）</label><input type="text" id="qlNote" value="${esc(noteDraft)}" placeholder="例：體檢、出車支援○○任務"></div>
         </div>
         <div class="hint" style="margin-bottom:8px">
-          ${category&&category.buffer? `這個類型有前後緩衝：登記後系統會自動加上前一天18:00起（榮譽假12:00起）、隔天07:30前的緩衝時段，範圍內每一天整天不可排。` : `這個類型沒有前後緩衝，範圍內每一天整天不可排。`}
-          ${category&&category.fiveDayRule? ' 超過5天（含緩衝的有效天數）會再跳出來確認是否已經同意保留。':''}
+          ${category&&category.buffer? `這個類型有前後緩衝：登記後系統會自動加上前一天18:00起（榮譽假12:00起）、隔天07:30前（義務役當天21:00前）的緩衝時段，範圍內每一天整天不可排。留守期間不在留守名單的日子本來就自動算休假，接在假日前後登就好。` : `這個類型沒有前後緩衝，範圍內的平日整天不可排（假日跳過，照留守名單算休假；整段都是假日就照填的登）。`}
+          ${category&&category.fiveDayRule? ' 超過5天（連同前後假日算）會再跳出來確認是否已經同意保留。':''}
         </div>
         <button class="primary" id="qlSave" style="width:100%;margin-bottom:6px">✅ 登記（立即生效）</button>
       ` : `<div class="empty">請先搜尋並選擇一位人員</div>`}
@@ -9131,7 +9628,8 @@ function openQuickLeaveModal(presetPid){
         const s=document.getElementById('qlStart').value, e=document.getElementById('qlEnd').value;
         if(!s || !e || s>e){ showAlert('請確認日期範圍正確（開始日期不能晚於結束日期）'); return; }
         const proceedToApprovalCheck=()=>{
-          const {effectiveDays, needsApproval} = quickLeaveNeedsApproval(category, s, e, honorVal);
+          const info = quickLeaveRunInfo(selectedPid, selectedCat, s, e, honorVal);
+          const effectiveDays=info.effectiveDays, needsApproval=info.needsApproval && !info.approved;
           const doCreate=(approved)=>{
             const note=(document.getElementById('qlNote').value||'').trim();
             const r=commitQuickLeave(selectedPid, selectedCat, s, e, honorVal, note, approved);
@@ -9143,7 +9641,7 @@ function openQuickLeaveModal(presetPid){
             loadDraftForSelection(); draw();
           };
           if(needsApproval){
-            showConfirm(`這段共 ${effectiveDays} 天，超過5天上限，需要同意才能保留。確定已經過同意，要保留這個天數嗎？不同意的話請先縮短日期範圍。`, ()=>doCreate(true));
+            showConfirm(`${info.start!==s || info.end!==e? `連同前後的休假（${minguoLabel(info.start)}~${minguoLabel(info.end)}${info.derivedDays?`，含留守期間假日 ${info.derivedDays} 天`:''}）`:'這段'}共 ${effectiveDays} 天，超過5天上限，需要同意才能保留。確定已經過同意，要保留這個天數嗎？不同意的話請先縮短日期範圍。`, ()=>doCreate(true));
           } else {
             doCreate(false);
           }
@@ -9232,13 +9730,10 @@ function importPreplanForDate(key, date){
       if(state.unavail[d]) state.unavail[d]=state.unavail[d].filter(u=>!STANDBY_TAGS.includes(u.reason));
     });
     const pushU=(d, entry)=>{ if(!writable(d)) return; if(!state.unavail[d]) state.unavail[d]=[]; state.unavail[d].push(entry); };
+    // v167：每個人照大表的改動（不算休假／別的類型／榮譽假）、役別分開寫
     state.personnel.forEach(p=>{
       if(keep.has(p.id)) return;
-      const startT = plan.leaveStartTime||state.unitRules.standbyDefaults.leaveStartTime;
-      const endT = plan.endTime||state.unitRules.standbyDefaults.endTime;
-      pushU(dayBefore, {id:uid(),personId:p.id,allDay:false,start:startT,end:'24:00',reason:TAG});
-      blockDates.forEach(d=>pushU(d, {id:uid(),personId:p.id,allDay:true,start:'',end:'',reason:TAG}));
-      pushU(dayAfter, {id:uid(),personId:p.id,allDay:false,start:'00:00',end:endT,reason:TAG});
+      writeDerivedLeaveForPerson(plan, p, pushU);
     });
     // per-person overrides: someone leaving early is unavailable from then on
     Object.entries(plan.overrides||{}).forEach(([pid, ov])=>{
@@ -9385,14 +9880,16 @@ function importLeaveTable(monthPrefix){
       });
       staleLeaveIds.forEach(lid=>deleteLeaveById(lid));
       // group consecutive full-day dates into buffered/plain runs
+      // v167：榮譽假照「跟留守期間自動休假連起來的整段」判斷（leaveRunsFromPlan）
+      const fullRuns=leaveRunsFromPlan(rec, category, pid).runs;
       if(dates.length){
         let runStart=dates[0], prev=dates[0];
         const flush=(end)=>{
-          const isApproved = approvedRuns.some(r=>r.start===runStart && r.end===end);
-          const tier = honorSet.has(runStart)? 'honor' : 'normal';
-          const r=createLeaveSegment(pid, runStart, end, category, tier, isApproved, rec.note);
+          const fr=fullRuns.find(x=>x.start<=runStart && x.end>=end);
+          const honorOn=!!(fr && fr.start===runStart && fr.honorApplies);
+          const r=createLeaveSegment(pid, runStart, end, category, honorOn? 'honor' : 'normal', true, rec.note, {continues:!!(fr && fr.continues && fr.end===end)});
           count++;
-          if(r.honorDowngraded) downgraded.push({personId:pid, name:person?person.name:pid, start:runStart, end});
+          if(fr && fr.start===runStart && fr.honorReq && !fr.honorApplies) downgraded.push({personId:pid, name:person?person.name:pid, start:runStart, end});
         };
         for(let i=1;i<dates.length;i++){
           if(dates[i]===nextDateStr(prev)){ prev=dates[i]; continue; }
@@ -9509,13 +10006,13 @@ function clearDateRange(from, to, opts){
         if(rec.approvedRuns) rec.approvedRuns=rec.approvedRuns
           .filter(r=>!(r.start>=removedStart && r.start<=b.end))
           .map(r=>(newEnd && r.start===b.start && r.end>newEnd)? Object.assign({}, r, {end:newEnd}) : r);
-        if(!rec.dates.length && !Object.keys(rec.partialTimes||{}).length) delete state.preplan.leave[b.personId][ownerCat];
+        if(leaveRecEmpty(rec)) delete state.preplan.leave[b.personId][ownerCat];
       }
       // 縮短後這段假的結束日變了：照大表補上收假那天早上的緩衝（跟在大表上
       // 縮短一樣）。範圍裡的記錄等一下會整批清掉，所以放到最後才補。假本來
       // 就在範圍前結束（範圍裡只有收假緩衝）就不補——那正是這次要清的。
       if(newEnd && newEnd<b.end && rec && category) afterClear.push(()=>{
-        const r=leaveRunsFromPlan(rec, category).runs.find(x=>x.start===b.start && x.end===newEnd);
+        const r=leaveRunsFromPlan(rec, category, b.personId).runs.find(x=>x.start===b.start && x.end===newEnd);
         if(!r) return;
         const pv=leaveRunPreview(b.personId, r, category, rec.note||'');
         pv.flat.filter(x=>x.d>newEnd && x.d>=today).forEach(({d,u})=>{
@@ -9550,8 +10047,10 @@ function clearDateRange(from, to, opts){
           const before=(rec.dates||[]).length;
           rec.dates=(rec.dates||[]).filter(d=>!dates.has(d));
           if(rec.honorDates) rec.honorDates=rec.honorDates.filter(d=>!dates.has(d));
+          // v167：範圍裡標過「不算休假」的也清掉（恢復成留守期間自動休假）
+          if(rec.holidayOff) rec.holidayOff=rec.holidayOff.filter(d=>!dates.has(d));
           if(rec.dates.length!==before) cleared++;
-          if(!rec.dates.length) delete store[pid][cat];
+          if(leaveRecEmpty(rec)) delete store[pid][cat];
         });
         if(!Object.keys(store[pid]).length) delete store[pid];
       });
@@ -9925,9 +10424,10 @@ function personFutureCommitments(personId){
    assign+unavail like before, which left dangling references in 其他勤務
    and predata that would silently show "—" instead of a name. */
 function purgePersonEverywhere(personId){
-  Object.values(state.unavail).forEach(arr=>{
-    const i=arr.findIndex(u=>u.personId===personId);
-    if(i>-1) arr.splice(i,1);
+  // （以前只拿掉每天第一筆，同一天有好幾筆的會留下來）
+  Object.keys(state.unavail).forEach(d=>{
+    const arr=(state.unavail[d]||[]).filter(u=>u.personId!==personId);
+    if(arr.length) state.unavail[d]=arr; else delete state.unavail[d];
   });
   Object.values(state.assign).forEach(cats=>Object.values(cats).forEach(shifts=>Object.keys(shifts).forEach(sid=>{
     shifts[sid]=shifts[sid].filter(pid=>pid!==personId);
@@ -10004,6 +10504,12 @@ function renderPeople(){
             <option value="">（不填）</option>
             <option value="男">男</option>
             <option value="女">女</option>
+          </select>
+        </div>
+        <div style="width:116px"><label>役別</label>
+          <select id="npService">
+            <option value="">志願役</option>
+            <option value="義務役">義務役</option>
           </select>
         </div>
         <div class="grow"><label>手機號碼（選填，個人資料，名冊列表不會顯示，只有點進編輯才看得到）</label><input type="text" id="npPhone" placeholder="例：0912345678"></div>
@@ -10371,6 +10877,7 @@ function wirePeopleListButtons(){
     const group=document.getElementById('npGroup').value;
     const rank=document.getElementById('npRank').value;
     const gender=document.getElementById('npGender').value;
+    const serviceType=document.getElementById('npService').value;
     const phone=document.getElementById('npPhone').value.trim();
     const license=document.getElementById('npLicense').value;
     const medCert=document.getElementById('npMedCert').value;
@@ -10392,7 +10899,9 @@ function wirePeopleListButtons(){
     const outingRestriction = document.getElementById('npOutingRestriction').value;
     const departureDate = document.getElementById('npDepartureDate').value || undefined;
     if(!name) return;
-    state.personnel.push({id:uid(),name,group,rank,gender,phone,license,medCert,skills,longTerm,note,outingRestriction,departureDate});
+    const np={id:uid(),name,group,rank,gender,phone,license,medCert,skills,longTerm,note,outingRestriction,departureDate};
+    if(serviceType) np.serviceType=serviceType;
+    state.personnel.push(np);
     saveState(); render();
   };
   document.getElementById('importBtn').onclick=()=>document.getElementById('importFile').click();
@@ -10483,6 +10992,11 @@ function openPersonEditor(personId){
         <option value="" ${!p.gender?'selected':''}>（不填）</option>
         <option value="男" ${p.gender==='男'?'selected':''}>男</option>
         <option value="女" ${p.gender==='女'?'selected':''}>女</option>
+      </select>
+      <label>役別（義務役收假是最後一天 ${esc(state.unitRules.leaveBuffer.conscriptBackEnd||'21:00')} 前返營，志願役是隔天 ${esc(state.unitRules.leaveBuffer.backEnd)} 前）</label>
+      <select id="epService" style="margin-bottom:8px">
+        <option value="" ${!isConscript(p)?'selected':''}>志願役</option>
+        <option value="義務役" ${isConscript(p)?'selected':''}>義務役</option>
       </select>
       <label>手機號碼（選填，個人資料）</label><input type="text" id="epPhone" value="${esc(p.phone||'')}" placeholder="例：0912345678" style="margin-bottom:8px">
       <label>駕照</label>
@@ -10594,6 +11108,14 @@ function openPersonEditor(personId){
     p.group=document.getElementById('epGroup').value;
     p.rank=document.getElementById('epRank').value;
     p.gender=document.getElementById('epGender').value;
+    // v167：役別改了 → 這個人今天以後的休假收假時間全部照新的役別重寫
+    const newService=document.getElementById('epService').value;
+    const serviceChanged=(p.serviceType||'')!==newService;
+    if(newService) p.serviceType=newService; else delete p.serviceType;
+    if(serviceChanged){
+      Object.keys(((state.preplan||{}).leave||{})[p.id]||{}).forEach(cat=>applyLeavePlan(p.id, cat, undefined, {force:true}));
+      resyncDerivedLeaveFor([p.id]);
+    }
     p.phone=document.getElementById('epPhone').value.trim();
     p.license=document.getElementById('epLicense').value;
     p.medCert=document.getElementById('epMedCert').value;
@@ -10637,7 +11159,7 @@ function renderPeopleGroups(groups, filterFn){
     return `<h3>${g? esc(g) : '未分組'}（${members.length}）</h3>` + members.map(p=>`
       <div class="list-item">
         <span class="tag rank-${rankCategory(p.rank)}">${p.rank}</span>
-        <span class="grow">${esc(p.name)}${p.gender? `（${p.gender}）`:''}${p.license? `<div class="muted">駕照：${esc(p.license)}</div>`:''}${p.medCert? `<div class="muted">救護證照：${esc(p.medCert)}</div>`:''}${(p.skills&&p.skills.length)? `<div class="muted">專長：${p.skills.map(esc).join('、')}</div>`:''}${p.note? `<div class="muted">備考：${esc(p.note)}</div>`:''}${longTermLabel(p)? `<div class="warn">🚫 ${longTermLabel(p)}</div>`:''}${p.outingRestriction==='dayOnly'? `<div class="warn">🚫 僅能外散（不可過夜）</div>`:''}${p.outingRestriction==='none'? `<div class="warn">🚫 完全不可外散宿</div>`:''}</span>
+        <span class="grow">${esc(p.name)}${p.gender? `（${p.gender}）`:''}${isConscript(p)? ' <span class="tag">義務役</span>':''}${p.license? `<div class="muted">駕照：${esc(p.license)}</div>`:''}${p.medCert? `<div class="muted">救護證照：${esc(p.medCert)}</div>`:''}${(p.skills&&p.skills.length)? `<div class="muted">專長：${p.skills.map(esc).join('、')}</div>`:''}${p.note? `<div class="muted">備考：${esc(p.note)}</div>`:''}${longTermLabel(p)? `<div class="warn">🚫 ${longTermLabel(p)}</div>`:''}${p.outingRestriction==='dayOnly'? `<div class="warn">🚫 僅能外散（不可過夜）</div>`:''}${p.outingRestriction==='none'? `<div class="warn">🚫 完全不可外散宿</div>`:''}</span>
         <button class="ghost small" data-edit-person="${p.id}">編輯</button>
         <button class="ghost small danger" data-del-person="${p.id}">刪除</button>
       </div>`).join('');
@@ -10656,6 +11178,7 @@ document.getElementById('importFile').addEventListener('change', (e)=>{
         if(!state.dutyChanges) state.dutyChanges={};
         cleanupOtherUnitPatrolEntries();
         migrateSupportOccupants();
+        migrateLeaveModelV2();
         // 匯入的備份就是它本來的樣子，先原封不動存進來（不當成手改、也不在
         // 存檔時就依預排改動它），再檢查它的班表跟預排有沒有不一致
         if(PLAN_SYNC) initPlanSync();
@@ -10713,7 +11236,7 @@ function renderLeaveGroupSummary(date){
    adjustLeaveStart/adjustLeaveEnd — not as a third tier here. Every entry
    (buffered or not) gets the same leaveId so the whole block can still be
    found/deleted as one unit regardless of category or tier. */
-function createLeaveSegment(personId, s, e, category, tier, approved, note){
+function createLeaveSegment(personId, s, e, category, tier, approved, note, opts){
   tier = tier===true? 'honor' : (tier===false || tier==null? 'normal' : tier);
   const leaveId=uid();
   const buf = state.unitRules.leaveBuffer;
@@ -10739,12 +11262,18 @@ function createLeaveSegment(personId, s, e, category, tier, approved, note){
   // 「休假」），不會因為前面選了榮譽假就整段都標成榮譽假
   if(!state.unavail[firstRoster]) state.unavail[firstRoster]=[];
   state.unavail[firstRoster].push({id:uid(),personId,allDay:false,start:firstStart,end:'24:00',reason: honorApplies? '榮譽假':category.name,leaveId,leaveStart:s,leaveEnd:e,inCamp:false});
-  dates.forEach(d=>{
+  // v167：義務役「休假結束當日二十一時前返營」——最後一天只到 21:00，沒有隔天早上的收假緩衝
+  // （後面還接著休假——例如接留守期間的假日——就不是最後一天）
+  const conscript=isConscript(state.personnel.find(p=>p.id===personId)) && !(opts && opts.continues);
+  dates.forEach((d,i)=>{
     if(!state.unavail[d]) state.unavail[d]=[];
-    state.unavail[d].push({id:uid(),personId,allDay:true,start:'',end:'',reason:category.name,leaveId,leaveStart:s,leaveEnd:e,inCamp:false});
+    if(conscript && i===dates.length-1) state.unavail[d].push({id:uid(),personId,allDay:false,start:'00:00',end:buf.conscriptBackEnd||'21:00',reason:category.name,leaveId,leaveStart:s,leaveEnd:e,inCamp:false,conscriptLast:true});
+    else state.unavail[d].push({id:uid(),personId,allDay:true,start:'',end:'',reason:category.name,leaveId,leaveStart:s,leaveEnd:e,inCamp:false});
   });
-  if(!state.unavail[lastRoster]) state.unavail[lastRoster]=[];
-  state.unavail[lastRoster].push({id:uid(),personId,allDay:false,start:'00:00',end:buf.backEnd,reason:category.name,leaveId,leaveStart:s,leaveEnd:e,inCamp:false});
+  if(!isConscript(state.personnel.find(p=>p.id===personId))){
+    if(!state.unavail[lastRoster]) state.unavail[lastRoster]=[];
+    state.unavail[lastRoster].push({id:uid(),personId,allDay:false,start:'00:00',end:buf.backEnd,reason:category.name,leaveId,leaveStart:s,leaveEnd:e,inCamp:false});
+  }
   // report back whether the requested 榮譽假 actually took effect, so callers
   // (like the leave-table importer) can surface it instead of it silently
   // falling back to a normal-tier start
@@ -10781,16 +11310,26 @@ function honorLeaveIdSet(){
 }
 function personAwayEntries(personId, date){
   const leaveCatNames=state.leaveCategories.map(c=>c.name);
-  return (state.unavail[date]||[]).filter(u=>u.personId===personId && u.allDay && (isLeaveReason(u.reason) || u.inCamp===false || leaveCatNames.includes(u.reason)));
+  return (state.unavail[date]||[]).filter(u=>u.personId===personId && isAwayDayEntry(u) && (isLeaveReason(u.reason) || u.inCamp===false || leaveCatNames.includes(u.reason)));
 }
 function personAwayReason(personId, date){
   const parts=[];
   // 自己的休假／事故（大表來的）排前面，留守期間放假這種整批的排後面
   const hon=honorLeaveIdSet();
-  personAwayEntries(personId, date).slice().sort((x,y)=>(x.leaveId?0:1)-(y.leaveId?0:1)).forEach(u=>{
-    const t=(u.reason || '（未指定原因）') + (u.leaveId && hon.has(u.leaveId)? '（榮譽假）' : '') + (u.note? `（${u.note}）`:'');
+  const awayList=personAwayEntries(personId, date);
+  const explicitLeave=awayList.some(x=>x.leaveId && x.reason===DERIVED_LEAVE_CAT);
+  awayList.slice().sort((x,y)=>(x.leaveId?0:1)-(y.leaveId?0:1)).forEach(u=>{
+    const isTag=u.reason===STANDBY_LEAVE_TAG;
+    // 同一天大表也有登休假：榮譽假標在大表那段就好
+    const t=(isTag? '休假' : (u.reason || '（未指定原因）')) + (((u.honor && !(isTag && explicitLeave)) || (u.leaveId && hon.has(u.leaveId)))? '（榮譽假）' : '') + (isTag? '（留守期間非留守人員）':'')
+      + (u.conscriptLast? `（義務役 ${u.end} 前返營）`:'') + (u.note? `（${u.note}）`:'');
     if(!parts.includes(t)) parts.push(t);
   });
+  // v167：榮譽假照整段連續休假算（中間夾著留守期間自動休假的也算同一段）
+  if(!parts.some(t=>t.includes('榮譽假')) && honorOnDate(personId, date)){
+    const i=parts.findIndex(t=>t.startsWith('休假'));
+    if(i>-1) parts[i]=parts[i].replace(/^休假/, '休假（榮譽假）');
+  }
   const person = state.personnel.find(p=>p.id===personId);
   if(person){
     const lt = effectiveLongTerm(person, date);
@@ -10809,13 +11348,14 @@ function personAwayReasonCategories(personId, date, honorIds){
     if(leaveCatNames.includes(r)) out.add(r);
     else if(isLeaveReason(r)) out.add('休假');
     else out.add('其他事故');
-    if(u.leaveId && (hon? hon.has(u.leaveId) : Object.values(state.unavail).some(arr=>(arr||[]).some(x=>x.leaveId===u.leaveId && x.reason==='榮譽假')))) out.add('榮譽假');
+    if(u.honor || (u.leaveId && (hon? hon.has(u.leaveId) : Object.values(state.unavail).some(arr=>(arr||[]).some(x=>x.leaveId===u.leaveId && x.reason==='榮譽假'))))) out.add('榮譽假');
   });
   const person = state.personnel.find(p=>p.id===personId);
   if(person){
     const lt = effectiveLongTerm(person, date);
     if(lt.mode==='allday' && !lt.inCamp) out.add(lt.reason && leaveCatNames.includes(lt.reason)? lt.reason : '長期事故');
   }
+  if(out.has('休假') && !out.has('榮譽假') && honorOnDate(personId, date)) out.add('榮譽假');
   if(!out.size) out.add('其他事故');
   return [...out];
 }
@@ -11110,10 +11650,36 @@ function isFrontBufferEntry(u){
    這段假期本來有超過5天同意記錄(approvedRuns)剛好用這天當結束日，結束日
    也跟著往前調一天，不然縮短後的這段會變成「找不到對應的同意記錄」。 */
 function peopleWithBackBufferOn(date){
-  return (state.unavail[date]||[]).filter(isBackBufferEntry);
+  // v167：義務役沒有隔天早上的收假緩衝——他們「原本的收假日」一樣算最後一天的隔天，
+  // 列出最後一天那筆（00:00-21:00）
+  const conscripts=(state.unavail[prevDateStr(date)]||[]).filter(u=>u.conscriptLast && u.leaveId);
+  // v167：這天本身還在休假（接留守期間的假日、或大表上連著的假）的人不是這天收假，不列
+  const stillOff=pid=>derivedLeaveOn(pid, date) || (((state.preplan.leave||{})[pid]||{})[DERIVED_LEAVE_CAT]||{dates:[]}).dates.includes(date);
+  return (state.unavail[date]||[]).filter(isBackBufferEntry).concat(conscripts).filter(u=>!stillOff(u.personId));
+}
+function applyEarlyReturnConscript(u){
+  const lastDay=u.leaveEnd;
+  const newEnd=prevDateStr(lastDay);
+  const rec=(((state.preplan||{}).leave||{})[u.personId]||{})[u.reason];
+  if(rec){
+    rec.dates=(rec.dates||[]).filter(d=>d!==lastDay);
+    rec.honorDates=(rec.honorDates||[]).filter(d=>d!==lastDay);
+    if(rec.partialTimes) delete rec.partialTimes[lastDay];
+    if(rec.approvedRuns && rec.approvedRuns.length) rec.approvedRuns=rec.approvedRuns.map(r=> r.end===lastDay? {...r, end:newEnd} : r);
+    if(leaveRecEmpty(rec)) delete state.preplan.leave[u.personId][u.reason];
+  }
+  if(state.unavail[lastDay]){ state.unavail[lastDay]=state.unavail[lastDay].filter(x=>x.id!==u.id); if(!state.unavail[lastDay].length) delete state.unavail[lastDay]; }
+  // 前一天變成新的最後一天：21:00 前返營
+  (state.unavail[newEnd]||[]).forEach(x=>{
+    if(x.leaveId===u.leaveId && x.allDay){ x.allDay=false; x.start='00:00'; x.end=state.unitRules.leaveBuffer.conscriptBackEnd||'21:00'; x.conscriptLast=true; }
+  });
+  Object.values(state.unavail).forEach(arr=>(arr||[]).forEach(x=>{ if(x.leaveId===u.leaveId && x.leaveEnd===lastDay) x.leaveEnd=newEnd; }));
 }
 function applyEarlyReturn(date, entryIds){
-  if(!state.unavail[date]) return 0;
+  // 義務役那筆在最後一天（date 的前一天）
+  let n=0;
+  (state.unavail[prevDateStr(date)]||[]).filter(u=>u.conscriptLast && u.leaveId && entryIds.includes(u.id)).forEach(u=>{ applyEarlyReturnConscript(u); n++; });
+  if(!state.unavail[date]) return n;
   const entries = state.unavail[date].filter(u=>entryIds.includes(u.id));
   entries.forEach(u=>{
     const lastDay = u.leaveEnd || prevDateStr(date);
@@ -11125,7 +11691,7 @@ function applyEarlyReturn(date, entryIds){
       if(rec.approvedRuns && rec.approvedRuns.length){
         rec.approvedRuns = rec.approvedRuns.map(r=> r.end===lastDay? {...r, end:prevDateStr(lastDay)} : r);
       }
-      if(!rec.dates.length) delete state.preplan.leave[u.personId][u.reason];
+      if(leaveRecEmpty(rec)) delete state.preplan.leave[u.personId][u.reason];
     }
     if(state.unavail[lastDay]){
       state.unavail[lastDay] = state.unavail[lastDay].filter(x=>!(x.leaveId===u.leaveId && x.allDay));
@@ -11140,7 +11706,7 @@ function applyEarlyReturn(date, entryIds){
   });
   const before = state.unavail[date].length;
   state.unavail[date] = state.unavail[date].filter(u=>!entryIds.includes(u.id));
-  return before - state.unavail[date].length;
+  return n + before - state.unavail[date].length;
 }
 /* 開始延後——少數人因為任務/處罰，某段假期實際上要晚一點才開始休假（不
    是單位統一的18:00/12:00），時間也不固定，所以是逐次輸入、按這段假期第
@@ -11148,7 +11714,10 @@ function applyEarlyReturn(date, entryIds){
    一天的前緩衝記錄，把「這段假期的第一天」本身從整天登記改成部分時段，
    從輸入的時間開始。只影響假期的開頭，中間跟收假那端完全不受影響。 */
 function peopleStartingLeaveOn(date){
-  return (state.unavail[date]||[]).filter(u=>u.allDay && u.leaveId && u.leaveStart===date);
+  // v167：前一天已經在休假（留守期間的假日接過來）的人，這天不是「休假第一天」
+  const prev=prevDateStr(date);
+  const offBefore=pid=>derivedLeaveOn(pid, prev) || (((state.preplan.leave||{})[pid]||{})[DERIVED_LEAVE_CAT]||{dates:[]}).dates.includes(prev);
+  return (state.unavail[date]||[]).filter(u=>isAwayDayEntry(u) && u.leaveId && u.leaveStart===date && !offBefore(u.personId));
 }
 function applyDelayedStart(date, entryIds, newStartTime){
   const prevDay = prevDateStr(date);
@@ -11158,7 +11727,7 @@ function applyDelayedStart(date, entryIds, newStartTime){
     if(state.unavail[prevDay]) state.unavail[prevDay] = state.unavail[prevDay].filter(x=>!(x.leaveId===u.leaveId && isFrontBufferEntry(x)));
     u.allDay = false;
     u.start = newStartTime;
-    u.end = '24:00';
+    if(!u.conscriptLast) u.end = '24:00'; // 義務役只休一天：還是 21:00 前返營
     count++;
   });
   return count;
@@ -11166,7 +11735,7 @@ function applyDelayedStart(date, entryIds, newStartTime){
 function onDutyList(date){
   const dayEntries = state.unavail[date]||[];
   const leaveCatNames=state.leaveCategories.map(c=>c.name);
-  const awayIds = new Set(dayEntries.filter(u=>u.allDay && (isLeaveReason(u.reason) || u.inCamp===false || leaveCatNames.includes(u.reason))).map(u=>u.personId));
+  const awayIds = new Set(dayEntries.filter(u=>isAwayDayEntry(u) && (isLeaveReason(u.reason) || u.inCamp===false || leaveCatNames.includes(u.reason))).map(u=>u.personId));
   // NOTE: 全日出勤（營外）(e.g. 採買/督伙 all day) does NOT remove someone
   // from 在勤人員 — they still have an assigned task and count as "on
   // duty", just physically away; renderOnDutyList annotates them with the
@@ -13442,6 +14011,12 @@ function todayLeaveTableSummary(date){
       else if(part && part.start && part.end) txt=`${p.name}（${part.start}-${part.end}）`;
       if(txt) (byCat[cat]=byCat[cat]||[]).push(txt);
     });
+  });
+  // v167：留守期間不在留守名單的人自動算休假，也列進休假
+  const listed=new Set(byCat[DERIVED_LEAVE_CAT]||[]);
+  state.personnel.forEach(p=>{
+    if(listed.has(p.name) || !derivedLeaveOn(p.id, date)) return;
+    (byCat[DERIVED_LEAVE_CAT]=byCat[DERIVED_LEAVE_CAT]||[]).push(p.name);
   });
   return byCat;
 }
