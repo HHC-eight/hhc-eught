@@ -217,7 +217,7 @@ select{-webkit-appearance:none;appearance:none;padding-right:32px;
   background-image:linear-gradient(45deg,transparent 50%,var(--dim) 50%),linear-gradient(135deg,var(--dim) 50%,transparent 50%);
   background-position:calc(100% - 17px) 52%,calc(100% - 12px) 52%;background-size:5px 5px,5px 5px;background-repeat:no-repeat;}
 input[type=checkbox]{width:22px !important;height:22px !important;min-width:22px;accent-color:var(--accent);cursor:pointer;flex-shrink:0;}
-input[type=radio]{accent-color:var(--accent);width:18px;height:18px;}
+input[type=radio]{accent-color:var(--accent);width:20px !important;height:20px !important;min-width:20px;flex-shrink:0;cursor:pointer;}
 textarea{min-height:50px;resize:vertical;line-height:1.5;}
 ::placeholder{color:var(--dim);opacity:.75;}
 .time-select-pair{display:inline-flex;align-items:center;gap:3px;width:100%;min-width:132px;}
@@ -371,7 +371,7 @@ select[data-assign-cat]:has(option[value=""]:checked){background-color:var(--war
       <span class="unit-banner-badge"><i data-ico="star"></i></span>
       <span class="unit-banner-titles">
         <span class="unit-banner-text">陸軍第八軍團 本部連</span>
-        <h1 id="pageTitle">衛哨排班系統 <span class="muted">v169</span></h1>
+        <h1 id="pageTitle">衛哨排班系統 <span class="muted">v170</span></h1>
       </span>
     </span>
     <span class="banner-side right">
@@ -886,7 +886,8 @@ function presetTimes(preset){
    entries whose preset was since deleted/renamed (no requirements applied). */
 /* v168：一個勤務的資格只有一份（我們的規則 → 崗位定義，miscPresets 是照它同步的副本）。
    留守寫的「查哨 22-24」這種分時段的名稱照「查哨」那一份。 */
-function baseDutyRole(role){ const m=/^(.+?)\s+\d{1,2}-\d{1,2}$/.exec(role||''); return m? m[1] : (role||''); }
+// v170：以前的「X（假日）」項目照「X」那一份（假日不再另外設定，假日都是留守）
+function baseDutyRole(role){ const r=String(role||'').replace(/（假日）$/,''); const m=/^(.+?)\s+\d{1,2}-\d{1,2}$/.exec(r); return m? m[1] : r; }
 function presetForRole(role){
   const list=state.miscPresets||[];
   return list.find(p=>p.role===role) || (baseDutyRole(role)!==role? list.find(p=>p.role===baseDutyRole(role)) : null) || null;
@@ -1507,37 +1508,12 @@ state.dutyDefinitions.forEach(d=>{
   if(d.requiredRanks===undefined) d.requiredRanks=[];
   if(d.chiefRequiredRanks===undefined) d.chiefRequiredRanks=[];
 });
-/* 其他勤務項目(沒有連結預排類型的崗位)分成「平日」「假日」兩份完全獨立
-   的清單(dayType欄位)，各自能設定不同時段/人數/需求，匯入預設只會匯入
-   跟今天日期類型相符的那一份(見importDefaultMiscDuties)。舊資料裡的項
-   目還沒有dayType——一律先當「平日」保留原本的key/名稱，同時複製一份
-   「假日」版本(換一把新key，名稱加註「（假日）」避免撞名，其餘設定原封
-   不動)，讓升級後平日假日都能繼續匯入到，維持升級前「每天都會匯入」的
-   行為；之後使用者可以自己去調整或刪除不需要的那一份。已連結預排類型
-   的崗位不分平日/假日，不受影響。這裡直接呼叫syncDutyDefinitionToLegacy
-   (下面才定義，但function宣告會整個檔案hoist，這裡呼叫沒問題)幫新複製
-   的假日版本也建立好對應的legacy miscPresets項目。 */
+/* 其他勤務項目(沒有連結預排類型的崗位)：舊資料裡還沒有dayType的一律當「平日」。
+   v170 起假日不另外設定（假日都是留守，其他勤務照留守表排），不再複製「（假日）」版本。 */
 (function migrateDutyDefDayType(){
   const needsMigration = state.dutyDefinitions.filter(d=>!d.linkedPreplan && !d.dayType);
   if(!needsMigration.length) return;
-  needsMigration.forEach(d=>{
-    d.dayType='weekday';
-    const holidayName = d.name+'（假日）';
-    const holidayDef = {
-      key:'misc_'+uid(), name:holidayName, icon:d.icon, mode:d.mode, hint:d.hint,
-      isVehicle:d.isVehicle, customRoles: d.customRoles? [...d.customRoles] : d.customRoles,
-      requiredLicenses:[...d.requiredLicenses], requiredMedCert:d.requiredMedCert, requiredSkills:[...d.requiredSkills],
-      requiredRanks:[...(d.requiredRanks||[])],
-      chiefRequiredLicenses:[...d.chiefRequiredLicenses], chiefRequiredMedCert:d.chiefRequiredMedCert, chiefRequiredSkills:[...d.chiefRequiredSkills],
-      chiefRequiredRanks:[...(d.chiefRequiredRanks||[])],
-      requiredCount:d.requiredCount, restUntil:d.restUntil, times: d.times.map(t=>({...t})),
-      sortOrder:d.sortOrder, excludeFromExport:d.excludeFromExport, isSentry:d.isSentry, isAllDayAway:d.isAllDayAway,
-      standbyMode:d.standbyMode, presetRole:holidayName, builtin:d.builtin, deletable:d.deletable, linkedPreplan:false,
-      dayType:'holiday',
-    };
-    state.dutyDefinitions.push(holidayDef);
-    syncDutyDefinitionToLegacy(holidayDef);
-  });
+  needsMigration.forEach(d=>{ d.dayType='weekday'; });
   saveState();
 })();
 /* 存一筆崗位定義的變更後呼叫——寫回 miscPresets（讀取端唯一在乎的地
@@ -1737,8 +1713,26 @@ function migrateDutySpecsV169(){
   state.dutySpecV=2;
   return true;
 }
+/* v170 開 App 時一次：其他勤務不再分「假日」清單（假日都是留守，照留守表排）。
+   「X（假日）」項目拿掉；留守表有用到的改成「只在留守用」保留。以前班表上「X（假日）」
+   的項目，資格照「X」那一份（baseDutyRole）。 */
+function migrateDutySpecsV170(){
+  if(!Array.isArray(state.dutyDefinitions) || !state.dutyDefinitions.length) return false;
+  if(!(state.dutySpecV>=2) || state.dutySpecV>=3) return false;
+  const usedInStandby=new Set(state.standbySubRoles||[]);
+  Object.values((state.preplan||{}).standby||{}).forEach(p=>Object.keys((p && p.subDuties)||{}).forEach(r=>usedInStandby.add(r)));
+  state.dutyDefinitions.filter(d=>!d.linkedPreplan && d.dayType==='holiday').forEach(h=>{
+    if(usedInStandby.has(h.presetRole)){
+      h.dayType='standby';
+      state.dutyDefinitions.forEach(d=>{ if(d.twinKey===h.key) delete d.twinKey; });
+      delete h.twinKey;
+    } else removeDutyDefinition(h);
+  });
+  state.dutySpecV=3;
+  return true;
+}
 // v168：資格收進崗位定義，每次開 App 把副本（miscPresets）照崗位定義重寫一次，兩邊永遠一樣
-const __dutySpecMigrated = migrateDutySpecsV168() | migrateDutySpecsV169();
+const __dutySpecMigrated = migrateDutySpecsV168() | migrateDutySpecsV169() | migrateDutySpecsV170();
 (state.dutyDefinitions||[]).forEach(d=>syncDutyDefinitionToLegacy(d));
 
 if(!state.preplanOrder) state.preplanOrder = PREPLAN_TYPES.map(t=>t.key);
@@ -6014,12 +6008,13 @@ function openUnitRulesModal(opts){
         <div class="grow"><label>說明</label><input type="text" id="ddeHint" value="${esc(def.hint)}"></div>
       </div>
       ${!def.linkedPreplan? `<div class="row wrap" style="margin-bottom:8px">
-        <div class="grow"><label>屬於哪一份清單（在「勤務類別」畫面分開顯示，決定哪天會被「匯入預設」帶進去）</label>
+        <div class="grow"><label>屬於哪一份清單</label>
           <select id="ddeDayType">
             <option value="weekday" ${def.dayType==='weekday'?'selected':''}>🌤️ 平日</option>
-            <option value="holiday" ${def.dayType==='holiday'?'selected':''}>🌙 假日</option>
-            <option value="standby" ${def.dayType==='standby'?'selected':''}>🏠 只在留守用（不會被匯入預設）</option>
+            ${def.dayType==='holiday'? `<option value="holiday" selected>🌙 假日（舊的）</option>` : ''}
+            <option value="standby" ${def.dayType==='standby'?'selected':''}>🏠 只在留守用</option>
           </select>
+          <div class="hint" style="margin-top:4px">平日：平日按「匯入預設」帶進去，留守表也可以用。只在留守用：不會被匯入預設。假日都是留守，照留守表排。</div>
         </div>
       </div>` : ''}
       ${dutyTwinOf(def)? `<div class="hint" style="margin-bottom:8px">🔗 資格（駕照、救護證照、專長、階級）跟「${esc(dutyTwinOf(def).name)}」是同一個勤務、同一份：改這裡，那一份一起改。時段、人數、補休各自設定。</div>` : ''}
@@ -6267,22 +6262,18 @@ function openUnitRulesModal(opts){
     };
   };
   const drawScheduleCategories=()=>{
-    // 這三個區塊預設是展開的(跟collapsibleCardHTML其他地方預設收合不同)
+    // 這幾個區塊預設是展開的(跟collapsibleCardHTML其他地方預設收合不同)
     // ——這裡本來就是一進來就要看到內容、點進去編輯的設定畫面，不是「偶
     // 爾才需要看」的輔助資訊，只有使用者自己手動收合過一次之後(collapse
     // State裡已經有明確true/false)，才會照使用者上次的選擇來。
-    ['catSettingsGuard','dutyDefsWeekdayBlock','dutyDefsHolidayBlock','dutyDefsStandbyBlock'].forEach(k=>{
+    ['catSettingsGuard','dutyDefsWeekdayBlock','dutyDefsStandbyBlock'].forEach(k=>{
       if(collapseState[k]===undefined) collapseState[k]=true;
     });
-    // 「其他勤務項目」分成「平日」「假日」兩份完全獨立的清單(dayType)，各
-    // 自照sortOrder排序——這就是排班頁按「匯入預設」時實際會用的順序
-    // (syncDutyDefinitionToLegacy會把sortOrder寫進legacy的
-    // miscPresets.sortOrder，buildScheduleCardItems排序時讀的正是這個欄
-    // 位)，讓使用者在這裡看到的順序，就是匯入後排班頁會出現的順序。兩份
-    // 清單各自獨立拖曳/新增，互不影響對方的排序。
+    // 「其他勤務項目」只有兩份：平日（匯入預設用，照sortOrder排＝匯入後排班頁的順序）、
+    // 留守（v170：假日都是留守，照留守表排，不另外設定假日清單）
     const plainFor = dayType => state.dutyDefinitions.filter(d=>!d.linkedPreplan && d.dayType===dayType).sort((a,b)=>(a.sortOrder??999)-(b.sortOrder??999));
     const weekdayItems = plainFor('weekday');
-    const holidayItems = plainFor('holiday');
+    const legacyHolidayItems = plainFor('holiday'); // 照理遷移後沒有；有的話列在留守區塊讓人處理
     const standbyItems = plainFor('standby');
     // 這裡點進去一律預設「套用到所有日期（預設）」——跟排班頁那個「編輯」
     // 入口不同(那邊改成預設只套用今天)，讓「設定」名符其實地成為改預設值
@@ -6333,22 +6324,31 @@ function openUnitRulesModal(opts){
       <div class="hint" style="margin-top:8px">點下面任一個類別可以進去改名稱/班次時段/補休等設定——這裡點進去預設是「套用到所有日期（預設）」，改了就是改這個類別長期的預設值；刪除類別也在同一個編輯畫面裡。如果只是想調整「今天」某一天的班次，改到排班分頁該類別卡片上的「編輯」進去，那邊預設只套用到當天，不會動到這裡的預設。</div>
       <div id="scheduleCategoriesContainer">${orderedCategories().map(catRow).join('')}</div>`;
     const weekdaySectionInner = `
-      <div class="hint" style="margin-bottom:8px">平日（星期一到五，不含下面「假日設定」裡的例假日/國定假日）按「匯入預設」會用到的清單，跟「假日」是完全獨立的兩份，同一個項目如果平日假日都要有，要分別新增、各自維護。時段/人數/補休可以先在這裡看到，排列順序就是匯入後排班頁會出現的順序——長按左邊 ⠿ 可拖曳調整，點項目本身可以進去編輯細節，或直接點🗑️刪除。</div>
+      <div class="hint" style="margin-bottom:8px">平日（不含「假日設定」裡的例假日／國定假日）按「匯入預設」會用到的清單。時段／人數／補休可以先在這裡看到，排列順序就是匯入後排班頁會出現的順序——長按左邊 ⠿ 可拖曳調整，點項目本身可以進去編輯細節，或直接點🗑️刪除。</div>
       <div id="dutyDefsWeekdayContainer">${weekdayItems.length? weekdayItems.map(plainRow).join('') : '<div class="empty">目前沒有</div>'}</div>
       ${addFormHTML('平日','Wd')}`;
-    const holidaySectionInner = `
-      <div class="hint" style="margin-bottom:8px">例假日（含國定假日，在「假日設定」調整）按「匯入預設」會用到的清單，跟上面「平日」完全獨立，互不影響。</div>
-      <div id="dutyDefsHolidayContainer">${holidayItems.length? holidayItems.map(plainRow).join('') : '<div class="empty">目前沒有</div>'}</div>
-      ${addFormHTML('假日','Hol')}`;
+    // 留守：假日都是留守，其他勤務照留守表排。列出留守表用到的項目（跟平日同名的就是同一份）
+    const sbRoles=state.standbySubRoles||[];
+    const sbRow=(role)=>{
+      const d=dutyDefForRole(role);
+      const note=!d? '沒有對應的崗位定義' : d.linkedPreplan? (d.presetRole===role? '預排崗位' : `預排崗位「${d.name}」`) : d.dayType==='standby'? '只在留守用' : d.presetRole===role? '跟平日同一份' : `照「${d.name}」那一份`;
+      const summary=d? dutyDefPreviewLabel(d) : '';
+      return `<div class="list-item" ${d? `data-edit-duty="${esc(d.key)}" style="cursor:pointer"` : ''}>
+        <div class="grow"><div>${esc(d? d.icon : '📋')} ${esc(role)} <span class="hint">（${esc(note)}）</span></div>${summary? `<div class="hint">${esc(summary)}</div>`:''}</div>
+        ${d? '<span style="color:var(--dim)">›</span>' : ''}
+      </div>`;
+    };
+    const sbOnlyUnused=[...standbyItems, ...legacyHolidayItems].filter(d=>!sbRoles.includes(d.presetRole));
     const standbySectionInner = `
-      <div class="hint" style="margin-bottom:8px">只在留守表用的項目（例如值班），不會被「匯入預設」帶進平日或假日。在留守表的「設定項目」新增；資格在這裡設定，跟其他項目一樣是全系統唯一的一份。</div>
-      <div id="dutyDefsStandbyContainer">${standbyItems.length? standbyItems.map(plainRow).join('') : '<div class="empty">目前沒有</div>'}</div>`;
+      <div class="hint" style="margin-bottom:8px">假日（例假日、國定假日，在「假日設定」調整）都是留守，其他勤務照留守表排，不用另外設定假日的清單。下面是留守表會用到的項目：跟平日同名的項目，資格、時段、人數、補休都是同一份（留守表上每一天還可以再調時段）；只在留守用的項目（例如值班）也在這裡設定。</div>
+      <div id="dutyDefsStandbyContainer">${sbRoles.length? sbRoles.map(sbRow).join('') : '<div class="empty">目前沒有</div>'}</div>
+      ${sbOnlyUnused.length? `<div class="hint" style="margin:8px 0 4px">只在留守用、但留守表目前沒有勾的項目：</div>`+sbOnlyUnused.map(plainRow).join('') : ''}
+      <button class="ghost" id="srPickBtn" style="width:100%;margin-top:8px">勾選留守表用的項目／＋新增只在留守用的項目</button>`;
     modal.innerHTML=`
       <div class="section-title"><button class="ghost small" id="urBack">← 返回</button><h2 style="margin:0">勤務類別</h2></div>
       ${collapsibleCardHTML('catSettingsGuard', '衛哨／打飯班類別', guardSectionInner, `<button class="ghost small" id="addCat">＋新增類別</button>`)}
       ${collapsibleCardHTML('dutyDefsWeekdayBlock', '🌤️ 其他勤務項目・平日', weekdaySectionInner)}
-      ${collapsibleCardHTML('dutyDefsHolidayBlock', '🌙 其他勤務項目・假日', holidaySectionInner)}
-      ${collapsibleCardHTML('dutyDefsStandbyBlock', '🏠 只在留守用的項目', standbySectionInner)}`;
+      ${collapsibleCardHTML('dutyDefsStandbyBlock', '🏠 其他勤務項目・留守（假日）', standbySectionInner)}`;
     document.getElementById('urBack').onclick=()=>{ section=null; draw(); };
     modal.querySelectorAll('[data-collapse-toggle]').forEach(btn=>{
       btn.onclick=(e)=>{
@@ -6384,11 +6384,6 @@ function openUnitRulesModal(opts){
       saveState();
       drawScheduleCategories();
     });
-    wireDragReorder('dutyDefsHolidayContainer', holidayItems, ()=>{
-      holidayItems.forEach((d,i)=>{ d.sortOrder = i*10; syncDutyDefinitionToLegacy(d); });
-      saveState();
-      drawScheduleCategories();
-    });
     const wireAdd=(dayType, idSuf)=>{
       document.getElementById('ddAdd'+idSuf).onclick=()=>{
         const name=document.getElementById('ddName'+idSuf).value.trim();
@@ -6396,7 +6391,7 @@ function openUnitRulesModal(opts){
         const hint=document.getElementById('ddHint'+idSuf).value.trim();
         const isVehicle=document.getElementById('ddVehicle'+idSuf).checked;
         if(!name){ showAlert('請輸入名稱'); return; }
-        if(state.dutyDefinitions.some(d=>d.name===name)){ showAlert('已經有這個名稱的項目了（平日／假日共用同一個名稱空間，重複要換個名字，例如加註「（假日）」）'); return; }
+        if(state.dutyDefinitions.some(d=>d.name===name)){ showAlert('已經有這個名稱的項目了'); return; }
         const key = 'misc_'+uid();
         const def = {
           key, name, icon, mode: isVehicle?'roles':'people', hint,
@@ -6406,11 +6401,6 @@ function openUnitRulesModal(opts){
           excludeFromExport:false, isSentry:false, isAllDayAway:false, standbyMode:'off',
           presetRole:name, builtin:false, deletable:true, linkedPreplan:false, dayType,
         };
-        // 「X」跟「X（假日）」是同一個勤務：連起來，資格共用（照已經有的那一份）
-        const base=name.replace(/（假日）$/,'');
-        const twin = dayType==='holiday' && base!==name? state.dutyDefinitions.find(d=>!d.linkedPreplan && d.dayType==='weekday' && d.name===base && !d.twinKey)
-          : dayType==='weekday'? state.dutyDefinitions.find(d=>!d.linkedPreplan && d.dayType==='holiday' && d.name===name+'（假日）' && !d.twinKey) : null;
-        if(twin){ def.twinKey=twin.key; twin.twinKey=key; copyDutyRequirements(twin, def); def.isVehicle=twin.isVehicle; def.mode=twin.mode; }
         state.dutyDefinitions.push(def);
         syncDutyDefinitionToLegacy(def);
         saveState();
@@ -6418,7 +6408,7 @@ function openUnitRulesModal(opts){
       };
     };
     wireAdd('weekday','Wd');
-    wireAdd('holiday','Hol');
+    { const b=document.getElementById('srPickBtn'); if(b) b.onclick=()=>openStandbySubRolePicker(()=>drawScheduleCategories(), {zIndex:170}); }
   };
   const draw=()=>{
     if(editingDutyKey){ drawDutyDefEditor(editingDutyKey); return; }
@@ -8061,13 +8051,13 @@ function standbySubDraftIssues(anchor, plan, role, d, idx, cfgDraft, people, opt
   }
   return res;
 }
-function openStandbySubRolePicker(onDone){
+function openStandbySubRolePicker(onDone, opts){
   const modal=document.createElement('div');
-  modal.className='sheet-modal'; modal.style.zIndex='94';
+  modal.className='sheet-modal'; modal.style.zIndex=String((opts&&opts.zIndex)||94);
   const draw=()=>{
     const cur=state.standbySubRoles||[];
     const skip=standbySkipRoles();
-    // 可以放進留守的：平常的其他勤務（平日那一份，假日版資格共用）、只在留守用的、值星這種預排崗位
+    // 可以放進留守的：平常的其他勤務（平日那一份）、只在留守用的、值星這種預排崗位
     const defs=(state.dutyDefinitions||[]).filter(d=>!skip.has(d.presetRole) && (d.linkedPreplan? d.key==='duty' : d.dayType!=='holiday' || cur.includes(d.presetRole)))
       .sort((a,b)=>(a.dayType==='standby')-(b.dayType==='standby') || (a.sortOrder??999)-(b.sortOrder??999));
     const defRoles=new Set(defs.map(d=>d.presetRole));
@@ -11581,6 +11571,7 @@ document.getElementById('importFile').addEventListener('change', (e)=>{
         migrateStandbyTimesV168();
         migrateDutySpecsV168();
         migrateDutySpecsV169();
+        migrateDutySpecsV170();
         (state.dutyDefinitions||[]).forEach(d=>syncDutyDefinitionToLegacy(d));
         // 匯入的備份就是它本來的樣子，先原封不動存進來（不當成手改、也不在
         // 存檔時就依預排改動它），再檢查它的班表跟預排有沒有不一致
@@ -14317,6 +14308,10 @@ function wireScheduleCardsDrag(){
   });
   const importBtn = document.getElementById('importDefaultMiscBtn');
   if(importBtn) importBtn.onclick=()=>{
+    if(isHolidayDate(currentDate)){
+      showAlert(`假日都是留守：其他勤務照留守表排，不用匯入預設。${preplanOwnerFor('standby', currentDate)? '要改項目或人，到預排的「留守」那一段。' : '這天還沒有留守表，到預排的「留守」建立。'}`);
+      return;
+    }
     const n = importDefaultMiscDuties();
     saveState();
     if(n) showAlert(`已匯入 ${n} 項預設勤務，人選還是空的，自己排或按自動排班。今天不需要的項目可以直接刪除，不會再自己跑回來。`);
@@ -14327,14 +14322,13 @@ function wireScheduleCardsDrag(){
 /* 減法思維：把「勤務設定」（state.dutyDefinitions 裡沒有連結到預排類型的
    那些——話務/消防車/技工/夜督/日督/軍餐班等）材料化成今天的其他勤務記
    錄，人選留空。已經有同名角色記錄的當天就跳過，不會重複匯入；當天刪掉
-   的項目，除非再按一次「匯入預設」，也不會自己補回來。平日/假日是完全
-   獨立的兩份清單(dayType)，只匯入跟今天日期類型相符的那一份，不會混在
-   一起——假日用的是isHolidayDate()同一套判斷(例假日星期＋國定假日)，跟
-   查哨序列、外散宿資格判斷共用同一份定義。 */
+   的項目，除非再按一次「匯入預設」，也不會自己補回來。v170：只匯入平日
+   那一份；假日（isHolidayDate）都是留守，其他勤務照留守表排，不匯入。 */
 function importDefaultMiscDuties(){
   if(!state.misc[currentDate]) state.misc[currentDate]=[];
-  const todayType = isHolidayDate(currentDate)? 'holiday' : 'weekday';
-  const defs = state.dutyDefinitions.filter(d=>!d.linkedPreplan && d.dayType===todayType);
+  // v170：假日都是留守，其他勤務照留守表排，不匯入預設
+  if(isHolidayDate(currentDate)) return 0;
+  const defs = state.dutyDefinitions.filter(d=>!d.linkedPreplan && d.dayType==='weekday');
   let count=0;
   defs.forEach(def=>{
     const already = state.misc[currentDate].some(m=>m.role===def.name);
@@ -14462,7 +14456,7 @@ function renderPreplanBundleCard(entries){
 function renderMiscBundleCard(roleGroups){
   const entryCount = roleGroups.reduce((n,g)=>n+g.entries.length, 0);
   const inner = roleGroups.map((g,i)=>`<div data-drag-idx="${i}">${renderMiscDutyCardInner(g.role, g.entries, g.preset, true)}</div>`).join('<div class="divider"></div>');
-  const innerWithHint = `<div class="hint" style="margin-bottom:8px">按「匯入預設」把「勤務設定」裡定義好的項目一次帶進今天（人選留空，自己排或按自動排班），今天不需要的項目直接刪除就好，不會自己跑回來。長按項目左邊的 ⠿ 可拖曳調整順序。</div><div id="miscBundleContainer">${roleGroups.length? inner : '<div class="empty">今天還沒有其他勤務項目。</div>'}</div>`;
+  const innerWithHint = `<div class="hint" style="margin-bottom:8px">${isHolidayDate(currentDate)? '假日都是留守：其他勤務照留守表排（預排的「留守」），不用匯入預設。' : '按「匯入預設」把「勤務類別」裡平日的項目一次帶進今天（人選留空，自己排或按自動排班），今天不需要的項目直接刪除就好，不會自己跑回來。'}長按項目左邊的 ⠿ 可拖曳調整順序。</div><div id="miscBundleContainer">${roleGroups.length? inner : '<div class="empty">今天還沒有其他勤務項目。</div>'}</div>`;
   const extraButtons = `<button class="ghost small" id="importDefaultMiscBtn">${ico('inbox')}匯入預設</button>`;
   return collapsibleCardHTML('schedblock-misc', `${ico('layers')}其他勤務${entryCount? `（${entryCount}筆）`:''}`, innerWithHint, extraButtons);
 }
