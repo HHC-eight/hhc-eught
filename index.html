@@ -371,7 +371,7 @@ select[data-assign-cat]:has(option[value=""]:checked){background-color:var(--war
       <span class="unit-banner-badge"><i data-ico="star"></i></span>
       <span class="unit-banner-titles">
         <span class="unit-banner-text">陸軍第八軍團 本部連</span>
-        <h1 id="pageTitle">衛哨排班系統 <span class="muted">v171</span></h1>
+        <h1 id="pageTitle">衛哨排班系統 <span class="muted">v172</span></h1>
       </span>
     </span>
     <span class="banner-side right">
@@ -578,9 +578,16 @@ function saveState(){
 /* v171 自動儲存用：資料跟上次存的一模一樣就不存（不然關閉／返回時會多出一步
    沒有意義的「復原」）。回傳有沒有真的存。 */
 function saveStateIfChanged(){
-  if(typeof lastSavedSnapshot==='string' && !planWriteBackPending && JSON.stringify(state)===lastSavedSnapshot) return false;
+  if(typeof lastSavedSnapshot==='string' && !planWriteBackPending && JSON.stringify(state)===lastSavedSnapshot){
+    // 沒改；但手機空間滿了、上次沒存進去：再試一次（不多一步復原）
+    if(storageSaveFailed) writeStateToStorage(lastSavedSnapshot);
+    return false;
+  }
   saveState(); return true;
 }
+/* 自動儲存的狀態列：手機空間滿了（存不進去）就不要說「已自動儲存」 */
+const STORAGE_FULL_STATUS='⚠️ 手機的儲存空間滿了：剛剛改的只在畫面上，還沒存進手機（先按📤匯出備份，再用🧹清掉舊資料）';
+function autoSavedText(detail){ return storageSaveFailed? STORAGE_FULL_STATUS : `✓ 已自動儲存（${detail? detail+'，' : ''}${new Date().toTimeString().slice(0,8)}）`; }
 /* v171 開著的自動儲存編輯畫面：
    - 復原／重做把整份資料換掉後，畫面上拿著的是舊的那份，再改就會改到已經不用的
      資料（看起來存了其實沒存）→ 通知它們照新的資料重畫或重開
@@ -636,7 +643,7 @@ function notifyStateReplaced(){
   let any=false;
   // 收起來的畫面放回去時再照新的資料重畫
   LIVE_EDITORS.forEach(r=>{ if(r.el.__parked) r.el.__staleWhileParked=true; });
-  liveEditorsEach(r=>{ any=true; if(r.onReplaced) r.onReplaced(); });
+  liveEditorsEach(r=>{ if(r.onReplaced){ any=true; r.onReplaced(); } });
   // 編輯畫面開著時跳出來的確認／輸入框：問的是換掉之前的資料，一起收掉
   if(any) document.querySelectorAll('.dialog-box').forEach(b=>{ const o=b.parentElement; if(o && o.parentElement===document.body && (parseInt(o.style.zIndex,10)||0)<1000 && b.querySelector('#confirmOk,#promptOk,[data-choice]')) o.remove(); });
 }
@@ -751,6 +758,7 @@ function undoLastAction(){
   writeStateToStorage(prevSnapshot);
   // 每一步都是完整的快照（預排跟班表一起），復原後兩邊還是一致的，只要重新
   // 記下現況當作比對基準
+  refreshPreplanTypesFromDefs();
   if(PLAN_SYNC) initPlanSync();
   if(typeof refreshUndoButton==='function') refreshUndoButton();
   render();
@@ -765,6 +773,7 @@ function redoLastAction(){
   state = JSON.parse(nextSnapshot);
   lastSavedSnapshot = nextSnapshot;
   writeStateToStorage(nextSnapshot);
+  refreshPreplanTypesFromDefs();
   if(PLAN_SYNC) initPlanSync();
   if(typeof refreshUndoButton==='function') refreshUndoButton();
   render();
@@ -971,6 +980,14 @@ function baseDutyRole(role){ const r=String(role||'').replace(/（假日）$/,''
 function presetForRole(role){
   const list=state.miscPresets||[];
   return list.find(p=>p.role===role) || (baseDutyRole(role)!==role? list.find(p=>p.role===baseDutyRole(role)) : null) || null;
+}
+/* 名稱能不能用：不能跟別的崗位的名稱、班表上用的名稱（例如值星改名成值星幹部，班表上還是叫值星）、
+   預排項目的名稱撞到——撞到的話兩個會被當成同一個（資格互相蓋掉、班表上的項目被預排清掉） */
+function dutyNameTaken(name, exceptKey){
+  const defs=state.dutyDefinitions||[];
+  if(defs.some(d=>d.key!==exceptKey && (d.name===name || d.presetRole===name))) return true;
+  if((typeof PREPLAN_TYPES!=='undefined'? PREPLAN_TYPES : []).some(t=>t.key!==exceptKey && planRoleName(t)===name)) return true;
+  const other=dutyDefForRole(name); return !!(other && other.key!==exceptKey);
 }
 function dutyDefForRole(role){
   const defs=state.dutyDefinitions||[];
@@ -1381,6 +1398,15 @@ const BUILTIN_PREPLAN_TYPES = [
    泛用的這一種。用 key 前綴 `custom:` 區分，避免跟內建的 9 種 key 撞名。 */
 if(!state.customPreplanTypes) state.customPreplanTypes = [];
 let PREPLAN_TYPES = BUILTIN_PREPLAN_TYPES;
+// 整份資料換掉之後（復原／重做／匯入）：預排項目的名稱、自己新增的預排項目照新的資料
+function refreshPreplanTypesFromDefs(){
+  (state.dutyDefinitions||[]).filter(d=>d.linkedPreplan).forEach(def=>{
+    const bt=BUILTIN_PREPLAN_TYPES.find(t=>t.key===def.key);
+    if(bt){ bt.name=def.name; bt.icon=def.icon; bt.hint=def.hint; }
+  });
+  if(!state.customPreplanTypes) state.customPreplanTypes=[];
+  rebuildPreplanTypes();
+}
 function rebuildPreplanTypes(){
   PREPLAN_TYPES = [...BUILTIN_PREPLAN_TYPES, ...state.customPreplanTypes.map(c=>({
     key:c.key, name:c.name, icon:c.icon||'📋', mode:'people', editableTime:true, hint:c.hint||'（自訂項目）', custom:true,
@@ -1681,6 +1707,8 @@ function renameDutyRole(oldRole, newRole){
     ['m|','mg|'].forEach(pre=>{ if(subj.startsWith(pre+oldRole+'|')) r.subject=pre+newRole+subj.slice((pre+oldRole).length); });
   }));
   markPlanSystemChange();
+  // 開著、還沒存的畫面（留守表、留守項目）也跟著改名（收起來的也算）
+  if(typeof LIVE_EDITORS!=='undefined') [...LIVE_EDITORS].forEach(r=>{ if(r.onRoleRenamed && (r.el.isConnected || r.el.__parked)){ try{ r.onRoleRenamed(oldRole, newRole); }catch(e){ console.error(e); } } });
 }
 /* 崗位定義畫面：這一份在留守用在哪裡 */
 function dutyStandbyUseNote(def){
@@ -5908,9 +5936,11 @@ function saveDutySettingsBlock(root, def){
   const curPos=base.map(pd=>({name:pd.name, ranks:[...(pd.ranks||[])]}));
   const newSplit=!!(sp && sp.checked);
   const newPos=base.map((pd,pi)=>({name:pd.name, ranks:[...root.querySelectorAll(`.dde-pos${pi}-rank:checked`)].map(c=>c.value)}));
+  const hasPos=Array.isArray(def.positions) && def.positions.length>0;
   const changed = newSplit!==!!def.splitPositions || JSON.stringify(newPos)!==JSON.stringify(curPos);
   if(newSplit!==!!def.splitPositions) def.splitPositions=newSplit;
-  if(JSON.stringify(newPos)!==JSON.stringify(curPos)) def.positions=newPos;
+  // 分開了就一定要有位置（還沒存過位置的舊資料：照預設的值星官／值星士官寫進去，不然分不開）
+  if(JSON.stringify(newPos)!==JSON.stringify(curPos) || (newSplit && !hasPos)) def.positions=newPos;
   const days=parseInt((root.querySelector('#ddeDutyDays')||{}).value,10);
   const newDays=days>0? days : 7;
   if(newDays!==(def.termDays||7)) def.termDays=newDays;
@@ -5994,8 +6024,8 @@ function openUnitRulesModal(opts){
   };
   const setAutoStatus=(probs)=>{
     const el=modal.querySelector('#urAutoStatus'); if(!el) return;
-    el.textContent = probs.length? `⚠️ 沒有存：${probs.join('；')}` : `✓ 已自動儲存（${new Date().toTimeString().slice(0,8)}）`;
-    el.classList.toggle('warn', !!probs.length);
+    el.textContent = probs.length? `⚠️ 沒有存：${probs.join('；')}` : autoSavedText();
+    el.classList.toggle('warn', !!probs.length || storageSaveFailed);
   };
   const AUTO_STATUS_HTML='<div class="hint autosave-status" id="urAutoStatus" style="margin:-2px 0 8px">改了就會自動儲存，不用按儲存。</div>';
   const drawMain=()=>{
@@ -6123,7 +6153,7 @@ function openUnitRulesModal(opts){
       const hint=document.getElementById('ddHint').value.trim();
       const isVehicle=document.getElementById('ddVehicle').checked;
       if(!name){ showAlert('請輸入名稱'); return; }
-      if(state.dutyDefinitions.some(d=>d.name===name)){ showAlert('已經有這個名稱的崗位了'); return; }
+      if(dutyNameTaken(name)){ showAlert('已經有這個名稱的崗位了'); return; }
       const key = 'custom_'+uid();
       const def = {
         key, name, icon, mode: isVehicle?'roles':'people', hint,
@@ -6331,12 +6361,14 @@ function openUnitRulesModal(opts){
       // 名稱改了會連帶改班表上同名的項目：打字中途（例如「搬運工」打到「搬運」）不要改，打完才改
       if(typing && name!==def.name) {}
       else if(!name) probs.push('名稱不能空白（名稱沒改）');
-      else if(state.dutyDefinitions.some(d=>d.key!==key && d.name===name)) probs.push(`已經有「${name}」這個名稱了（名稱沒改）`);
+      else if(dutyNameTaken(name, key)) probs.push(`已經有「${name}」這個名稱了（名稱沒改）`);
       else {
         const oldRole = def.presetRole;
         def.name = name;
         // 其他勤務項目改名：班表上的項目、留守項目用的名稱一起改（不然資格對不上）
-        if(!def.linkedPreplan && name!==oldRole){ def.__prevRole=oldRole; def.presetRole=name; renameDutyRole(oldRole, name); }
+        // 自己新增的預排崗位也一樣（班表上用的名稱就是它的名稱；內建的值星／查哨…班表上的名稱固定不變）
+        const customLinked = def.linkedPreplan && !BUILTIN_PREPLAN_TYPES.some(t=>t.key===def.key);
+        if((!def.linkedPreplan || customLinked) && name!==oldRole){ def.__prevRole=oldRole; def.presetRole=name; renameDutyRole(oldRole, name); }
       }
       { const ic=document.getElementById('ddeIcon').value.trim()||'📋'; if(ic!==(def.icon||'📋')) def.icon=ic; }
       def.hint = document.getElementById('ddeHint').value.trim();
@@ -6602,7 +6634,7 @@ function openUnitRulesModal(opts){
         const hint=document.getElementById('ddHint'+idSuf).value.trim();
         const isVehicle=document.getElementById('ddVehicle'+idSuf).checked;
         if(!name){ showAlert('請輸入名稱'); return; }
-        if(state.dutyDefinitions.some(d=>d.name===name)){ showAlert('已經有這個名稱的項目了'); return; }
+        if(dutyNameTaken(name)){ showAlert('已經有這個名稱的項目了'); return; }
         const key = 'misc_'+uid();
         const def = {
           key, name, icon, mode: isVehicle?'roles':'people', hint,
@@ -7543,7 +7575,7 @@ function openPatrolRangeModal(onDone){
     // 全選就存null(代表沒有限制),避免名單增減後這份舊快照卡住新進的人
     state.patrolCandidateIds = checkedIds.length===state.personnel.length? null : checkedIds;
     saveStateIfChanged();
-    if(st){ st.textContent=`✓ 已自動儲存（${checkedIds.length===state.personnel.length? '全部人員' : checkedIds.length+' 人'}）`; st.classList.remove('warn'); }
+    if(st){ st.textContent=autoSavedText(checkedIds.length===state.personnel.length? '全部人員' : checkedIds.length+' 人'); st.classList.toggle('warn', storageSaveFailed); }
   });
   return modal;
 }
@@ -7933,6 +7965,13 @@ function openStandbyEditor(date, onSaved){
   };
   const modal=document.createElement('div');
   modal.className='fullscreen-modal'; modal.style.zIndex='93';
+  // 開著的時候在 ⚙️ 把留守用的項目改名：這裡還沒存的那一份也跟著改（不然按儲存會把名稱改回去）
+  registerLiveEditor(modal, { onRoleRenamed:(from, to)=>{
+    if(modal.__sync){ try{ modal.__sync(); }catch(e){} }
+    const sd=plan.subDuties||{};
+    if(sd[from] && plan.endDate>=todayStr()){ sd[to]=sd[from]; delete sd[from]; }
+    if(modal.isConnected) draw();
+  } });
   const draw=()=>{
     const blockDates = (plan.startDate<=plan.endDate)? dateRangeList(plan.startDate, plan.endDate) : [plan.startDate];
     const staying = plan.personIds;
@@ -8026,6 +8065,7 @@ function openStandbyEditor(date, onSaved){
       plan.leaveStartTime=getTimeSelectValue('sbLeave')||plan.leaveStartTime;
       plan.endTime=getTimeSelectValue('sbEnd')||plan.endTime;
     };
+    modal.__sync=sync;
     ['sbStartDate','sbEndDate'].forEach(id=>{ document.getElementById(id).onchange=()=>{
       const before=plan.startDate+'~'+plan.endDate;
       sync();
@@ -8273,7 +8313,8 @@ function standbySubDraftIssues(anchor, plan, role, d, idx, cfgDraft, people, opt
 function openStandbySubRolePicker(onDone, opts){
   const modal=document.createElement('div');
   modal.className='sheet-modal'; modal.style.zIndex=String((opts&&opts.zIndex)||94);
-  registerLiveEditor(modal, { onReplaced:()=>draw() }); // 復原／重做：照新的資料重畫
+  // 復原／重做：照新的資料重畫；別的地方開的另一個留守項目畫面改了：也重畫
+  registerLiveEditor(modal, { kind:'srPicker', onReplaced:()=>draw(), refresh:()=>draw(), onRoleRenamed:()=>{ if(modal.isConnected) draw(); else modal.__staleWhileParked=true; } });
   const draw=()=>{
     const cur=state.standbySubRoles||[];
     const skip=standbySkipRoles();
@@ -8313,16 +8354,22 @@ function openStandbySubRolePicker(onDone, opts){
     modal.querySelector('#srClose').onclick=()=>{ modal.remove(); onDone(); };
     // v171：勾了就存（不用按儲存）
     modal.querySelectorAll('.sr-role').forEach(cb=>{ cb.onchange=()=>{
-      state.standbySubRoles=[...modal.querySelectorAll('.sr-role:checked')].map(x=>x.value);
+      // 只改勾的這一項（其他項照目前的資料，不照這個畫面上可能已經過時的勾選），順序照畫面
+      const cur=state.standbySubRoles||[], want=new Set(cur);
+      if(cb.checked) want.add(cb.value); else want.delete(cb.value);
+      const order=[...modal.querySelectorAll('.sr-role')].map(x=>x.value);
+      state.standbySubRoles=[...new Set([...order.filter(v=>want.has(v)), ...cur.filter(v=>want.has(v))])];
+      modal.querySelectorAll('.sr-role').forEach(x=>{ x.checked=state.standbySubRoles.includes(x.value); });
       saveStateIfChanged();
-      const st=modal.querySelector('.autosave-status'); if(st) st.textContent=`✓ 已自動儲存（${new Date().toTimeString().slice(0,8)}）`;
+      liveEditorsEach(r=>{ if(r.kind==='srPicker' && r.el!==modal && r.refresh) r.refresh(); });
+      const st=modal.querySelector('.autosave-status'); if(st){ st.textContent=autoSavedText(); st.classList.toggle('warn', storageSaveFailed); }
     }; });
     modal.querySelector('#srAddNew').onclick=()=>{
       showPrompt('新項目名稱', '', (name)=>{
         name=(name||'').trim();
         if(!name) return;
         if(!dutyDefForRole(name)){
-          if((state.dutyDefinitions||[]).some(d=>d.name===name)){ showAlert('已經有這個名稱的項目了'); return; }
+          if(dutyNameTaken(name)){ showAlert('已經有這個名稱的項目了'); return; }
           const def={key:'misc_'+uid(), name, icon:'🏠', mode:'people', hint:'只在留守用', isVehicle:false, customRoles:null,
             requiredLicenses:[], requiredMedCert:false, requiredSkills:[], requiredRanks:[],
             chiefRequiredLicenses:[], chiefRequiredMedCert:false, chiefRequiredSkills:[], chiefRequiredRanks:[],
@@ -11814,7 +11861,7 @@ function openPersonEditor(personId){
     put('note', document.getElementById('epNote').value.trim());
     if((p.outingRestriction||'normal')!==document.getElementById('epOutingRestriction').value) p.outingRestriction=document.getElementById('epOutingRestriction').value;
     if(saveStateIfChanged()) render();
-    epStatus(nm? `✓ 已自動儲存（${new Date().toTimeString().slice(0,8)}）` : '⚠️ 姓名不能空白（姓名沒改）', !nm);
+    epStatus(nm? autoSavedText() : '⚠️ 姓名不能空白（姓名沒改）', !nm || storageSaveFailed);
   };
   const depEl=document.getElementById('epDepartureDate');
   let depAsking=null, depDialog=null; // 正在問的那個日期跟對話框（同一個日期不要問兩次）
@@ -11833,7 +11880,7 @@ function openPersonEditor(personId){
       if(!state.personnel.includes(p)) return;
       p.departureDate=newDeparture; if(!newDeparture) delete p.departureDate;
       if(saveStateIfChanged()) render();
-      epStatus(`✓ 已自動儲存（${new Date().toTimeString().slice(0,8)}）`);
+      epStatus(autoSavedText(), storageSaveFailed);
     };
     if(newDeparture){
       const after = personFutureCommitments(p.id).filter(c=>c.date>=newDeparture);
@@ -11902,6 +11949,13 @@ document.getElementById('importFile').addEventListener('change', (e)=>{
   reader.onload=()=>{
     try{
       const data=JSON.parse(reader.result);
+      if(data.personnel && data.categories && !Array.isArray(data.dutyDefinitions)){
+        // 很舊的備份（還沒有崗位定義）：存進手機後重新開一次，讓開 App 時的整套升級從頭跑過
+        if(!writeStateToStorage(JSON.stringify(data))) return;
+        try{ sessionStorage.setItem('drs_import_reload','1'); }catch(e2){}
+        location.reload();
+        return;
+      }
       if(data.personnel && data.categories){
         state=data;
         if(!state.preplan) state.preplan={};
@@ -11917,6 +11971,7 @@ document.getElementById('importFile').addEventListener('change', (e)=>{
         migrateDutySpecsV170();
         migrateDutySpecsV171();
         (state.dutyDefinitions||[]).forEach(d=>syncDutyDefinitionToLegacy(d));
+        refreshPreplanTypesFromDefs();
         // 匯入的備份就是它本來的樣子，先原封不動存進來（不當成手改、也不在
         // 存檔時就依預排改動它），再檢查它的班表跟預排有沒有不一致
         if(PLAN_SYNC) initPlanSync();
@@ -13347,7 +13402,8 @@ function dialogEl(modal, id){
 }
 function showToast(message){
   const el=document.createElement('div');
-  el.style.cssText='position:fixed;left:50%;bottom:calc(24px + env(safe-area-inset-bottom));transform:translateX(-50%);background:var(--ok);color:var(--bg);padding:10px 18px;border-radius:20px;font-size:13px;font-weight:600;z-index:300;box-shadow:0 4px 14px rgba(0,0,0,.35);opacity:0;transition:opacity .2s ease;max-width:80vw;text-align:center;';
+  // pointer-events:none：提示只是文字，不要擋住下面的按鈕（不然出現的那兩秒按不到）
+  el.style.cssText='position:fixed;left:50%;bottom:calc(24px + env(safe-area-inset-bottom));transform:translateX(-50%);pointer-events:none;background:var(--ok);color:var(--bg);padding:10px 18px;border-radius:20px;font-size:13px;font-weight:600;z-index:300;box-shadow:0 4px 14px rgba(0,0,0,.35);opacity:0;transition:opacity .2s ease;max-width:80vw;text-align:center;';
   el.textContent = message;
   document.body.appendChild(el);
   requestAnimationFrame(()=>{ el.style.opacity='1'; });
@@ -15497,7 +15553,7 @@ function openCategoryEditor(catId, initialScope, onDone){
     if(box && (ncoChanged || !priTouched)){ if(ncoChanged) box.innerHTML=catPriorityListsHTML(nco); rerenderPriorityLists(); }
     if(saveStateIfChanged()) render();
     const h=modal.querySelector('.section-title h2'); if(h) h.textContent=`編輯：${cat.name}`;
-    catStatus(nm? `✓ 已自動儲存（${new Date().toTimeString().slice(0,8)}）` : '⚠️ 名稱不能空白（名稱沒改）', !nm);
+    catStatus(nm? autoSavedText() : '⚠️ 名稱不能空白（名稱沒改）', !nm || storageSaveFailed);
   }
   // 畫面上的班別數值寫回目前這份草稿（刪除／新增一列之前先記住已經改的）
   function syncShiftDraftFromDom(){
@@ -15518,7 +15574,7 @@ function openCategoryEditor(catId, initialScope, onDone){
     }
     if(saveStateIfChanged()) render();
     updateScopeUI();
-    catStatus(`✓ 已自動儲存（${editScope==='today'? '只套用到今天' : '所有日期'}，${new Date().toTimeString().slice(0,8)}）`);
+    catStatus(autoSavedText(editScope==='today'? '只套用到今天' : '所有日期'), storageSaveFailed);
   }
   // 打字停一下才存；還沒存的那一筆（班別或類別本身）記著，關閉／複製／刪除前先存掉
   let catTimer=null, catPending=null;
@@ -15568,7 +15624,12 @@ function openCategoryEditor(catId, initialScope, onDone){
     if(!rs||!re||rs>re){ showAlert('請確認日期範圍正確（起始日不能晚於結束日）'); return; }
     dateRangeList(rs,re).forEach(d=>{
       if(!state.dailyShiftOverrides[d]) state.dailyShiftOverrides[d]={};
-      state.dailyShiftOverrides[d][cat.id] = draftShifts.map(s=>({...s, id:uid()}));
+      // 沿用那天原本的班別 id（已經排好的人才不會不見）：同一個班別照 id，其餘照順序對上
+      const existing=state.dailyShiftOverrides[d][cat.id] || cat.shifts;
+      const exIds=existing.map(x=>x.id), used=new Set();
+      const ids=draftShifts.map(x=>{ if(exIds.includes(x.id) && !used.has(x.id)){ used.add(x.id); return x.id; } return null; });
+      ids.forEach((id,i)=>{ if(id) return; const free=exIds.find((x,j)=>j===i && !used.has(x)) || null; if(free){ used.add(free); ids[i]=free; } else ids[i]=uid(); });
+      state.dailyShiftOverrides[d][cat.id] = draftShifts.map((x,i)=>({...x, id:ids[i]}));
     });
     rangeDirty=false;
     saveState(); render();
@@ -16377,6 +16438,8 @@ function planSyncOnOpen(){
   }catch(e){ console.error(e); }
 }
 setTimeout(planSyncOnOpen, 400);
+// 很舊的備份匯入後重新開的：說一聲
+try{ if(sessionStorage.getItem('drs_import_reload')){ sessionStorage.removeItem('drs_import_reload'); setTimeout(()=>showAlert('匯入完成'), 500); } }catch(e){}
 /* 標題區的實際高度量出來寫進 --banner-h，這樣彈窗/抽屜/內容區要讓出的空間
    永遠跟標題區真正的高度一致，不會因為估計值跟實際渲染出來的不一樣而被
    蓋到一部分。第一次量、視窗尺寸變動（例如轉橫向）時也重量一次。 */
