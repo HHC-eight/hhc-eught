@@ -507,6 +507,7 @@ input[type=text]:focus,input[type=date]:focus,input[type=number]:focus,select:fo
 .ppl-row .cell-title .tag{margin-left:4px;vertical-align:1px;}
 .search-field.row{display:block;}
 
+.dialog-box button.danger-solid{background:var(--danger);color:#fff;border-color:transparent;}
 /* 設定檢查表 */
 .check-ok{color:var(--ok);font-weight:700;}
 .check-warn{color:var(--warn);font-weight:700;}
@@ -525,7 +526,7 @@ input[type=text]:focus,input[type=date]:focus,input[type=number]:focus,select:fo
       <span class="unit-banner-badge"><i data-ico="star"></i></span>
       <span class="unit-banner-titles">
         <span class="unit-banner-text">陸軍第八軍團 本部連</span>
-        <h1 id="pageTitle">衛哨排班系統 <span class="muted">v173</span></h1>
+        <h1 id="pageTitle">衛哨排班系統 <span class="muted">v174</span></h1>
       </span>
     </span>
     <span class="banner-side right">
@@ -1506,7 +1507,7 @@ function slotQualificationIssues(person, spec, slotName, entry){
     if(spec){
       if(spec.chiefRequiredMedCert && !person.medCert) add('qualification','車長需具備EMT或醫生證書');
       if((spec.chiefRequiredLicenses||[]).length && !spec.chiefRequiredLicenses.some(l=>licenseCovers(person.license, l))) add('qualification',`車長需持有${spec.chiefRequiredLicenses.join('或')}駕照`);
-      skillShortfall(person, spec.chiefRequiredSkills, spec.skillsMatch).forEach(m=>add('qualification',`車長${m}`));
+      skillShortfall(person, spec.chiefRequiredSkills, spec.chiefSkillsMatch).forEach(m=>add('qualification',`車長${m}`)); // v174：車長自己的設定
       if((spec.chiefRequiredRanks||[]).length && !spec.chiefRequiredRanks.includes(person.rank)) add('qualification',`車長需為${spec.chiefRequiredRanks.join('或')}`);
       customReqShortfall(person, spec.customReqs).forEach(m=>add('qualification',`車長${m}`)); // 自訂欄位條件：整個勤務的人都要
     }
@@ -1514,7 +1515,7 @@ function slotQualificationIssues(person, spec, slotName, entry){
   }
   const pos=(entry && slotName)? dutyPositionFor(entry, slotName) : null;
   if(pos){
-    // 值星官／值星士官：各自的階級要求（整個值星的駕照／專長要求照舊）
+    // 值星官／值星班長：各自的階級要求（整個值星的駕照／專長要求照舊）
     if((pos.ranks||[]).length && !pos.ranks.includes(person.rank)) add('qualification', `${slotName}需為${pos.ranks.join('或')}`);
     driverQualificationIssues(person, Object.assign({}, spec||{}, {requiredRanks:[]})).forEach(m=>add('qualification', m));
     return out;
@@ -1725,6 +1726,77 @@ function daysBetweenInclusive(startStr, endStr){
 const UNAVAIL_REASON_PRESETS=['休假','出車','體檢','體測','開會','帶廠商','留守'];
 const MEDCERT_OPTIONS=['EMT-1','EMT-2','EMT-P','醫生證書'];
 const SKILL_OPTIONS=['技工','車勤'];
+/* v174：人員的內建欄位（設定 → 人員自訂欄位 也列出來）。排班規則會用到的不能刪；手機號碼、備考可以刪（藏起來，資料清掉）；
+   有選項的（救護證照種類、專長、長期事故原因）可以加減選項 */
+const BUILTIN_PERSON_FIELDS=[
+  {key:'name', name:'姓名', type:'文字', use:'每個人都要有，不能刪'},
+  {key:'group', name:'排組', type:'單選', use:'名冊分組、統計；查哨盡量排不同排組', link:'groups'},
+  {key:'rank', name:'階級', type:'單選', use:'官／士／兵的規則（車長、安全士官、值星、查哨至少1士官）、自動排班的先後'},
+  {key:'gender', name:'性別', type:'男／女', use:'查哨同性別配對'},
+  {key:'serviceType', name:'役別', type:'志願役／義務役', use:'收假時間（義務役最後一天晚上前返營）'},
+  {key:'phone', name:'手機號碼', type:'文字', use:'只是紀錄，只有個人頁看得到', deletable:true},
+  {key:'license', name:'駕照', type:'小型車／大型車／大客車', use:'出車勤務的資格（大車駕照也算小車，種類固定）'},
+  {key:'medCert', name:'救護證照', type:'單選', use:'需要救護證照的勤務（有任何一種就算）', list:'medCertOptions'},
+  {key:'skills', name:'特殊專長', type:'複選', use:'崗位的需求專長', list:'skillOptions'},
+  {key:'longTerm', name:'長期事故', type:'設定', use:'長期不可排、在不在營（原因可以加減）', list:'longtermReasonOptions'},
+  {key:'outingRestriction', name:'外散宿限制', type:'單選', use:'可外散宿名單'},
+  {key:'departureDate', name:'離退日期', type:'日期', use:'離退後不排班、不算進統計'},
+  {key:'note', name:'備考', type:'文字', use:'名冊上顯示', deletable:true},
+];
+function hiddenPersonFields(){ return Array.isArray(state.hiddenPersonFields)? state.hiddenPersonFields : []; }
+// 刪掉的欄位（手機號碼、備考）：還原名冊存檔點這種會把舊資料帶回來的，照樣清掉（刪掉時說好「加回來是空的」）
+function stripHiddenPersonFields(){ const h=hiddenPersonFields(); if(h.length) state.personnel.forEach(p=>h.forEach(k=>{ delete p[k]; })); }
+function personFieldShown(key){ return !hiddenPersonFields().includes(key); }
+const PERSON_OPTION_LISTS={
+  skillOptions:{title:'專長', ph:'例：無線電', note:'拿掉只是選單上不再出現；已經登記的人、崗位要求不會改。'},
+  medCertOptions:{title:'救護證照種類', ph:'例：EMT-2', note:'有任何一種救護證照就算有證照。拿掉只是選單上不再出現，已經登記的人不會改。', fallback:MEDCERT_OPTIONS},
+  longtermReasonOptions:{title:'長期事故原因', ph:'例：受訓', note:'個人頁、批次設定長期事故的原因選單。'},
+  dailyReasonOptions:{title:'事故原因', ph:'例：公差', note:'事故登載、快速請假的原因選單。'},
+};
+// 沒改過的清單用內建的預設（救護證照種類以前是寫死的，改過才存進資料）
+function optionListOf(key){ const L=PERSON_OPTION_LISTS[key]; return Array.isArray(state[key])? state[key] : (L && L.fallback? [...L.fallback] : []); }
+function medCertOptionsList(){ return optionListOf('medCertOptions'); }
+// 拿掉一個選項的後果：有誰登記了、哪些崗位要求它
+function optionUsage(key, v){
+  const people = key==='skillOptions'? state.personnel.filter(p=>(p.skills||[]).includes(v))
+    : key==='medCertOptions'? state.personnel.filter(p=>p.medCert===v)
+    : key==='longtermReasonOptions'? state.personnel.filter(p=>personLongTerm(p).mode!=='off' && personLongTerm(p).reason===v)
+    : [];
+  const defs = key==='skillOptions'? (state.dutyDefinitions||[]).filter(d=>(d.requiredSkills||[]).includes(v) || (d.chiefRequiredSkills||[]).includes(v)).map(d=>d.name) : [];
+  return {people, defs};
+}
+function optionListEditorHTML(key){
+  const L=PERSON_OPTION_LISTS[key], arr=optionListOf(key);
+  return `<div class="chips" style="margin-bottom:8px">${arr.length? arr.map((v,i)=>`<button type="button" class="chip" data-list-del="${key}|${i}" aria-label="移除 ${esc(v)}">${esc(v)} <span style="color:var(--danger)">✕</span></button>`).join('') : '<span class="muted" style="font-size:13px">（空的）</span>'}</div>
+    <div class="row" style="gap:8px;margin-bottom:6px"><input type="text" data-list-input="${key}" placeholder="${esc(L.ph)}" style="flex:1"><button class="ghost small" data-list-add="${key}">＋新增</button></div>
+    <div class="hint" style="margin-bottom:8px">${esc(L.note)}</div>`;
+}
+function wireOptionListEditors(root, redraw){
+  const add=key=>{
+    const inp=root.querySelector(`[data-list-input="${key}"]`); const v=inp.value.trim();
+    if(!v){ showAlert('請輸入名稱'); return; }
+    const arr=optionListOf(key);
+    if(arr.includes(v)){ showAlert('已經有了'); return; }
+    state[key]=[...arr, v]; saveState(); redraw();
+  };
+  root.querySelectorAll('[data-list-add]').forEach(b=>{ b.onclick=()=>add(b.dataset.listAdd); });
+  root.querySelectorAll('[data-list-input]').forEach(inp=>{ inp.onkeydown=e=>{ if(e.key==='Enter' && !e.isComposing) add(inp.dataset.listInput); }; });
+  root.querySelectorAll('[data-list-del]').forEach(b=>{
+    b.onclick=()=>{
+      const [key, i]=b.dataset.listDel.split('|'); const v=optionListOf(key)[Number(i)];
+      if(v===undefined) return;
+      const u=optionUsage(key, v);
+      const lines=[
+        u.people.length? `${u.people.length} 人登記了「${v}」：${u.people.slice(0,8).map(p=>p.name).join('、')}${u.people.length>8? '…':''}——他們的資料不會改（個人頁還看得到），只是之後選單上選不到` : '',
+        u.defs.length? `崗位（${u.defs.join('、')}）的需求專長還有「${v}」，要求不會改` : '',
+        key==='dailyReasonOptions'? '已經登記的事故不會改' : '',
+        '只是從選單上拿掉，之後可以再加回來',
+      ].filter(Boolean);
+      showConfirm(`從「${PERSON_OPTION_LISTS[key].title}」拿掉「${v}」？\n\n・${lines.join('\n・')}`, ()=>{ state[key]=optionListOf(key).filter(x=>x!==v); saveState(); redraw(); }, {confirmLabel:'拿掉', cancelLabel:'取消'});
+    };
+  });
+}
+
 if(!state.skillOptions) state.skillOptions=[...SKILL_OPTIONS];
 // v173：排組清單（可以新增、改名、排順序）；名冊上有人用、清單沒有的排在後面
 //       人員自訂欄位（名稱、類型自己訂；每個人的值存在 person.custom）。開 App、匯入備份都跑一次
@@ -2061,6 +2133,7 @@ function syncDutyDefinitionToLegacy(def){
     sortOrder: def.sortOrder, excludeFromExport: def.excludeFromExport,
     isSentry: !!def.isSentry, isAllDayAway: !!def.isAllDayAway, standbyMode: def.standbyMode||'off',
     skillsMatch: def.skillsMatch==='any'? 'any' : 'all',
+    chiefSkillsMatch: def.chiefSkillsMatch==='any'? 'any' : 'all',
   };
   // v173：自訂欄位的資格條件（有設才寫，沒設的不多一個空欄位）
   if((def.customReqs||[]).length) fields.customReqs=def.customReqs.map(r=>({...r, values:r.values? [...r.values] : undefined}));
@@ -2091,6 +2164,8 @@ function dutyTwinOf(def){
 }
 function copyDutyRequirements(from, to){
   DUTY_REQ_FIELDS.forEach(f=>{ const v=from[f]; to[f]=/MedCert$/.test(f)? !!v : (Array.isArray(v)? [...v] : []); });
+  // v174：「其中一項／每一項」也是資格的一部分
+  ['skillsMatch','chiefSkillsMatch'].forEach(k=>{ if(from[k]==='any') to[k]='any'; else delete to[k]; });
   // v173 自訂欄位條件也是資格，一起跟著另一份
   if(Array.isArray(from.customReqs) && from.customReqs.length) to.customReqs=JSON.parse(JSON.stringify(from.customReqs)); else delete to.customReqs;
 }
@@ -2299,8 +2374,31 @@ function migrateDutySpecsV173(){
   state.dutySpecV=5;
   return true;
 }
+/* v174（5→6）：
+   - 出車任務的車長有自己的「其中一項／每一項」：原本跟駕駛共用，照原本的值帶過去（判斷結果不變）
+   - 值星的位置「值星士官」改叫「值星班長」：崗位定義、班表、破例紀錄、異動紀錄裡的名稱一起改 */
+function migrateDutySpecsV174(){
+  if(!Array.isArray(state.dutyDefinitions) || !state.dutyDefinitions.length) return false;
+  if(!(state.dutySpecV>=5) || state.dutySpecV>=6) return false;
+  state.dutyDefinitions.forEach(d=>{ if(d.isVehicle && d.skillsMatch==='any' && d.chiefSkillsMatch===undefined) d.chiefSkillsMatch='any'; });
+  const OLD='值星士官', NEW='值星班長';
+  const duty=state.dutyDefinitions.find(d=>d.key==='duty');
+  if(duty && Array.isArray(duty.positions)) duty.positions.forEach(p=>{ if(p.name===OLD) p.name=NEW; });
+  const role=duty? duty.presetRole : null;
+  if(role){
+    Object.values(state.misc||{}).forEach(list=>(list||[]).forEach(m=>{ if(m.role===role && Array.isArray(m.roles)) m.roles=m.roles.map(r=>r===OLD? NEW : r); }));
+    const fix=v=>typeof v==='string'? v.split(OLD).join(NEW) : v;
+    Object.values(state.ruleExceptions||{}).forEach(list=>(list||[]).forEach(r=>{
+      if(String(r.subject||'').startsWith(`m|${role}|`)) r.subject=fix(r.subject);
+      if(r.label) r.label=fix(r.label);
+    }));
+    Object.values(state.dutyChanges||{}).forEach(list=>(list||[]).forEach(c=>{ ['label','reason'].forEach(k=>{ if(c[k]) c[k]=fix(c[k]); }); }));
+  }
+  state.dutySpecV=6;
+  return true;
+}
 // v168：資格收進崗位定義，每次開 App 把副本（miscPresets）照崗位定義重寫一次，兩邊永遠一樣
-const __dutySpecMigrated = migrateDutySpecsV168() | migrateDutySpecsV169() | migrateDutySpecsV170() | migrateDutySpecsV171() | migrateDutySpecsV173();
+const __dutySpecMigrated = migrateDutySpecsV168() | migrateDutySpecsV169() | migrateDutySpecsV170() | migrateDutySpecsV171() | migrateDutySpecsV173() | migrateDutySpecsV174();
 (state.dutyDefinitions||[]).forEach(d=>syncDutyDefinitionToLegacy(d));
 
 if(!state.preplanOrder) state.preplanOrder = PREPLAN_TYPES.map(t=>t.key);
@@ -2375,14 +2473,14 @@ function planDayTypes(){ return PREPLAN_TYPES.filter(t=>t.mode!=='leaveTable' &&
 function planRoleName(type){ return type.presetRole || type.name; }
 function planOwnedRoleSet(){ return new Set(planDayTypes().map(planRoleName)); }
 function planTypeByRole(role){ return planDayTypes().find(t=>planRoleName(t)===role) || null; }
-/* v165：值星可以分「值星官／值星士官」兩個位置（崗位定義設定），各自的階級
+/* v165：值星可以分「值星官／值星班長」兩個位置（崗位定義設定），各自的階級
    要求；一次值幾天、幾點交接也在崗位定義設定 */
-const DEFAULT_DUTY_POSITIONS=[{name:'值星官', ranks:[]}, {name:'值星士官', ranks:[]}];
+const DEFAULT_DUTY_POSITIONS=[{name:'值星官', ranks:[]}, {name:'值星班長', ranks:[]}]; // v174：「值星士官」改叫「值星班長」（跟專長的名稱一致）
 function dutyDef(){ return (state.dutyDefinitions||[]).find(d=>d.key==='duty')||null; }
 function dutyPositions(){ const d=dutyDef(); return (d && d.splitPositions && Array.isArray(d.positions) && d.positions.length)? d.positions : null; }
 function dutyTermDays(){ const d=dutyDef(); return Math.max(1, Number(d && d.termDays)||7); }
 function dutyHandoverTime(){ const d=dutyDef(); return (d && d.handoverTime)||'12:00'; }
-/* 一組值星照位置排好的人（值星官, 值星士官）；舊資料沒記位置：階級高的當值星官。
+/* 一組值星照位置排好的人（值星官, 值星班長）；舊資料沒記位置：階級高的當值星官。
    人比位置多就回傳 null（照舊不分位置） */
 function dutyGroupPositionalIds(g, pos){
   if(g.positional) return pos.map((_,i)=>(g.personIds||[])[i] || (((g.posNotes||[])[i]||'').trim()? supportIdOf(g.posNotes[i]) : null));
@@ -2391,7 +2489,7 @@ function dutyGroupPositionalIds(g, pos){
   if(all.length>pos.length) return null;
   return pos.map((_,i)=>all[i]||null);
 }
-/* 值星改了分不分位置：格子的名稱會變（值星 ↔ 值星官／值星士官），今天以後已
+/* 值星改了分不分位置：格子的名稱會變（值星 ↔ 值星官／值星班長），今天以後已
    經記的破例／忽略一次紀錄照人對到新的格子，不然存檔時會被當成過期清掉 */
 function remapDutyExceptionSubjects(from){
   const t=PREPLAN_TYPES.find(x=>x.key==='duty');
@@ -3847,6 +3945,13 @@ var EXCEPTION_REASONS=[
   {key:'other',    label:'其他'},
 ];
 function ruleDef(key){ return RULE_CATALOG.find(r=>r.key===key) || {key, name:key, level:'remind'}; }
+/* v174：使用者可以把目前的等級存成「預設」（state.unitRules.ruleLevelsDefault，只記跟系統原本不同的）；
+   「恢復預設等級」回到這一份，沒存過就是系統原本的 */
+function ruleLevelDefault(key){
+  const r=ruleDef(key);
+  const d=((state.unitRules||{}).ruleLevelsDefault||{})[key];
+  return RULE_LEVEL_RANK[d]!==undefined? d : r.level;
+}
 function ruleLevel(key){
   const r=ruleDef(key);
   // v169：每一條規則的等級都可以改（四種都可以選）
@@ -4896,8 +5001,12 @@ function monthExceptionStatsHTML(ym){
 /* ⚙️ 規則等級設定 */
 function ruleLevelsSettingsHTML(){
   return `<div class="hint" style="margin-bottom:8px">每條規則違反時怎麼處理（每一條都可以改）：<br>・<b>事實</b>：不能排，要換人或先改事實。休假／事故、同時段、補休、準備時間這幾條算「衝突」：可以換人、掛名，或忽略一次（照排，只記錄有衝突）<br>・<b>嚴重</b>：還有其他符合規則的人就不讓排；真的沒人才可以排，要寫一句原因，那一格一直標紅<br>・<b>一般</b>：可以排，點一個原因；真的沒人就自動記「人力不足」<br>・<b>提醒</b>：可以排，不用記<br>休假／事故、同時段、補休、準備時間設成事實、嚴重或一般，都一樣用「衝突」處理（換人、掛名、忽略一次）；設成提醒就只提醒。同一個人在同一班排兩格，不管設什麼都不能排。<br>全系統都照這裡：排班頁、每個挑人清單（⛔不能排、❗衝突、⚠️違反規則、💡提醒）、預排／留守存檔時的檢查、自動排班、查哨自動排、找補位。自動排班任何等級的規則都不會破（提醒除外）。<br>每個勤務要什麼資格（駕照、救護證照、專長、階級）在「崗位定義／勤務類別」設定，全系統只有那一份。</div>
-    ${RULE_CATALOG.map(r=>`<div class="list-item"><span class="grow">${r.no}. ${esc(r.name)}${ruleLevel(r.key)!==r.level? `<span class="hint">（預設：${RULE_LEVEL_LABEL[r.level]}）</span>` : ''}${r.note?`<br><span class="hint">${esc(r.note)}</span>`:''}</span><select data-rule-level="${r.key}" style="width:auto">${['fact','serious','normal','remind'].map(l=>`<option value="${l}" ${ruleLevel(r.key)===l?'selected':''}>${RULE_LEVEL_LABEL[l]}</option>`).join('')}</select></div>`).join('')}
-    <button class="ghost small" id="ruleLevelsReset" style="margin-top:8px">恢復預設等級</button>`;
+    ${RULE_CATALOG.map(r=>`<div class="list-item"><span class="grow">${r.no}. ${esc(r.name)}${ruleLevel(r.key)!==ruleLevelDefault(r.key)? `<span class="hint">（預設：${RULE_LEVEL_LABEL[ruleLevelDefault(r.key)]}）</span>` : ''}${r.note?`<br><span class="hint">${esc(r.note)}</span>`:''}</span><select data-rule-level="${r.key}" style="width:auto">${['fact','serious','normal','remind'].map(l=>`<option value="${l}" ${ruleLevel(r.key)===l?'selected':''}>${RULE_LEVEL_LABEL[l]}</option>`).join('')}</select></div>`).join('')}
+    <div class="row wrap" style="gap:8px;margin-top:10px">
+      <button class="ghost small" id="ruleLevelsReset">恢復預設等級</button>
+      <button class="ghost small" id="ruleLevelsSetDefault">將目前設定設為預設</button>
+    </div>
+    <div class="hint" style="margin-top:6px">${Object.keys((state.unitRules||{}).ruleLevelsDefault||{}).length? '「預設」是你自己存的那一份；「恢復預設等級」會回到那一份。' : '還沒有存過自己的預設：「恢復預設等級」會回到系統原本的等級。'}</div>`;
 }
 function wireRuleLevelsSettings(root, redraw){
   root.querySelectorAll('[data-rule-level]').forEach(sel=>{
@@ -4913,7 +5022,26 @@ function wireRuleLevelsSettings(root, redraw){
     };
   });
   const rs=root.querySelector('#ruleLevelsReset');
-  if(rs) rs.onclick=()=>{ const had5=((state.unitRules.ruleLevels||{}).leave5day!==undefined); state.unitRules.ruleLevels={}; invalidateRuleStatus(); if(had5){ fullPlanResync(); markPlanSystemChange(); } settingsSave(res=>{ if(res==='saved') render(); if((res==='saved' || res==='none') && redraw) redraw(); }); };
+  // 恢復預設：回到自己存的預設（沒存過＝系統原本的）
+  if(rs) rs.onclick=()=>{
+    const before5=ruleLevel('leave5day');
+    state.unitRules.ruleLevels=Object.assign({}, state.unitRules.ruleLevelsDefault||{});
+    invalidateRuleStatus();
+    if(ruleLevel('leave5day')!==before5){ fullPlanResync(); markPlanSystemChange(); }
+    settingsSave(res=>{ if(res==='saved') render(); if((res==='saved' || res==='none') && redraw) redraw(); });
+  };
+  // 將目前設定設為預設：之後「恢復預設等級」就回到這一份（不會改到現在的等級，所以不影響已排好的）
+  const sd=root.querySelector('#ruleLevelsSetDefault');
+  if(sd) sd.onclick=()=>{
+    const cur={}; RULE_CATALOG.forEach(r=>{ const lv=ruleLevel(r.key); if(lv!==r.level) cur[r.key]=lv; });
+    const diff=RULE_CATALOG.filter(r=>ruleLevel(r.key)!==r.level).map(r=>`${r.no}. ${r.name}：${RULE_LEVEL_LABEL[ruleLevel(r.key)]}`);
+    showConfirm(`把目前的等級存成「預設」？之後按「恢復預設等級」會回到這一份。${diff.length? `\n\n跟系統原本不同的有 ${diff.length} 條：\n${diff.slice(0,10).join('\n')}${diff.length>10? `\n…還有 ${diff.length-10} 條`:''}` : '\n\n目前的等級跟系統原本的一樣。'}`, ()=>{
+      if(Object.keys(cur).length) state.unitRules.ruleLevelsDefault=cur; else delete state.unitRules.ruleLevelsDefault;
+      saveState();
+      showToast('已存成預設');
+      if(redraw) redraw();
+    }, {confirmLabel:'存成預設', cancelLabel:'取消'});
+  };
 }
 /* 自動補空缺做完：補不上的格子、原因、最接近能排的人 */
 function autoAssignLeftoverSlots(date){
@@ -5235,6 +5363,8 @@ if(!state.dailyReasonOptions) state.dailyReasonOptions=[...UNAVAIL_REASON_PRESET
 function isDeparted(p){ return !!(p.departureDate && p.departureDate<=todayStr()); }
 /* 某一天已經離退（排某一天的格子時用這天判斷，不是用今天） */
 function isDepartedOn(p, date){ return !!(p && p.departureDate && (date||todayStr())>=p.departureDate); }
+/* v174：那一天還在連上的人（統計、查詢用）：離退日當天起不算，只留在「已離退人員」當紀錄；離退日以前的日子照算 */
+function rosterOn(date){ return state.personnel.filter(p=>!isDepartedOn(p, date)); }
 function personLongTerm(p){
   if(p.longTerm) return {inCamp:true, ...p.longTerm}; // inCamp defaults true for records saved before this field existed
   if(p.longTermUnavailable) return {mode:'allday', inCamp:true};
@@ -6367,13 +6497,13 @@ function savePatrolSettingsBlock(root, dryRun){
   root.querySelectorAll('.dde-pat-rank').forEach(inp=>{ const v=parseFloat(inp.value); state.patrolRankTargets[inp.dataset.rank]=isNaN(v)? 1 : v; });
   return chk.err;
 }
-/* v165：崗位定義裡的值星設定——值星官／值星士官分開、一次值幾天、交接時間 */
+/* v165：崗位定義裡的值星設定——值星官／值星班長分開、一次值幾天、交接時間 */
 function dutySettingsBlockHTML(def){
   const pos=(Array.isArray(def.positions) && def.positions.length)? def.positions : DEFAULT_DUTY_POSITIONS;
   const rankCbs=(pi, sel)=>['軍官','士官','士兵'].map(g=>`<div class="hint" style="margin:2px 0 0;font-size:11px">${g}</div><div class="row wrap" style="gap:10px;margin-bottom:2px">${RANK_DEFS.filter(r=>r.cat===g).map(r=>`<label style="display:flex;align-items:center;gap:4px;font-size:12px"><input type="checkbox" class="dde-pos${pi}-rank" value="${r.rank}" style="width:auto" ${(sel||[]).includes(r.rank)?'checked':''}>${r.rank}</label>`).join('')}</div>`).join('');
   return `<div class="card duty-settings" style="padding:10px;margin-bottom:8px">
     <h3 style="margin-top:0">⭐ 值星設定</h3>
-    <label style="display:flex;align-items:center;gap:6px;font-size:13px;margin-bottom:6px"><input type="checkbox" id="ddeDutySplit" style="width:auto" ${def.splitPositions?'checked':''}> 值星官／值星士官分開（各自選人、各自的階級要求）</label>
+    <label style="display:flex;align-items:center;gap:6px;font-size:13px;margin-bottom:6px"><input type="checkbox" id="ddeDutySplit" style="width:auto" ${def.splitPositions?'checked':''}> 值星官／值星班長分開（各自選人、各自的階級要求）</label>
     <div id="ddeDutyPosBlock" style="display:${def.splitPositions?'block':'none'}">
       ${pos.map((pd,pi)=>`<div style="margin:6px 0"><b>${esc(pd.name)}</b>需求階級（可複選，不選＝不限）${rankCbs(pi, pd.ranks)}</div>`).join('')}
       <div class="hint" style="margin-bottom:6px">分開之後，上面「需求階級」改看這裡各位置的設定；駕照、專長要求照舊。沒記位置的舊預排，階級高的當${esc(pos[0].name)}。</div>
@@ -6396,7 +6526,7 @@ function saveDutySettingsBlock(root, def){
   const hasPos=Array.isArray(def.positions) && def.positions.length>0;
   const changed = newSplit!==!!def.splitPositions || JSON.stringify(newPos)!==JSON.stringify(curPos);
   if(newSplit!==!!def.splitPositions) def.splitPositions=newSplit;
-  // 分開了就一定要有位置（還沒存過位置的舊資料：照預設的值星官／值星士官寫進去，不然分不開）
+  // 分開了就一定要有位置（還沒存過位置的舊資料：照預設的值星官／值星班長寫進去，不然分不開）
   if(JSON.stringify(newPos)!==JSON.stringify(curPos) || (newSplit && !hasPos)) def.positions=newPos;
   const days=parseInt((root.querySelector('#ddeDutyDays')||{}).value,10);
   const newDays=days>0? days : 7;
@@ -6437,7 +6567,7 @@ function settingsChecklist(){
     if(!spec) return;
     const hasReq=(spec.requiredLicenses||[]).length || spec.requiredMedCert || (spec.requiredSkills||[]).length || (spec.requiredRanks||[]).length || (spec.customReqs||[]).length;
     const hasChief=d.isVehicle && ((spec.chiefRequiredLicenses||[]).length || spec.chiefRequiredMedCert || (spec.chiefRequiredSkills||[]).length || (spec.chiefRequiredRanks||[]).length || (spec.customReqs||[]).length);
-    // 值星官／值星士官各自的階級另外判斷：這裡只看整個值星共同的要求
+    // 值星官／值星班長各自的階級另外判斷：這裡只看整個值星共同的要求
     const pos=d.key==='duty'? dutyPositions() : null;
     const s=pos? Object.assign({}, spec, {requiredRanks:[]}) : spec;
     if(pos){
@@ -6684,32 +6814,60 @@ function openUnitRulesModal(opts){
           renameGroupInFilters(g, '');
           saveState(); render(); refreshLiveEditorsOfKind('person'); drawGroups();
         };
-        if(n) showConfirm(`「${g}」還有 ${n} 人。刪除後這 ${n} 人會變成「未分組」，之後可以在個人頁重新選。確定要刪除嗎？`, go);
-        else go();
+        // v174：一律先確認，列出刪除的後果
+        const members=state.personnel.filter(p=>(p.group||'')===g);
+        const lines=[
+          n? `${n} 人會變成「未分組」：${members.slice(0,8).map(p=>p.name).join('、')}${n>8? '…':''}（之後可以在個人頁重新選排組）` : '目前沒有人在這個排組',
+          '人員分頁、統計不再有這一組',
+          '刪錯了可以馬上按左上角「復原」救回來',
+        ];
+        showConfirm(`刪除排組「${g}」？\n\n刪除的後果：\n・${lines.join('\n・')}`, go, {confirmLabel:'刪除', cancelLabel:'取消', danger:true});
       };
     });
     wireDragReorder('urGroupList', L, ()=>{ saveState(); render(); drawGroups(); });
   };
-  /* ---- v173 人員自訂欄位 ---- */
+  /* ---- 人員欄位：內建欄位（v174 列出來）＋自訂欄位 ---- */
   const CF_TYPES=[{v:'text',label:'文字'},{v:'number',label:'數字'},{v:'date',label:'日期'},{v:'select',label:'單選'},{v:'bool',label:'是／否'}];
   const cfTypeLabel=t=>(CF_TYPES.find(x=>x.v===t)||{label:t}).label;
   const splitOpts=s=>[...new Set(String(s||'').split(/[,，、\n]/).map(x=>x.trim()).filter(Boolean))];
+  const namesOf=(list, n)=>list.slice(0,n).map(p=>p.name).join('、')+(list.length>n? `…等 ${list.length} 人` : '');
   const cfUsage=id=>{
-    const people=state.personnel.filter(p=>p.custom && p.custom[id]!==undefined).length;
+    const people=state.personnel.filter(p=>p.custom && p.custom[id]!==undefined);
     const defs=(state.dutyDefinitions||[]).filter(d=>(d.customReqs||[]).some(r=>r.fieldId===id)).map(d=>d.name);
-    return {people, defs};
+    const today=todayStr();
+    const tasks=[]; Object.entries(state.misc||{}).forEach(([d,list])=>{ if(d>=today) (list||[]).forEach(m=>{ if((m.customReqs||[]).some(r=>r.fieldId===id)) tasks.push(`${shortDateLabel(d)} ${m.role}`); }); });
+    return {people, defs, tasks, filtering:pplCustomFilterActive(pplCustomFilter()[id]) || (adhocQueryState.customReqs||[]).some(r=>r.fieldId===id)};
   };
+  let openOptKey=null; // 內建欄位：展開「選項」的那一個
   const drawCustomFields=()=>{
     if(modal.__parked){ modal.__staleWhileParked=true; return; }
     const F=state.customFields||(state.customFields=[]);
+    const hidden=hiddenPersonFields();
+    const lock=`<span class="hint" style="margin:0;white-space:nowrap">規則會用到</span>`, required=`<span class="hint" style="margin:0;white-space:nowrap">必填</span>`;
+    const builtinRow=b=>{
+      const isHidden=hidden.includes(b.key);
+      let end;
+      if(b.deletable) end= isHidden? `<button class="ghost small" data-bf-restore="${b.key}">加回來</button>` : `<button class="ghost small danger" data-bf-del="${b.key}">刪除</button>`;
+      else if(b.list) end=`<button class="ghost small" data-bf-opts="${b.list}">${openOptKey===b.list? '收起選項' : '選項'}</button>`;
+      else if(b.link) end=`<button class="ghost small" data-ur-section="${b.link}">管理</button>`;
+      else end= b.key==='name'? required : lock;
+      return `<div class="cell noicon" style="cursor:default${isHidden? ';opacity:.55' : ''}">
+          <span class="cell-body"><span class="cell-title">${esc(b.name)} <span class="tag">${esc(b.type)}</span>${isHidden? ' <span class="tag">已刪除</span>' : ''}</span>
+            <span class="cell-sub">${esc(b.use)}</span></span>
+          <span class="cell-end">${end}</span>
+        </div>${b.list && openOptKey===b.list? `<div style="padding:4px 14px 10px">${optionListEditorHTML(b.list)}</div>` : ''}`;
+    };
     modal.innerHTML=`
       <div class="section-title"><button class="ghost small" id="urBack">← 返回</button><h2 style="margin:0">人員自訂欄位</h2></div>
-      <div class="hint" style="margin-bottom:10px">自己訂的人員資料（例如：血型、體能鑑測、預計退伍日）。每個人的個人頁可以填；人員分頁可以篩選；找誰有空、崗位定義、臨時任務可以拿來當條件。</div>
+      <div class="hint" style="margin-bottom:10px">個人頁上的每一欄。內建的欄位排班規則會用到，不能刪（手機號碼、備考除外）；有選項的可以加減選項。自己訂的欄位每個人的個人頁可以填，人員分頁可以篩選，找誰有空、崗位定義、臨時任務可以拿來當條件。</div>
+      <div class="group-label">內建欄位</div>
+      <div class="group">${BUILTIN_PERSON_FIELDS.map(builtinRow).join('')}</div>
+      <div class="group-label mt">自訂欄位</div>
       ${F.length? `<div class="group" id="urCfList">${F.map((f,i)=>{ const u=cfUsage(f.id); return `
         <div class="cell noicon" data-drag-idx="${i}" style="cursor:default">
           <span data-drag-handle aria-label="拖曳排序" style="cursor:grab;font-size:16px">⠿</span>
           <span class="cell-body"><span class="cell-title">${esc(f.name)} <span class="tag">${cfTypeLabel(f.type)}</span></span>
-            <span class="cell-sub">${f.type==='select'? `選項：${esc((f.options||[]).join('、')||'（還沒有）')}・` : ''}${u.people} 人有填${u.defs.length? `・條件用在：${esc(u.defs.join('、'))}`:''}</span></span>
+            <span class="cell-sub">${f.type==='select'? `選項：${esc((f.options||[]).join('、')||'（還沒有）')}・` : ''}${u.people.length} 人有填${u.defs.length? `・條件用在：${esc(u.defs.join('、'))}`:''}</span></span>
           <span class="cell-end"><button class="ghost small" data-cf-edit="${i}">修改</button><button class="ghost small danger" data-cf-del="${i}">刪除</button></span>
         </div>`; }).join('')}</div>` : `<div class="empty" style="margin-bottom:12px">還沒有自訂欄位</div>`}
       <div class="form-section" id="urCfForm"><h3 id="urCfFormTitle">新增欄位</h3>
@@ -6724,6 +6882,34 @@ function openUnitRulesModal(opts){
       </div>
       <div class="hint">類型新增後不能改（已經填的資料會對不上）；要換類型請新增一個欄位。</div>`;
     document.getElementById('urBack').onclick=()=>{ section=null; draw(); };
+    modal.querySelectorAll('[data-ur-section]').forEach(b=>{ b.onclick=()=>{ section=b.dataset.urSection; draw(); }; });
+    modal.querySelectorAll('[data-bf-opts]').forEach(b=>{ b.onclick=()=>{ openOptKey= openOptKey===b.dataset.bfOpts? null : b.dataset.bfOpts; drawCustomFields(); }; });
+    wireOptionListEditors(modal, drawCustomFields);
+    // 內建欄位：只有手機號碼、備考可以刪（排班規則用不到）
+    modal.querySelectorAll('[data-bf-del]').forEach(b=>{
+      b.onclick=()=>{
+        const bf=BUILTIN_PERSON_FIELDS.find(x=>x.key===b.dataset.bfDel); if(!bf || !bf.deletable) return;
+        const filled=state.personnel.filter(p=>String(p[bf.key]||'').trim()!=='');
+        const lines=[
+          filled.length? `${filled.length} 人填的${bf.name}會一起刪掉：${namesOf(filled, 8)}` : `目前沒有人填${bf.name}`,
+          `個人頁、新增人員不再有「${bf.name}」這一欄${bf.key==='note'? '，名冊上也不再顯示備考' : ''}`,
+          '之後可以在這裡按「加回來」，但刪掉的內容不會回來（加回來是空的）',
+          '刪錯了可以馬上按左上角「復原」救回來',
+        ];
+        showConfirm(`刪除「${bf.name}」這一欄？\n\n刪除的後果：\n・${lines.join('\n・')}`, ()=>{
+          state.personnel.forEach(p=>{ delete p[bf.key]; });
+          state.hiddenPersonFields=[...new Set([...(state.hiddenPersonFields||[]), bf.key])];
+          saveState(); render(); refreshLiveEditorsOfKind('person'); drawCustomFields();
+        }, {confirmLabel:'刪除', cancelLabel:'取消', danger:true});
+      };
+    });
+    modal.querySelectorAll('[data-bf-restore]').forEach(b=>{
+      b.onclick=()=>{
+        state.hiddenPersonFields=(state.hiddenPersonFields||[]).filter(k=>k!==b.dataset.bfRestore);
+        if(!state.hiddenPersonFields.length) delete state.hiddenPersonFields;
+        saveState(); render(); refreshLiveEditorsOfKind('person'); drawCustomFields();
+      };
+    });
     let editing=-1;
     const typeOf=()=>{ const r=modal.querySelector('input[name="urCfType"]:checked'); return r? r.value : 'text'; };
     const syncOpt=()=>{ document.getElementById('urCfOptRow').style.display = typeOf()==='select'? 'block' : 'none'; };
@@ -6755,6 +6941,7 @@ function openUnitRulesModal(opts){
       const name=document.getElementById('urCfName').value.trim();
       if(!name){ showAlert('請輸入欄位名稱'); return; }
       if(F.some((f,i)=>i!==editing && f.name===name)){ showAlert('已經有這個名稱的欄位了'); return; }
+      if(BUILTIN_PERSON_FIELDS.some(b=>b.name===name)){ showAlert(`「${name}」是內建的欄位，換個名稱。`); return; }
       const type=typeOf();
       const options=type==='select'? splitOpts(document.getElementById('urCfOpts').value) : undefined;
       if(type==='select' && !options.length){ showAlert('單選要至少一個選項'); return; }
@@ -6772,8 +6959,8 @@ function openUnitRulesModal(opts){
           });
           saveSettingsHere(()=>{ render(); refreshLiveEditorsOfKind('person'); drawCustomFields(); });
         };
-        const n=removed.length? state.personnel.filter(p=>p.custom && removed.includes(p.custom[f.id])).length : 0;
-        if(n) showConfirm(`拿掉的選項（${removed.join('、')}）還有 ${n} 人填了。他們的資料會留著（個人頁看得到），但篩選、條件不能再選這個選項。確定嗎？`, apply);
+        const users=removed.length? state.personnel.filter(p=>p.custom && removed.includes(p.custom[f.id])) : [];
+        if(users.length) showConfirm(`拿掉選項（${removed.join('、')}）？\n\n拿掉的後果：\n・${users.length} 人填了這個選項：${namesOf(users, 8)}——他們的資料會留著（個人頁看得到），但篩選、條件不能再選這個選項\n・崗位條件裡的這個選項一起拿掉`, apply, {confirmLabel:'拿掉', cancelLabel:'取消'});
         else apply();
         return;
       }
@@ -6784,53 +6971,37 @@ function openUnitRulesModal(opts){
       b.onclick=()=>{
         const i=Number(b.dataset.cfDel), f=F[i]; if(!f) return;
         const u=cfUsage(f.id);
-        const msg=`刪除「${f.name}」？${u.people? `\n・${u.people} 人填的資料一起刪掉`:''}${u.defs.length? `\n・崗位條件（${u.defs.join('、')}）裡的這個條件一起拿掉`:''}\n\n這個動作可以按左上角「復原」救回來。`;
-        showConfirm(msg, ()=>{
+        const lines=[
+          u.people.length? `${u.people.length} 人填的資料會一起刪掉：${namesOf(u.people, 8)}` : '目前沒有人填這一欄',
+          u.defs.length? `崗位（${u.defs.join('、')}）的這個條件會拿掉，之後排這些勤務不再檢查「${f.name}」` : '',
+          u.tasks.length? `今天以後的臨時任務（${u.tasks.slice(0,5).join('、')}${u.tasks.length>5? '…':''}）的這個條件會拿掉` : '',
+          u.filtering? '人員篩選、找誰有空裡用這個欄位的條件會拿掉' : '',
+          '個人頁、新增人員不再有這一欄',
+          '刪錯了可以馬上按左上角「復原」救回來',
+        ].filter(Boolean);
+        showConfirm(`刪除自訂欄位「${f.name}」？\n\n刪除的後果：\n・${lines.join('\n・')}`, ()=>{
           F.splice(i,1);
           state.personnel.forEach(p=>{ if(p.custom && p.custom[f.id]!==undefined){ delete p.custom[f.id]; if(!Object.keys(p.custom).length) delete p.custom; } });
           (state.dutyDefinitions||[]).forEach(d=>{ if((d.customReqs||[]).some(r=>r.fieldId===f.id)){ d.customReqs=d.customReqs.filter(r=>r.fieldId!==f.id); if(!d.customReqs.length) delete d.customReqs; saveDutyDefinition(d); } });
           Object.values(state.misc||{}).forEach(list=>(list||[]).forEach(m=>{ if((m.customReqs||[]).some(r=>r.fieldId===f.id)){ m.customReqs=m.customReqs.filter(r=>r.fieldId!==f.id); if(!m.customReqs.length) delete m.customReqs; } }));
           delete pplCustomFilter()[f.id];
+          adhocQueryState.customReqs=(adhocQueryState.customReqs||[]).filter(r=>r.fieldId!==f.id);
           saveSettingsHere(()=>{ render(); refreshLiveEditorsOfKind('person'); drawCustomFields(); });
-        });
+        }, {confirmLabel:'刪除', cancelLabel:'取消', danger:true});
       };
     });
     wireDragReorder('urCfList', F, ()=>{ saveState(); render(); drawCustomFields(); });
     syncOpt();
   };
-  /* ---- v173 選單清單：專長、長期事故原因、事故原因 ---- */
+  /* ---- 選單清單：專長、救護證照種類、長期事故原因、事故原因 ---- */
   const drawLists=()=>{
     if(modal.__parked){ modal.__staleWhileParked=true; return; }
-    const LISTS=[
-      {key:'skillOptions', title:'專長', ph:'例：無線電', note:'拿掉只是選單上不再出現；已經登記的人、崗位要求不會改。'},
-      {key:'longtermReasonOptions', title:'長期事故原因', ph:'例：受訓', note:'個人頁、批次設定長期事故的原因選單。'},
-      {key:'dailyReasonOptions', title:'事故原因', ph:'例：公差', note:'事故登載、快速請假的原因選單。'},
-    ];
     modal.innerHTML=`
       <div class="section-title"><button class="ghost small" id="urBack">← 返回</button><h2 style="margin:0">選單清單</h2></div>
-      ${LISTS.map(L=>{ const arr=state[L.key]||[]; return `
-        <div class="form-section"><h3>${L.title}（${arr.length}）</h3>
-          <div class="chips" style="margin-bottom:8px">${arr.length? arr.map((v,i)=>`<button type="button" class="chip" data-list-del="${L.key}|${i}" aria-label="移除 ${esc(v)}">${esc(v)} <span style="color:var(--danger)">✕</span></button>`).join('') : '<span class="muted" style="font-size:13px">（空的）</span>'}</div>
-          <div class="row" style="gap:8px;margin-bottom:6px"><input type="text" data-list-input="${L.key}" placeholder="${L.ph}" style="flex:1"><button class="ghost small" data-list-add="${L.key}">＋新增</button></div>
-          <div class="hint" style="margin-bottom:8px">${L.note}</div>
-        </div>`; }).join('')}`;
+      ${['skillOptions','medCertOptions','longtermReasonOptions','dailyReasonOptions'].map(key=>`
+        <div class="form-section"><h3>${PERSON_OPTION_LISTS[key].title}（${optionListOf(key).length}）</h3>${optionListEditorHTML(key)}</div>`).join('')}`;
     document.getElementById('urBack').onclick=()=>{ section=null; draw(); };
-    const add=key=>{
-      const inp=modal.querySelector(`[data-list-input="${key}"]`); const v=inp.value.trim();
-      if(!v){ showAlert('請輸入名稱'); return; }
-      if(!Array.isArray(state[key])) state[key]=[];
-      if(state[key].includes(v)){ showAlert('已經有了'); return; }
-      state[key].push(v); saveState(); drawLists();
-    };
-    modal.querySelectorAll('[data-list-add]').forEach(b=>{ b.onclick=()=>add(b.dataset.listAdd); });
-    modal.querySelectorAll('[data-list-input]').forEach(inp=>{ inp.onkeydown=e=>{ if(e.key==='Enter' && !e.isComposing) add(inp.dataset.listInput); }; });
-    modal.querySelectorAll('[data-list-del]').forEach(b=>{
-      b.onclick=()=>{
-        const [key, i]=b.dataset.listDel.split('|'); const v=(state[key]||[])[Number(i)];
-        if(v===undefined) return;
-        showConfirm(`從選單拿掉「${v}」？（已經登記的資料不會改）`, ()=>{ state[key]=(state[key]||[]).filter(x=>x!==v); saveState(); drawLists(); });
-      };
-    });
+    wireOptionListEditors(modal, drawLists);
   };
   const drawDutyDayDef=()=>{
     if(modal.__parked){ modal.__staleWhileParked=true; return; } // 收起來的時候不畫（放回去時再畫）
@@ -7002,13 +7173,6 @@ function openUnitRulesModal(opts){
         <input type="checkbox" id="ddeVehicle" style="width:auto" ${def.isVehicle?'checked':''}> 這是出車任務（駕駛／車長分開設定資格）
       </label>`:''}
       <div id="ddeReqBlock"></div>
-      <div id="ddeSkillsMatchRow" style="margin-bottom:8px;display:none">
-        <div class="hint" style="margin-bottom:2px">勾了不只一項專長時：</div>
-        <div class="row wrap" style="gap:12px">
-          <label style="display:flex;align-items:center;gap:6px;font-size:13px"><input type="radio" name="ddeSkillsMatch" value="any" ${def.skillsMatch==='any'?'checked':''}> 有其中一項就可以</label>
-          <label style="display:flex;align-items:center;gap:6px;font-size:13px"><input type="radio" name="ddeSkillsMatch" value="all" ${def.skillsMatch!=='any'?'checked':''}> 每一項都要有</label>
-        </div>
-      </div>
       <div style="margin-bottom:10px">
         <div style="font-size:13px;font-weight:650;margin:4px 0 2px">自訂欄位條件${def.isVehicle?'（駕駛、車長都要符合）':''}</div>
         <div id="ddeCustomReqs">${customReqEditorHTML('dde', def.customReqs)}</div>
@@ -7048,34 +7212,56 @@ function openUnitRulesModal(opts){
       </div>` : ''}` : ''}
       <div class="divider"></div>
       ${def.deletable? `<button class="ghost danger" id="ddeDelete" style="width:100%">刪除這個崗位</button>` : `<div class="hint">內建崗位不能刪除，但上面所有設定都能自由調整（改了就自動儲存）。</div>`}`;
+    // v174：每一種要求上面都有標題；「勾了不只一項專長時」緊接在專長下面（駕駛、車長各自設定）
+    const reqLabel=t=>`<label style="font-size:12px;color:var(--text);margin:2px 0 2px">${t}(可複選，不選代表不限)</label>`;
+    const matchRow=(rowId, name, val)=>`<div id="${rowId}" style="margin:0 0 8px;display:none">
+        <div class="hint" style="margin-bottom:3px">勾了不只一項專長時：</div>
+        <div class="segmented" role="radiogroup" aria-label="勾了不只一項專長時"><label><input type="radio" name="${name}" value="any" ${val==='any'?'checked':''}><span>有其中一項就可以</span></label><label><input type="radio" name="${name}" value="all" ${val!=='any'?'checked':''}><span>每一項都要有</span></label></div>
+      </div>`;
     const renderReqBlock=(isVehicle)=>{
       document.getElementById('ddeReqBlock').innerHTML = isVehicle? `
         <div class="hint" style="margin:4px 0"><b>駕駛</b></div>
+        ${reqLabel('需求駕照')}
         <div class="row wrap" style="gap:10px;margin-bottom:4px">${licenseCbs('requiredLicenses','ddeDriver')}</div>
-        <label style="display:flex;align-items:center;gap:6px;font-size:12px;margin-bottom:4px">
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;margin-bottom:6px">
           <input type="checkbox" id="ddeDriverMedCert" style="width:auto" ${def.requiredMedCert?'checked':''}>需具備救護證照(EMT或醫生證書)
         </label>
+        ${reqLabel('需求專長')}
         <div class="row wrap" style="gap:10px;margin-bottom:6px">${skillCbs('requiredSkills','ddeDriver')}</div>
-        <label style="font-size:12px;color:var(--text);margin-bottom:2px">需求階級(可複選，不選代表不限)</label>
+        ${matchRow('ddeSkillsMatchRow','ddeSkillsMatch', def.skillsMatch)}
+        ${reqLabel('需求階級')}
         <div style="margin-bottom:10px">${rankCbs('requiredRanks','ddeDriver')}</div>
         <div class="hint" style="margin:4px 0"><b>車長</b></div>
+        ${reqLabel('需求駕照')}
         <div class="row wrap" style="gap:10px;margin-bottom:4px">${licenseCbs('chiefRequiredLicenses','ddeChief')}</div>
-        <label style="display:flex;align-items:center;gap:6px;font-size:12px;margin-bottom:4px">
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;margin-bottom:6px">
           <input type="checkbox" id="ddeChiefMedCert" style="width:auto" ${def.chiefRequiredMedCert?'checked':''}>需具備救護證照(EMT或醫生證書)
         </label>
+        ${reqLabel('需求專長')}
         <div class="row wrap" style="gap:10px;margin-bottom:6px">${skillCbs('chiefRequiredSkills','ddeChief')}</div>
+        ${matchRow('ddeChiefSkillsMatchRow','ddeChiefSkillsMatch', def.chiefSkillsMatch)}
         <label style="font-size:12px;color:var(--text);margin-bottom:2px">額外需求階級(可複選，不選代表只套用「車長需士官以上且不低於駕駛」的原本規則)</label>
         <div style="margin-bottom:10px">${rankCbs('chiefRequiredRanks','ddeChief')}</div>
       ` : `
+        ${reqLabel('需求駕照')}
         <div class="row wrap" style="gap:10px;margin-bottom:4px">${licenseCbs('requiredLicenses','ddeDriver')}</div>
-        <label style="display:flex;align-items:center;gap:6px;font-size:12px;margin-bottom:4px">
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;margin-bottom:6px">
           <input type="checkbox" id="ddeSoloMedCert" style="width:auto" ${def.requiredMedCert?'checked':''}>需具備救護證照(EMT或醫生證書)
         </label>
+        ${reqLabel('需求專長')}
         <div class="row wrap" style="gap:10px;margin-bottom:6px">${skillCbs('requiredSkills','ddeDriver')}</div>
-        <label style="font-size:12px;color:var(--text);margin-bottom:2px">需求階級(可複選，不選代表不限)</label>
+        ${matchRow('ddeSkillsMatchRow','ddeSkillsMatch', def.skillsMatch)}
+        ${reqLabel('需求階級')}
         <div style="margin-bottom:10px">${rankCbs('requiredRanks','ddeDriver')}</div>
       `;
+      refreshSkillsMatchRow();
     };
+    // 勾了不只一項專長才問「其中一項／每一項」（駕駛、車長各自看）
+    function refreshSkillsMatchRow(){
+      const show=(rowId, cls)=>{ const row=document.getElementById(rowId); if(row) row.style.display=modal.querySelectorAll('.'+cls+':checked').length>=2? 'block':'none'; };
+      show('ddeSkillsMatchRow', 'ddeDriver-skill-cb');
+      show('ddeChiefSkillsMatchRow', 'ddeChief-skill-cb');
+    }
     renderReqBlock(def.isVehicle);
     const readTimesDraft=()=>{ timesDraft.forEach((t,i)=>{ if(document.getElementById('ddeTime-start-'+i+'__h')){ t.start=getTimeSelectValue('ddeTime-start-'+i); t.end=getTimeSelectValue('ddeTime-end-'+i); } }); };
     const crossHint=t=>t.start && t.end && toMin(t.end)<=toMin(t.start)? `⏰ ${t.start} → 隔天 ${t.end}` : '';
@@ -7119,12 +7305,6 @@ function openUnitRulesModal(opts){
     if(def.key==='duty'){ const sp=document.getElementById('ddeDutySplit'); if(sp) sp.onchange=()=>{ document.getElementById('ddeDutyPosBlock').style.display=sp.checked? 'block':'none'; }; }
     const vehicleCb = document.getElementById('ddeVehicle');
     if(vehicleCb) vehicleCb.onchange=()=>renderReqBlock(vehicleCb.checked);
-    // 勾了不只一項專長才問「其中一項／每一項」
-    const refreshSkillsMatchRow=()=>{
-      const row=document.getElementById('ddeSkillsMatchRow'); if(!row) return;
-      const n=Math.max(modal.querySelectorAll('.ddeDriver-skill-cb:checked').length, modal.querySelectorAll('.ddeChief-skill-cb:checked').length);
-      row.style.display=n>=2? 'block':'none';
-    };
     refreshSkillsMatchRow();
     /* v171：改了就存（不用按儲存）。名稱、時段、補休、查哨輪值單位有問題的那一項先不存，
        其他照存，回傳沒存的項目（狀態列顯示；離開時再問） */
@@ -7165,6 +7345,8 @@ function openUnitRulesModal(opts){
       }
       { const sm=modal.querySelector('input[name="ddeSkillsMatch"]:checked'); const v=sm && (sm.value==='any'? 'any' : 'all');
         if(v && v!==(def.skillsMatch==='any'? 'any' : 'all')) def.skillsMatch=v; } // 沒改就不寫（沒設定＝每一項都要有）
+      if(def.isVehicle){ const sm=modal.querySelector('input[name="ddeChiefSkillsMatch"]:checked'); const v=sm && (sm.value==='any'? 'any' : 'all');
+        if(v && v!==(def.chiefSkillsMatch==='any'? 'any' : 'all')) def.chiefSkillsMatch=v; } // v174：車長自己的「其中一項／每一項」
       const countVal = document.getElementById('ddeCount').value.trim();
       def.requiredCount = countVal? Math.max(1, parseInt(countVal,10)||1) : null;
       // 時段是一對一對時/分select(timeSelectHTML)，要用getTimeSelectValue讀
@@ -7937,7 +8119,7 @@ function preplanFillLines(type, plan){
   };
   const labels=preplanFillLabels(type);
   if(type.key==='duty' && dutyPositions()){
-    // 值星分位置：值星官、值星士官各一行（只顯示第一組）
+    // 值星分位置：值星官、值星班長各一行（只顯示第一組）
     const pos=dutyPositions();
     const g0 = peopleGroupsOf(plan)[0];
     const ids = g0? (dutyGroupPositionalIds(g0, pos) || pos.map(()=>null)) : pos.map(()=>null);
@@ -8495,7 +8677,7 @@ function openPatrolAnchorModal(onDone){
     });
   };
 }
-/* v165：排一段值星——選人（分位置的話值星官、值星士官各選一人）、交接那天，
+/* v165：排一段值星——選人（分位置的話值星官、值星班長各選一人）、交接那天，
    照崗位定義的「一次值幾天」「交接時間」一次排好整段：
    - 交接那天：交接時間～24:00 是新的這組（前一組當天交接前的部分保留）
    - 中間每天：整天
@@ -8687,7 +8869,7 @@ function openPreplanCalendar(key){
       </div>
       <div class="hint" style="margin-bottom:8px">點日期輸入當天內容；已排的日期外框會變色。假日以紅字標示。名字顏色：<span style="color:var(--accent)">一般顏色</span>＝我們單位的人，<span class="cal-mark-outside">橘色斜體</span>＝找不到、可能是別單位支援的人。</div>
       ${key==='duty'? `<button class="ghost" id="calDutyFill" style="width:100%;margin-bottom:6px">📝 排一段值星（選人＋交接那天，照「一次值幾天」「交接時間」一次排好）</button>
-      <button class="ghost" id="calDutySettings" style="width:100%;margin-bottom:6px">⚙️ 值星設定（值星官／值星士官、一次值幾天、交接時間）</button>` : ''}
+      <button class="ghost" id="calDutySettings" style="width:100%;margin-bottom:6px">⚙️ 值星設定（值星官／值星班長、一次值幾天、交接時間）</button>` : ''}
       ${key==='patrol'? `
       <button class="ghost" id="calPatrolSeqView" style="width:100%;margin-bottom:6px">🔁 查看本月單位輪值序列</button>
       <button class="ghost" id="calPatrolSettings" style="width:100%;margin-bottom:6px">⚙️ 查哨設定（補休、輪值單位、階級平均、候選名單）</button>
@@ -8709,7 +8891,8 @@ function openPreplanCalendar(key){
       document.getElementById('calPatrolSettings').onclick=()=>openUnitRulesModal({dutyKey:'patrol', onClose:()=>draw()});
       document.getElementById('calPatrolAutoFill').onclick=()=>{
         const candSet=patrolCandidateIdSet();
-        const candCount=candSet? candSet.size : state.personnel.length;
+        // 候選人數：跟實際排的時候一樣，不算已經離退的
+        const candCount=state.personnel.filter(p=>!isDeparted(p) && (!candSet || candSet.has(p.id))).length;
         showConfirm(`確定要依規則自動排這個月本部連負責的查哨嗎？候選範圍共 ${candCount} 人（可以在「候選名單範圍」調整）。本部連的時段會依同性別、至少1士官、階級平均公平、不同排組優先、盡量一士一兵、12-14優先駕照這些規則排人，並依「查哨排班設定」裡各時段的補休預設自動帶入；其他連的時段只會標記是哪個連，不會排人。排的時候也會檢查「⚙️設定」（休假、同時段、準備時間、補休、值星、待命勤務…），任何規則都不破，找不到人的格子會空著並列出來。今天以後已經排過的格子會被覆蓋；已經過去的日期不會動。`, ()=>{
           const result=autoFillPatrolMonth(ym, candSet);
           saveState();
@@ -9558,7 +9741,7 @@ function openPreplanDayEditor(key, date, onSaved){
       <div class="grow"><label>${label||'支援人員'}（別單位的人，手打姓名，多人用「、」分開；會佔名額）</label><input type="text" class="pp-sup-people" id="${id}" value="${esc(val||'')}" placeholder="例：王小明"></div>
     </div>`;
   let body='';
-  /* v165：值星分值星官／值星士官時，每一組是兩個位置各選一人 */
+  /* v165：值星分值星官／值星班長時，每一組是兩個位置各選一人 */
   // 舊預排某一組的人比位置多（例如兩人＋支援）：這天照舊不分位置，免得存檔時人不見
   const dutyPosAll = key==='duty'? dutyPositions() : null;
   const dutyPosFallback = !!(dutyPosAll && peopleGroupsOf(plan).some(g=>!dutyGroupPositionalIds(g, dutyPosAll)));
@@ -9597,7 +9780,7 @@ function openPreplanDayEditor(key, date, onSaved){
     </div>`;
   if(type.mode==='people'){
     const initialGroups = peopleGroupsOf(plan).length? peopleGroupsOf(plan) : [{}];
-    body = (dutyPosFallback? `<div class="badge-issue" style="margin-bottom:8px">這天的預排有一組人數比值星官／值星士官兩個位置多，這天先照舊不分位置；要分位置，請把多的人拿掉再存。</div>` : '') + `<div id="ppGroupsWrap">${initialGroups.map((g,gi)=>groupBlockHTML(g,gi)).join('')}</div>
+    body = (dutyPosFallback? `<div class="badge-issue" style="margin-bottom:8px">這天的預排有一組人數比值星官／值星班長兩個位置多，這天先照舊不分位置；要分位置，請把多的人拿掉再存。</div>` : '') + `<div id="ppGroupsWrap">${initialGroups.map((g,gi)=>groupBlockHTML(g,gi)).join('')}</div>
       <button class="ghost" id="ppAddGroup" style="width:100%;margin-bottom:8px">＋新增一組（同一天不同時段/不同人時使用）</button>`;
   } else if(type.mode==='roles'){
     const rolesShape={start:type.editableTime? (plan.start||preplanDefault(key,'start',t0.start)) : t0.start, end:type.editableTime? (plan.end||preplanDefault(key,'end',t0.end)) : t0.end, restUntil:plan.restUntil||'', roles:[...type.roles], personIds:type.roles.map((_,i)=>(plan.personIds||[])[i]||undefined)};
@@ -11340,7 +11523,7 @@ function importPreplanForDate(key, date){
     groups.forEach((g,gi)=>{
       // 預排上記的支援人員（g.note）佔名額，跟我們的人一起放進去
       let ids=[...(g.personIds||[]).filter(Boolean), ...supportTokens(g.note).map(supportIdOf)];
-      // 值星分值星官／值星士官：照位置放
+      // 值星分值星官／值星班長：照位置放
       const posIds = pos? dutyGroupPositionalIds(g, pos) : null;
       if(posIds) ids=posIds;
       if(!ids.some(Boolean) && !g.support) return;
@@ -12040,7 +12223,7 @@ function purgePersonEverywhere(personId){
       // 把已經刪掉的人寫回班表（顯示成「—」）
       if(Array.isArray(plan.groups)) plan.groups.forEach(g=>{
         if(!g) return;
-        // 值星分位置的組：清成空位，不能往前移（不然值星士官會變成值星官）
+        // 值星分位置的組：清成空位，不能往前移（不然值星班長會變成值星官）
         if(Array.isArray(g.personIds)) g.personIds=g.positional? g.personIds.map(id=>id===personId? null : id) : g.personIds.filter(id=>id!==personId);
         if(Array.isArray(g.nominalIds)) g.nominalIds=g.nominalIds.filter(id=>id!==personId);
       });
@@ -12155,7 +12338,7 @@ function personRowSubHTML(p){
   if(p.departureDate && !isDeparted(p)) warns.push(`${shortDateLabel(p.departureDate)} 離退`);
   return (bits.length? `<span class="cell-sub">${bits.join('・')}</span>` : '')
     + (warns.length? `<span class="cell-sub warn">${warns.join('・')}</span>` : '')
-    + (p.note? `<span class="cell-sub">備考：${esc(p.note)}</span>` : '');
+    + (p.note && personFieldShown('note')? `<span class="cell-sub">備考：${esc(p.note)}</span>` : '');
 }
 function renderPeopleGroups(groups, filterFn){
   filterFn = filterFn || (()=>true);
@@ -12276,7 +12459,7 @@ function renderPeople(){
   document.getElementById('pplDepartedBtn').onclick=()=>openDepartedPeopleSheet();
   document.getElementById('pplCheckpoint').onclick=()=>openCheckpointModal('personnel', '人員名冊',
     ()=>state.personnel,
-    (data)=>{ state.personnel=data; render(); });
+    (data)=>{ state.personnel=data; stripHiddenPersonFields(); render(); refreshLiveEditorsOfKind('person'); });
 }
 /* 底部選單（篩選、新增人員、批次長期事故、已離退）共用的外框 */
 function openPeopleSheet(title, bodyHTML, closeLabel){
@@ -12326,7 +12509,7 @@ function openPeopleFilterSheet(){
       </div>
     </div>
     <div class="form-section"><h3>駕照（勾了的其中一種就算）</h3>${cbRow('ppl-license-cb', ['小型車','大型車','大客車'], f.license, '未登記駕照')}<div style="height:8px"></div></div>
-    <div class="form-section"><h3>救護證照</h3>${cbRow('ppl-medcert-cb', MEDCERT_OPTIONS, f.medCert, '未登記救護證照')}<div style="height:8px"></div></div>
+    <div class="form-section"><h3>救護證照</h3>${cbRow('ppl-medcert-cb', [...new Set([...medCertOptionsList(), ...state.personnel.map(p=>p.medCert).filter(Boolean)])], f.medCert, '未登記救護證照')}<div style="height:8px"></div></div>
     <div class="form-section"><h3>特殊專長</h3>${cbRow('ppl-skill-cb', state.skillOptions, f.skills, '未登記專長')}<div style="height:8px"></div></div>
     ${customHTML? `<div class="form-section"><h3>自訂欄位</h3>${customHTML}<div style="height:8px"></div></div>` : ''}
     <div class="row" style="gap:8px">
@@ -12415,7 +12598,7 @@ function openAddPersonSheet(){
           <select id="npService"><option value="">志願役</option><option value="義務役">義務役</option></select>
         </div>
       </div>
-      <label>手機號碼（選填，只有點進個人頁才看得到）</label><input type="text" id="npPhone" inputmode="tel" placeholder="例：0912345678" style="margin-bottom:8px">
+      ${personFieldShown('phone')? `<label>手機號碼（選填，只有點進個人頁才看得到）</label><input type="text" id="npPhone" inputmode="tel" placeholder="例：0912345678" style="margin-bottom:8px">` : ''}
     </div>
     <div class="form-section"><h3>證照與專長</h3>
       <div class="row wrap" style="margin-bottom:8px">
@@ -12423,7 +12606,7 @@ function openAddPersonSheet(){
           <select id="npLicense"><option value="">（無）</option><option value="小型車">小型車</option><option value="大型車">大型車</option><option value="大客車">大客車</option></select>
         </div>
         <div class="grow"><label>救護證照</label>
-          <select id="npMedCert"><option value="">（無）</option>${MEDCERT_OPTIONS.map(c=>`<option value="${c}">${c}</option>`).join('')}</select>
+          <select id="npMedCert"><option value="">（無）</option>${medCertOptionsList().map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join('')}</select>
         </div>
       </div>
       <label>特殊專長（可複選）</label>
@@ -12478,7 +12661,7 @@ function openAddPersonSheet(){
     <div class="form-section"><h3>其他</h3>
       <label>離退日期（選填，調職／退伍／新進待離）</label><input type="date" id="npDepartureDate" style="margin-bottom:4px">
       <div class="hint" style="margin-bottom:8px">從這天開始不會再被排班（含衛哨、其他勤務、預排），資料還在，之後在「已離退人員」找得到。</div>
-      <label>備考（選填）</label><input type="text" id="npNote" placeholder="例：新兵、隔宿另計" style="margin-bottom:8px">
+      ${personFieldShown('note')? `<label>備考（選填）</label><input type="text" id="npNote" placeholder="例：新兵、隔宿另計" style="margin-bottom:8px">` : ''}
     </div>
     <button class="primary" id="npAdd" style="width:100%">新增</button>
   `, '取消');
@@ -12518,7 +12701,7 @@ function openAddPersonSheet(){
     const rank=document.getElementById('npRank').value;
     const gender=document.getElementById('npGender').value;
     const serviceType=document.getElementById('npService').value;
-    const phone=document.getElementById('npPhone').value.trim();
+    const phone=(document.getElementById('npPhone')||{value:''}).value.trim();
     const license=document.getElementById('npLicense').value;
     const medCert=document.getElementById('npMedCert').value;
     const skills=[...modal.querySelectorAll('.np-skill-cb:checked')].map(cb=>cb.value);
@@ -12535,7 +12718,7 @@ function openAddPersonSheet(){
         state.longtermReasonOptions.push(reason);
       }
     }
-    const note = document.getElementById('npNote').value.trim();
+    const note = (document.getElementById('npNote')||{value:''}).value.trim();
     const outingRestriction = document.getElementById('npOutingRestriction').value;
     const departureDate = document.getElementById('npDepartureDate').value || undefined;
     const np={id:uid(),name,group,rank,gender,phone,license,medCert,skills,longTerm,note,outingRestriction,departureDate};
@@ -12665,7 +12848,7 @@ function openDepartedPeopleSheet(){
       <div class="cell" style="cursor:default">
         ${personAvatarHTML(p,'sm')}
         <span class="cell-body"><span class="cell-title">${esc(p.name)} <span class="tag rank-${rankCategory(p.rank)}">${esc(p.rank)}</span></span>
-          <span class="cell-sub">${esc(p.group||'未分組')}・${minguoLabel(p.departureDate)} 離退</span>${p.note? `<span class="cell-sub">備考：${esc(p.note)}</span>`:''}</span>
+          <span class="cell-sub">${esc(p.group||'未分組')}・${minguoLabel(p.departureDate)} 離退</span>${p.note && personFieldShown('note')? `<span class="cell-sub">備考：${esc(p.note)}</span>`:''}</span>
         <span class="cell-end" style="flex-direction:column;align-items:stretch;gap:4px">
           <button class="ghost small" data-reactivate-person="${p.id}">恢復</button>
           <button class="ghost small danger" data-del-person="${p.id}">永久刪除</button>
@@ -12805,7 +12988,7 @@ function openPersonEditor(personId){
         </div>
       </div>
       <div class="hint" style="margin:-4px 0 8px">收假：義務役是最後一天 ${esc(state.unitRules.leaveBuffer.conscriptBackEnd||'21:00')} 前返營，志願役是隔天 ${esc(state.unitRules.leaveBuffer.backEnd)} 前。</div>
-      <label>手機號碼（選填，個人資料）</label><input type="text" id="epPhone" inputmode="tel" value="${esc(p.phone||'')}" placeholder="例：0912345678" style="margin-bottom:8px">
+      ${personFieldShown('phone')? `<label>手機號碼（選填，個人資料）</label><input type="text" id="epPhone" inputmode="tel" value="${esc(p.phone||'')}" placeholder="例：0912345678" style="margin-bottom:8px">` : ''}
       </div>
       <div class="form-section"><h3>證照與專長</h3>
       <div class="row wrap" style="margin-bottom:8px">
@@ -12821,8 +13004,8 @@ function openPersonEditor(personId){
         <div class="grow"><label>救護證照</label>
           <select id="epMedCert">
             <option value="" ${!p.medCert?'selected':''}>（無）</option>
-            ${MEDCERT_OPTIONS.map(c=>`<option value="${c}" ${p.medCert===c?'selected':''}>${c}</option>`).join('')}
-            ${p.medCert && !MEDCERT_OPTIONS.includes(p.medCert)? `<option value="${esc(p.medCert)}" selected>${esc(p.medCert)}</option>` : ''}
+            ${medCertOptionsList().map(c=>`<option value="${esc(c)}" ${p.medCert===c?'selected':''}>${esc(c)}</option>`).join('')}
+            ${p.medCert && !medCertOptionsList().includes(p.medCert)? `<option value="${esc(p.medCert)}" selected>${esc(p.medCert)}</option>` : ''}
           </select>
         </div>
       </div>
@@ -12885,7 +13068,7 @@ function openPersonEditor(personId){
       <label>離退日期（選填，調職／退伍／新進待離）</label>
       <input type="date" id="epDepartureDate" value="${p.departureDate||''}" style="margin-bottom:4px">
       <div class="hint" style="margin-bottom:8px">從這天開始不會再被排班，資料還在，可以在「已離退人員」找到、恢復或永久刪除。</div>
-      <label>備考</label><input type="text" id="epNote" value="${esc(p.note||'')}" placeholder="例：新兵、隔宿另計" style="margin-bottom:8px">
+      ${personFieldShown('note')? `<label>備考</label><input type="text" id="epNote" value="${esc(p.note||'')}" placeholder="例：新兵、隔宿另計" style="margin-bottom:8px">` : ''}
       </div>
       <button class="ghost danger" id="epDelete" style="width:100%;margin-bottom:6px">${ico('trash')} 刪除這個人</button>
     </div>
@@ -12940,7 +13123,7 @@ function openPersonEditor(personId){
       Object.keys(((state.preplan||{}).leave||{})[p.id]||{}).forEach(cat=>applyLeavePlan(p.id, cat, undefined, {force:true}));
       resyncDerivedLeaveFor([p.id]);
     }
-    put('phone', document.getElementById('epPhone').value.trim());
+    { const el=document.getElementById('epPhone'); if(el) put('phone', el.value.trim()); } // 手機號碼這一欄刪掉了就沒有
     put('license', document.getElementById('epLicense').value);
     put('medCert', document.getElementById('epMedCert').value);
     { const sk=[...document.querySelectorAll('.ep-skill-cb:checked')].map(cb=>cb.value);
@@ -12972,7 +13155,7 @@ function openPersonEditor(personId){
     // 長期不可排：跟現在（含舊資料的預設值）一樣就不寫
     const ltKey=x=>{ const o={mode:x.mode||'off'}; if(o.mode!=='off'){ o.reason=x.reason||''; o.inCamp=x.inCamp!==false; o.weekdayOnly=!!x.weekdayOnly; if(o.mode==='range'){ o.start=x.start||''; o.end=x.end||''; } } return JSON.stringify(o); };
     if(ltKey(personLongTerm(p))!==ltKey(newLongTerm)){ p.longTerm = newLongTerm; delete p.longTermUnavailable; }
-    put('note', document.getElementById('epNote').value.trim());
+    { const el=document.getElementById('epNote'); if(el) put('note', el.value.trim()); }
     if((p.outingRestriction||'normal')!==document.getElementById('epOutingRestriction').value) p.outingRestriction=document.getElementById('epOutingRestriction').value;
     // v173 自訂欄位：有改才寫；沒填的拿掉，全部沒填就不留空的 custom
     { const cv=readCustomFieldInputs(modal, 'ep');
@@ -13086,6 +13269,7 @@ document.getElementById('importFile').addEventListener('change', (e)=>{
         migrateDutySpecsV170();
         migrateDutySpecsV171();
         migrateDutySpecsV173();
+        migrateDutySpecsV174();
         ensureV173Fields();
         (state.dutyDefinitions||[]).forEach(d=>syncDutyDefinitionToLegacy(d));
         refreshPreplanTypesFromDefs();
@@ -13219,7 +13403,7 @@ function findLeaveIdForPerson(personId, date){
 let notInCampFilterState={search:'',group:'',reasons:[]};
 function notInCampList(date){
   const onDutyIds = new Set(onDutyList(date).map(p=>p.id));
-  return state.personnel.filter(p=>!onDutyIds.has(p.id));
+  return rosterOn(date).filter(p=>!onDutyIds.has(p.id));
 }
 /* v165：一個人某天不在營可能同時有好幾個原因（例如自己的休假＋留守期間
    放假），以前只拿「第一筆」記錄，記錄先後一換顯示跟篩選就不一樣。現在全
@@ -13670,7 +13854,7 @@ function onDutyList(date){
   // duty", just physically away; renderOnDutyList annotates them with the
   // task name instead. Only 休假 and 在營=否 (長期事故/單日事故) genuinely
   // take someone off the roster for the day.
-  return state.personnel.filter(p=>{
+  return rosterOn(date).filter(p=>{
     if(awayIds.has(p.id)) return false;
     const lt = effectiveLongTerm(p, date);
     // 「在營」only makes someone disappear from this whole-day list when it's
@@ -13992,7 +14176,7 @@ function outingEligibleList(date, filterFn){
   // 記錄）。今天早上才剛收假回來的後緩衝不算——那只佔用清晨那一小段，
   // 不影響晚上的外散宿資格。
   const onLeaveIds = new Set((state.unavail[date]||[]).filter(u=>u.leaveId && !isBackBufferEntry(u)).map(u=>u.personId));
-  let list = state.personnel.filter(p=>!onLeaveIds.has(p.id) && isEligibleForOuting(p.id, date));
+  let list = rosterOn(date).filter(p=>!onLeaveIds.has(p.id) && isEligibleForOuting(p.id, date));
   if(filterFn) list = list.filter(filterFn);
   return list.sort((a,b)=>rankIndex(a.rank)-rankIndex(b.rank) || groupIndex(a.group)-groupIndex(b.group));
 }
@@ -14101,7 +14285,7 @@ function groupTimelineFilterFn(p){
   return true;
 }
 function renderGroupTimelineList(date){
-  const activePersonnel = state.personnel.filter(p=>!isDeparted(p)).filter(groupTimelineFilterFn);
+  const activePersonnel = rosterOn(date).filter(groupTimelineFilterFn);
   if(!activePersonnel.length) return `<div class="empty">找不到符合條件的人</div>`;
   const byGroup={};
   activePersonnel.forEach(p=>{ const g=p.group||'未分組'; if(!byGroup[g]) byGroup[g]=[]; byGroup[g].push(p); });
@@ -14112,7 +14296,7 @@ function renderGroupTimelineList(date){
   }).join('');
 }
 function groupTimelineSectionHTML(date){
-  const groups = [...new Set(state.personnel.filter(p=>!isDeparted(p)).map(p=>p.group).filter(Boolean))].sort((a,b)=>groupIndex(a)-groupIndex(b));
+  const groups = [...new Set(rosterOn(date).map(p=>p.group).filter(Boolean))].sort((a,b)=>groupIndex(a)-groupIndex(b));
   return `
     <div class="hint" style="margin-top:10px">下面即時彙整每個人今天的事故／勤務，依時間先後列出；沒有任何記錄的人會顯示「無排班」。</div>
     <div class="row wrap" style="margin:8px 0">
@@ -14576,7 +14760,7 @@ function showConfirm(message, onConfirm, opts){
       <div style="margin-bottom:14px;font-size:14px;line-height:1.5;color:var(--text);white-space:pre-wrap">${esc(message)}</div>
       <div class="row wrap">
         <button class="ghost grow" id="confirmCancel">${esc(cancelLabel)}</button>
-        <button class="primary grow" id="confirmOk">${esc(confirmLabel)}</button>
+        <button class="primary grow${opts.danger? ' danger-solid' : ''}" id="confirmOk">${esc(confirmLabel)}</button>
       </div>
     </div>`;
   document.body.appendChild(modal);
@@ -14672,7 +14856,7 @@ function hourDutyMap(intervals, h, kind){
   intervals.forEach(iv=>{
     if(iv.kind!==(kind||'duty')) return;
     if(!(iv.s<H+60 && H<iv.e)) return;
-    if(!state.personnel.some(p=>p.id===iv.pid)) return;
+    if(!state.personnel.some(p=>p.id===iv.pid && !isDepartedOn(p, currentDate))) return;
     const label=iv.label+(iv.tag? `（${iv.tag}）`:'');
     if(!map.has(iv.pid)) map.set(iv.pid, []);
     const list=map.get(iv.pid);
@@ -14683,7 +14867,7 @@ function hourDutyMap(intervals, h, kind){
 /* 某一小時有空的人：不在勤務上、不在補休、也沒有休假/事故/長期事故/衛哨補休 */
 function hourFreePeople(h, dutyMap, restMap){
   const s=h*60, e=(h+1)*60;
-  return state.personnel.filter(p=>!dutyMap.has(p.id) && !(restMap && restMap.has(p.id)) && !isPersonUnavailable(p.id,currentDate,s,e,null,{skipDuties:true}));
+  return rosterOn(currentDate).filter(p=>!dutyMap.has(p.id) && !(restMap && restMap.has(p.id)) && !isPersonUnavailable(p.id,currentDate,s,e,null,{skipDuties:true}));
 }
 function hourlyFilterPeople(list){
   if(hourlyPeopleFilterState.search) list=list.filter(p=>p.name.includes(hourlyPeopleFilterState.search));
@@ -14701,7 +14885,7 @@ function hourlyAvailablePeopleHTML(h){
   const freeHTML = `<div class="hour-sec-title"><b>🟢 有空（${available.length} 人）</b></div>` + personListSummaryHTML(list, available)
     + (list.length? list.map(p=>`<div class="muted">・${esc(p.name)}（<span class="nw">${esc(p.group||'未分組')}</span>·<span class="nw">${esc(p.rank)}</span>）</div>`).join('') : `<div class="empty">找不到符合的人員</div>`);
   // 在勤務上的人：照勤務分組（誰在出什麼勤務）
-  const onDuty=state.personnel.filter(p=>dutyMap.has(p.id));
+  const onDuty=rosterOn(currentDate).filter(p=>dutyMap.has(p.id));
   const shown=new Set(hourlyFilterPeople(onDuty).map(p=>p.id));
   const byLabel=new Map();
   onDuty.forEach(p=>{
@@ -14715,7 +14899,7 @@ function hourlyAvailablePeopleHTML(h){
     .map(([label,g])=>`<div class="muted hour-duty-row">・<b>${esc(label)}</b>：${g.people.map(p=>`${esc(p.name)}<span class="hint">（${esc(p.rank)}）</span>`).join('、')}</div>`).join('');
   const dutyHTML = `<div class="hour-sec-title" style="margin-top:10px"><b>🔵 在勤務上（${onDuty.length} 人）</b>${shown.size!==onDuty.length? `<span class="hint">　篩選出 ${shown.size} 人</span>`:''}</div>`
     + (groupsHTML || `<div class="empty">${onDuty.length? '找不到符合的人員' : '這一小時沒有人在勤務上'}</div>`);
-  const resting=hourlyFilterPeople(state.personnel.filter(p=>restMap.has(p.id)));
+  const resting=hourlyFilterPeople(rosterOn(currentDate).filter(p=>restMap.has(p.id)));
   const restHTML = resting.length? `<div class="hour-sec-title" style="margin-top:10px"><b>😴 勤務後補休（${resting.length} 人）</b></div>`
     + resting.map(p=>`<div class="muted hour-duty-row">・${esc(p.name)}<span class="hint">（${esc(restMap.get(p.id).map(d=>d.label).join('、'))}）</span></div>`).join('') : '';
   return freeHTML + dutyHTML + restHTML;
@@ -14817,7 +15001,7 @@ document.addEventListener('click', (e)=>{
   }
 });
 function renderGroupRankStats(){
-  const activePersonnel = state.personnel.filter(p=>!isDeparted(p));
+  const activePersonnel = rosterOn(currentDate);
   if(!activePersonnel.length) return `<div class="empty">尚未新增人員</div>`;
   const groups = [...new Set(activePersonnel.map(p=>p.group).filter(Boolean))].sort((a,b)=>groupIndex(a)-groupIndex(b));
   const hasUngrouped = activePersonnel.some(p=>!p.group);
@@ -14871,7 +15055,7 @@ function wireCardListDrag(containerId, tab, defs){
   });
 }
 function renderStats(){
-  const groups = [...new Set(state.personnel.map(p=>p.group).filter(Boolean))].sort((a,b)=>groupIndex(a)-groupIndex(b));
+  const groups = [...new Set(rosterOn(currentDate).map(p=>p.group).filter(Boolean))].sort((a,b)=>groupIndex(a)-groupIndex(b));
   const hours=[...Array(24).keys()];
   const dutyIv = dayDutyIntervals(currentDate);
   const dutyMaps = hours.map(h=>hourDutyMap(dutyIv, h));
@@ -14909,7 +15093,7 @@ function renderStats(){
       <div id="queryResult"></div>
       <div class="hint">會列出這個時間點有空的人，以及每個人從這個時間點起還能連續空多久（已排的勤務、請假、長期事故、補休都會計入）。</div>
 `);
-  const hourlyHTML = collapsibleCardHTML('hourly', `每時段空閒／勤務人數（總員 ${state.personnel.length} 人）`, `
+  const hourlyHTML = collapsibleCardHTML('hourly', `每時段空閒／勤務人數（總員 ${rosterOn(currentDate).length} 人）`, `
       ${hours.map((h,i)=>{
         const bd=hourBreakdown(h);
         const rowKey='hourRow-'+h;
@@ -15027,33 +15211,34 @@ function renderQueryResult(){
     if(rkf && rankCategory(p.rank)!==rkf) return false;
     return true;
   };
-  if(!state.personnel.length){ resultEl.innerHTML=`<div class="empty">尚未新增人員</div>`; return; }
+  const roster=rosterOn(currentDate); // v174：離退的人不算（應到、事故、實到都不算）
+  if(!roster.length){ resultEl.innerHTML=`<div class="empty">尚未新增人員</div>`; return; }
   const sysAbsent = p=>isPersonUnavailable(p.id,currentDate,qMin,qMin+1);
   const absentNow = p=> adj.out.has(p.id) || (sysAbsent(p) && !adj.back.has(p.id));
-  const free = state.personnel.filter(groupMatch).filter(p=>!absentNow(p))
+  const free = roster.filter(groupMatch).filter(p=>!absentNow(p))
     .map(p=>({p, dur: adj.back.has(p.id)? null : freeDurationFrom(p.id,currentDate,qMin)}))
     .sort((a,b)=>(b.dur===null?1e9:b.dur)-(a.dur===null?1e9:a.dur));
-  const groups = [...new Set(state.personnel.map(p=>p.group).filter(Boolean))].sort((a,b)=>groupIndex(a)-groupIndex(b));
+  const groups = [...new Set(roster.map(p=>p.group).filter(Boolean))].sort((a,b)=>groupIndex(a)-groupIndex(b));
   const groupsForTable = groups.length? groups : [''];
   const rows = groupsForTable.map(g=>{
-    const members = state.personnel.filter(p=>p.group===g);
+    const members = roster.filter(p=>p.group===g);
     const total = rankGenderBreakdown(members);
     const absent = rankGenderBreakdown(members.filter(absentNow));
     const present = {};
     Object.keys(total).forEach(k=>{ present[k]=total[k]-absent[k]; });
     return {label:g||'未分組', total, absent, present};
   });
-  const totalAll = rankGenderBreakdown(state.personnel);
-  const absentAll = rankGenderBreakdown(state.personnel.filter(absentNow));
+  const totalAll = rankGenderBreakdown(roster);
+  const absentAll = rankGenderBreakdown(roster.filter(absentNow));
   const presentAll = {};
   Object.keys(totalAll).forEach(k=>{ presentAll[k]=totalAll[k]-absentAll[k]; });
   const fmtRank=fmtRankBreakdownHTML;
-  const busyList = state.personnel.filter(groupMatch).filter(absentNow)
+  const busyList = roster.filter(groupMatch).filter(absentNow)
     .map(p=>({p, temp:adj.out.has(p.id), reasons: adj.out.has(p.id)? [] : unavailabilityReasonsInRange(p.id,currentDate,qMin,qMin+1)}))
     .sort((a,b)=>(b.temp-a.temp) || groupIndex(a.p.group)-groupIndex(b.p.group) || rankIndex(a.p.rank)-rankIndex(b.p.rank));
   const nAdj=adj.out.size+adj.back.size;
   resultEl.innerHTML = `
-    <div class="muted" style="margin-bottom:6px">${t} 有空：${free.length} / ${state.personnel.filter(groupMatch).length} 人${gf?'（已篩選排組）':''}</div>
+    <div class="muted" style="margin-bottom:6px">${t} 有空：${free.length} / ${roster.filter(groupMatch).length} 人${gf?'（已篩選排組）':''}</div>
     ${nAdj? `<div class="badge-issue q-adj-note" style="margin-bottom:8px">✏️ 有臨時調整 ${nAdj} 人（臨時事故 ${adj.out.size}、已回來 ${adj.back.size}），只算這次點名、沒有改班表 <button class="ghost small" id="qAdjReset" style="margin-left:4px">全部還原</button></div>` : ''}
     <table class="hr-table" style="margin-bottom:10px">
       <tr><th style="text-align:left">排組</th><th>應到</th><th>事故</th><th>實到</th></tr>
@@ -16204,7 +16389,7 @@ function todayLeaveTableSummary(date){
   const byCat={};
   Object.entries((state.preplan||{}).leave||{}).forEach(([pid, cats])=>{
     const p=state.personnel.find(x=>x.id===pid);
-    if(!p) return;
+    if(!p || isDepartedOn(p, date)) return; // v174：離退日起不算（只留在已離退人員當紀錄）
     Object.entries(cats||{}).forEach(([cat, rec])=>{
       if(!rec) return;
       const part=(rec.partialTimes||{})[date];
@@ -16216,7 +16401,7 @@ function todayLeaveTableSummary(date){
   });
   // v167：留守期間不在留守名單的人自動算休假，也列進休假
   const listed=new Set(byCat[DERIVED_LEAVE_CAT]||[]);
-  state.personnel.forEach(p=>{
+  rosterOn(date).forEach(p=>{
     if(listed.has(p.name) || !derivedLeaveOn(p.id, date)) return;
     (byCat[DERIVED_LEAVE_CAT]=byCat[DERIVED_LEAVE_CAT]||[]).push(p.name);
   });
@@ -17004,7 +17189,7 @@ function runAdhocQuery(){
   const wanted = {軍官:Number(officer)||0, 士官:Number(nco)||0, 士兵:Number(enlisted)||0};
   const byCategory = {軍官:[], 士官:[], 士兵:[]};
   const anyList = [];
-  state.personnel.forEach(p=>{
+  rosterOn(currentDate).forEach(p=>{
     const cat = rankCategory(p.rank);
     if(!cat) return;
     if(!adhocCandidateMatches(p)) return;
