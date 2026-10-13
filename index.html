@@ -557,7 +557,7 @@ button.small.card-more{min-width:44px;min-height:40px;font-size:20px;line-height
       <span class="unit-banner-badge"><i data-ico="star"></i></span>
       <span class="unit-banner-titles">
         <span class="unit-banner-text">陸軍第八軍團 本部連</span>
-        <h1 id="pageTitle">衛哨排班系統 <span class="muted">v178</span></h1>
+        <h1 id="pageTitle">衛哨排班系統 <span class="muted">v185</span></h1>
       </span>
     </span>
     <span class="banner-side right">
@@ -752,10 +752,9 @@ function loadState(){
 function saveState(){
   /* v160 以預排為準：存檔前先處理預排跟班表的同步——
      - 預排有變動（或是系統動作，例如匯入/清除）：今天以後的班表跟著預排更新
-     - 否則檢查這次是不是在排班頁改到了預排來的格子：是的話先不存，問使用
-       者要不要一起更新預排（handlePlanOwnedEdits），回答之後才真的存檔
-     正在等使用者回答的期間又有存檔（同一個動作連續存兩次），先留在畫面上，
-     等回答時一起決定。 */
+     - 否則檢查這次是不是在排班頁改到了預排來的格子：是的話直接一起寫回預排
+       （handlePlanOwnedEdits，v184 起不再問）
+     planWriteBackPending 是以前「等使用者回答要不要更新預排」用的，v184 起不會再設。 */
   if(planWriteBackPending) return;
   // v173：「改設定會影響已排好的」還在問：這時候什麼都不寫進手機（按「套用」才存；「不要改」就回到原本的）
   if(settingsImpactAsking) return;
@@ -1256,11 +1255,15 @@ const NCO_LEAD_PRIORITY=['下士','中士','上士','士官長','少尉','中尉
    should go to an enlisted soldier first, only reaching for another NCO or
    an officer if no soldier is available. */
 const MEAL_HELPER_PRIORITY=['訓練役','二兵','一兵','上兵','下士','中士','上士','士官長','少尉','中尉','上尉','少校'];
+/* v179：打飯班這種「需士官帶隊」的類別，哪一班沒有帶隊的人：預設的「整天」，或是這一班設成
+   需 0 位士官（例如改名成「全天」、需幾位士官設 0）——以前只認名稱「整天」，改了名字第一格就
+   還是先挑士官，把假日本來就少的士官用掉 */
+function noLeaderShift(cat, shift){ return !!(cat && cat.needsNCO && shift && (shift.label==='整天' || shift.minNCO===0)); }
 function dutySortIndex(rank, cat, slotIdx, shift){
   // 整天 (all-day) meal duty isn't a leadership shift — the NCO requirement
   // for 打飯班 is satisfied elsewhere (早/午/晚 each get their own leader), so
   // every slot on 整天 just prefers the lowest-rank enlisted first.
-  if(cat.needsNCO && shift && shift.label==='整天'){
+  if(noLeaderShift(cat, shift)){
     const helperOrder = cat.customPriorityHelper || MEAL_HELPER_PRIORITY;
     const i=helperOrder.indexOf(rank);
     return i<0? helperOrder.length : i;
@@ -1307,7 +1310,7 @@ function defaultCategories(){
       shifts:[
         sh('06:00','08:00'),sh('08:00','12:00'),sh('12:00','14:00'),sh('14:00','18:00'),sh('18:00','22:00')
       ]},
-    {id:'meal',name:'打飯班',enforceRest:false,preferLowRank:false,needsNCO:true,isSentry:false,
+    {id:'meal',name:'打飯班',enforceRest:false,preferLowRank:false,needsNCO:true,isSentry:false,rankRange:{from:'下士',to:'上士'},
       shifts:[
         sh('06:00','07:00',2,'早','08:30'),sh('10:10','13:20',2,'午','15:30'),sh('16:20','19:30',2,'晚'),sh('00:00','24:00',2,'整天')
       ]}
@@ -2475,26 +2478,26 @@ function setPreplan(key, date, value){
   else state.preplan[key][date]=value;
 }
 /* ================================================================
-   v160 以預排為準：預排直接生效＋班表手改確認後回寫預排
+   v160 以預排為準：預排直接生效＋班表手改直接回寫預排（v184 起不再問）
    ----------------------------------------------------------------
    1) 預排一存，今天以後的日期就直接同步到實際班表，不用再按「匯入」。
       已經過去的日期鎖住，之後改預排不會回頭改到當時實際的樣子。
       同步時內容一樣就原封不動（保留原本那筆資料的編號、🔒暫不排、已確認
       的衝突），只有真的不一樣的才重寫。
    2) 排班頁改了「預排來的格子」（值星/查哨/督伙/救護車/中央監控值班/採買/
-      驗菜/自訂預排，以及留守的子勤務），每改一次就跳確認：
-        「更新預排」→ 預排跟著改成一樣；「取消修改」→ 這次修改整個取消。
-      回寫前會先照新的預排重算一次，確定重算出來跟班表一模一樣才問；預排
-      表達不了的修改（例如查哨改成非固定時段）直接取消並說明原因。
+      驗菜/自訂預排，以及留守的子勤務）：直接一起改預排（v184：使用者說班表
+      改了就代表預排錯了，不用問），跳一行提示，要還原按 ↩️（班表跟預排一起還原）。
+      預排表達不了的修改（例如查哨改成非固定時段）直接取消並說明原因。
    3) 休假暨事故大表：存檔就直接生效（只重建有變動、而且還沒過去的那幾段；
       沒變動的段落原封不動，開始延後/收假提早的調整不會被洗掉）。
    ================================================================ */
 var PLAN_SYNC = null;              // 載入完成後由 initPlanSync() 建立
-var planWriteBackPending = null;   // 等使用者回答「要不要更新預排」時 = {prev}
+var planWriteBackPending = null;   // 以前等使用者回答「要不要更新預排」用；v184 起直接回寫，不會再設
 var planSyncSilentNext = false;    // 下一次存檔是系統動作（匯入/清除…），不算手改
-var planWriteBackPartialNext = false; // 下一次存檔若不更新預排，只把預排格子還原（自動補空缺用）
+var planWriteBackPartialNext = false; // 下一次存檔是自動補空缺：預排表達不了的格子只還原那幾格
 var planImportTagging = false;     // importPreplanForDate 產生的項目附上來源位置（只在模擬時用）
-var planWriteBackSettledQueue = []; // 等「要不要更新預排」回答完才做的事
+var planWriteBackSettledQueue = []; // （同上，v184 起不會再排隊）
+var planWriteBackNote = null;      // v184：自動補空缺補到預排格子、一起更新了預排——補完的提示一起講（不另外跳一個）
 function whenPlanWriteBackSettled(fn){ if(planWriteBackPending) planWriteBackSettledQueue.push(fn); else fn(); }
 var STANDBY_TAGS = ['休假（留守期間非留守人員）','留守提早離營','留守較晚到營'];
 var standbyImportMinDate = null;   // 留守匯入時只寫這天以後（自動同步用今天，過去鎖住）
@@ -3658,66 +3661,48 @@ function planEditLabel(e){
   const bt=`${e.before.start||''}-${e.before.end||''}`, at=`${m.start||''}-${m.end||''}`;
   return `${d} ${head} ${was===now? now : `${was} → ${now}`}${bt!==at? `（原本 ${bt}）`:''}`;
 }
-/* 存檔時發現改到預排的格子：先試算回寫；表達不了就直接取消並說明；
-   可以的話問使用者要不要一起更新預排。回答之前這次修改先不存進手機。 */
+/* 存檔時發現改到預排的格子：直接寫回預排（v184：使用者說班表上改了就代表預排錯了，不用問）。
+   預排表達不了的修改（例如查哨改成非固定時段、改名稱）不寫：這次修改取消並說明原因
+   （自動補空缺補到的那幾格只還原那幾格，其他補好的照樣保留）。
+   要還原按 ↩️：班表跟預排一步一起還原（存檔前的樣子在復原紀錄裡）。 */
 function handlePlanOwnedEdits(edits, prevSnapshot, partial){
-  // 先試算一次（算完把預排放回原樣），確定預排記得下來才問
   const preplanBefore=JSON.stringify(state.preplan);
-  const trial=applyPlanWriteBack(edits);
-  const touchedPlans=trial.ok? planChangeSummary(preplanBefore) : [];
-  state.preplan=JSON.parse(preplanBefore);
-  let replaced=false; // 整份資料換回修改前：開著的自動儲存編輯畫面要照新的資料重畫
-  const revertAll=()=>{ state=JSON.parse(prevSnapshot); initPlanSync(); replaced=true; };
-  const revertPlanCells=()=>{
-    // 只把預排格子還原成修改前，其他修改保留
-    const prev=JSON.parse(prevSnapshot), roles=planOwnedRoleSet();
-    [...new Set(edits.map(e=>e.date))].forEach(d=>{
-      const keep=(state.misc[d]||[]).filter(m=>!isPlanOwnedEntry(m, roles));
-      const back=((prev.misc||{})[d]||[]).filter(m=>isPlanOwnedEntry(m, roles));
-      const next=keep.concat(back);
-      if(next.length) state.misc[d]=next; else delete state.misc[d];
-    });
-    rebaseLinkedSig();
-    commitSave(prevSnapshot);
-  };
-  const finish=(toast)=>{
-    planWriteBackPending=null;
+  const r=applyPlanWriteBack(edits);
+  if(!r.ok){
+    state.preplan=JSON.parse(preplanBefore);
+    if(partial){
+      // 只把預排格子還原成修改前，其他修改保留
+      const prev=JSON.parse(prevSnapshot), roles=planOwnedRoleSet();
+      [...new Set(edits.map(e=>e.date))].forEach(d=>{
+        const keep=(state.misc[d]||[]).filter(m=>!isPlanOwnedEntry(m, roles));
+        const back=((prev.misc||{})[d]||[]).filter(m=>isPlanOwnedEntry(m, roles));
+        const next=keep.concat(back);
+        if(next.length) state.misc[d]=next; else delete state.misc[d];
+      });
+      rebaseLinkedSig();
+      commitSave(prevSnapshot);
+      render();
+      showAlert(`預排來的格子沒有補：\n${r.msg}`);
+      return;
+    }
+    state=JSON.parse(prevSnapshot); initPlanSync();
     if(typeof refreshUndoButton==='function') refreshUndoButton();
     render();
-    if(toast) showToast(toast);
-    if(replaced) notifyStateReplaced();
-    const q=planWriteBackSettledQueue.splice(0);
-    q.forEach(fn=>{ try{ fn(); }catch(e){ console.error(e); } });
-  };
-  if(!trial.ok){
-    if(partial){ revertPlanCells(); finish(); showAlert(`預排來的格子沒有補：\n${trial.msg}`); return; }
-    revertAll(); finish();
-    showAlert(`這次修改已取消：\n${trial.msg}`);
+    notifyStateReplaced();
+    showAlert(`這次修改已取消：\n${r.msg}`);
     return;
   }
-  planWriteBackPending={prev:prevSnapshot};
-  if(typeof refreshUndoButton==='function') refreshUndoButton();
-  const lines=[...new Set(edits.map(planEditLabel))];
-  const shown=lines.slice(0,8).map(l=>'・'+l).join('\n')+(lines.length>8?`\n…還有 ${lines.length-8} 筆`:'');
-  const msg = partial
-    ? `自動補空缺也補到了預排來的格子：\n${shown}\n\n要一起更新預排嗎？選「這幾格不要」的話，這幾格維持原樣，其他補好的照樣保留。`
-    : `這${edits.length>1?'些':''}是預排來的格子：\n${shown}\n\n要把預排也改成這樣嗎？${touchedPlans.length?`\n會改到：${touchedPlans.join('、')}`:''}\n不更新預排的話，這次修改會取消。`;
-  showConfirm(msg, ()=>{
-    // 等回答的期間同一個動作可能又改了一點（例如換班後順手補空出來的位
-    // 置），以回答當下的班表為準重新算一次
-    const finalEdits=detectPlanOwnedEdits(prevSnapshot);
-    const r=applyPlanWriteBack(finalEdits.length? finalEdits : edits);
-    if(!r.ok){ revertAll(); finish(); showAlert(`這次修改已取消：\n${r.msg}`); return; }
-    const roles=planOwnedRoleSet();
-    (finalEdits.length? finalEdits : edits).forEach(e=>{ const m=e.after; if(m && isPlanOwnedEntry(m, roles) && !m.standbyAnchor) m.fromPreplan=true; });
-    runPlanSync();
-    rebaseLinkedSig();
-    commitSave(prevSnapshot);
-    finish('已同步更新預排');
-  }, {confirmLabel:'更新預排', cancelLabel: partial? '這幾格不要' : '取消修改', zIndex:1200, onCancel:()=>{
-    if(partial){ revertPlanCells(); finish('預排的格子維持原樣'); }
-    else { revertAll(); finish('已取消這次修改'); }
-  }});
+  const touched=planChangeSummary(preplanBefore);
+  const roles=planOwnedRoleSet();
+  edits.forEach(e=>{ const m=e.after; if(m && isPlanOwnedEntry(m, roles) && !m.standbyAnchor) m.fromPreplan=true; });
+  runPlanSync();
+  rebaseLinkedSig();
+  commitSave(prevSnapshot);
+  render();
+  const what=touched.length? `：${touched.slice(0,3).join('、')}${touched.length>3? `…等 ${touched.length} 項` : ''}` : '';
+  // 自動補空缺：補完的提示（全部補上／補不上的清單）一起講，不另外跳一個提示疊在一起
+  if(partial) planWriteBackNote=`預排也一起更新${what}`;
+  else showToast(`已一起更新預排${what}（要還原按 ↩️）`);
 }
 
 /* ---------- 班表跟預排不一致的檢查（第一次用這版、匯入備份後、或自己按檢查） ----------
@@ -3732,7 +3717,7 @@ function planEntriesText(list){
     const who=m.roles
       ? m.roles.map((r,i)=>`${r}${(m.personIds||[])[i]? personName(m.personIds[i]) : '（空）'}`).join('、')
       : (m.personIds||[]).filter(Boolean).map(personName).join('、');
-    return `${m.shiftLabel?m.shiftLabel+' ':''}${t}${who}${m.support?`（${m.support}）`:''}`;
+    return `${m.shiftLabel?m.shiftLabel+' ':''}${t}${who}${m.support?`（${m.support}）`:''}${m.restUntil?`（補休到 ${m.restUntil}）`:''}`;
   }).join('；');
 }
 function shortDateLabel(d){ const [,m,dd]=d.split('-').map(Number); return `${m}/${dd}`; }
@@ -3862,13 +3847,12 @@ function applyPlanDrift(){
   saveState();
 }
 /* v168：一律以預排為準——班表跟預排不一樣的，直接照預排改好，再列出改了什麼（不用選）。
-   班表上手改預排來的格子，存檔時會先問要不要寫回預排（handlePlanOwnedEdits），不會被蓋掉。 */
+   班表上手改預排來的格子，存檔時直接寫回預排（handlePlanOwnedEdits），不會被蓋掉。 */
 function openPlanDriftModal(drift, reason, filledCount){
   const items=(drift.items||[]).filter(i=>!i.additive);
   const modal=document.createElement('div');
   modal.className='sheet-modal'; modal.style.zIndex='160';
   const intro = reason==='import'? '剛匯入的備份裡，今天以後有些班表跟預排不一樣，已經照預排改好：'
-    : reason==='migrate'? '這一版開始<b>一律以預排為準</b>：今天以後班表跟預排不一樣的，直接照預排改好。這次改了：'
     : '今天以後班表跟預排不一樣的地方，已經照預排改好：';
   const miscItems=items.filter(i=>i.kind==='misc'), leaveItems=items.filter(i=>i.kind==='leave');
   const row=it=>`
@@ -3950,6 +3934,21 @@ function planDriftAlertHTML(drift){
   if(!drift || !drift.length) return '';
   return `<div class="st-alert">${ico('alert')}<span class="grow">這天的${esc(drift.join('、'))}跟預排不一樣</span><button class="ghost small" id="planDriftFixBtn">照預排更新</button></div>`;
 }
+/* v179：這一天的班表（衛哨照勤務日，前一天 22:00 起；打飯班等照這天）有沒有碰到「還沒有留守表
+   （或沒蓋到全部日子）的假日」放假的時間：假日前一天放假開始～假日後一天收假。回傳那段假日 {start,end}。 */
+function standbyMissingRunFor(date){
+  const r=standbyRuleTimes();
+  let S0=0, S1=1440;
+  state.categories.forEach(cat=>effectiveShifts(cat, date).forEach(sft=>{ const [a,b]=catShiftAbs(date, sft, date); S0=Math.min(S0,a); S1=Math.max(S1,b); }));
+  for(const d of [prevDateStr(date), date, nextDateStr(date)]){
+    if(!isHolidayDate(d)) continue;
+    const run=holidayRunAround(d);
+    if(!run || dateRangeList(run.start, run.end).every(x=>standbyPlansOn(x).length)) continue;
+    const W0=dayOffMin(prevDateStr(run.start), date)+toMin(r.leaveStartTime), W1=dayOffMin(nextDateStr(run.end), date)+toMin(r.endTime);
+    if(absOverlap(S0, S1, W0, W1)) return run;
+  }
+  return null;
+}
 /* 某一天的勤務跟預排不一致的角色（排班頁概況卡用，只看勤務、不看休假） */
 function dayPlanDriftRoles(date){
   if(!PLAN_SYNC || date<todayStr()) return [];
@@ -3993,7 +3992,7 @@ function dayPlanDriftRoles(date){
    掉或規則不再違反，紀錄就不再適用。
    ================================================================ */
 var RULE_CATALOG=[
-  {key:'leave',        no:1,  name:'休假／事故／長期事故期間',           level:'fact'},
+  {key:'leave',        no:1,  name:'休假／事故／長期事故期間',           level:'fact',    note:'預排的優先權比較高：預排管的項目（值星、查哨、督伙、救護車、留守子勤務…）排到有長期事故的人，照排、只提醒💡（自動排班不會挑他）'},
   {key:'departed',     no:2,  name:'已離退',                           level:'fact',    note:'已離退的人不在名冊上，挑人清單、自動排班本來就不會出現；這個等級管的是已經排在班表上的'},
   {key:'overlap',      no:3,  name:'同時段已排其他勤務',                 level:'fact',    note:'同一個人在同一班排兩格，不管設什麼等級都不能排'},
   {key:'comprest',     no:4,  name:'補休時間內',                        level:'normal'},
@@ -4084,12 +4083,17 @@ function personalViolations(ctx, pid){
   const win=ctxWindow(ctx);
   const selfCat = ctx.kind==='cat'? {catId:ctx.cat.id, shiftId:ctx.shift.id} : null;
   const selfMiscId = ctx.kind==='misc'? ctx.entry.id : null;
+  /* v185：預排的優先權比較高——預排管的項目（值星、查哨、督伙、救護車、留守子勤務…）排到有長期事故的人，
+     照排、只提醒（💡）；自動排班、一鍵排查哨、找人選還是不會挑他（autoBlock） */
+  const planOwnedSelf = ctx.kind==='misc' && isPlanOwnedEntry(ctx.entry);
+  const ltWhat = lt=>lt.mode==='allday'? `整天${lt.reason? '・'+lt.reason : ''}` : `每天 ${lt.start}-${lt.end}${lt.reason? ' '+lt.reason : ''}`;
+  const addLt = (lt, msg)=>{ if(planOwnedSelf) add('leave', `預排照排，但這段時間是他的長期事故（${ltWhat(lt)}）`, {level:'remind', autoBlock:true, planLt:true}); else add('leave', msg); };
   // 2 已離退
   if(person.departureDate && date>=person.departureDate) add('departed', `已離退（${minguoLabel(person.departureDate)}起）`);
   if(!win){
     // 沒有時段的項目：至少整天不在的（整天休假／事故、全天長期事故）一定排不了
     const lt=effectiveLongTerm(person, date);
-    if(lt.mode==='allday') add('leave', `長期事故：全天不可排${lt.reason?`（${lt.reason}）`:''}`);
+    if(lt.mode==='allday') addLt(lt, `長期事故：全天不可排${lt.reason?`（${lt.reason}）`:''}`);
     (state.unavail[date]||[]).forEach(u=>{ if(u.personId===pid && isAwayDayEntry(u)) add('leave', `${u.allDay?'全天':`${u.start}-${u.end}`}${u.reason?`（${u.reason}）`:'（事故）'}`); });
   }
   // 3 同一班（或同一個多人項目）重複排了同一個人；車長＋駕駛同一人由規則16管
@@ -4100,6 +4104,7 @@ function personalViolations(ctx, pid){
   }
   // v176：衛哨班照實際的日子（班表 D 的 22-24 是前一天晚上）跟日曆日的東西比
   const dayDate = ctx.kind==='cat'? catShiftCalendar(date, ctx.shift).date : date;
+  let ltTimeHit=false; // 這一格本身碰到長期事故的時段（規則1已經講了，下面補休碰到長期事故就不再重複講）
   if(win){
     const {s,e}=win;
     const isCat=ctx.kind==='cat';
@@ -4109,7 +4114,7 @@ function personalViolations(ctx, pid){
     const dl=X=>X===date? '' : `${shortDateLabel(X)} `;
     // 1 休假／事故／長期事故（只看班本身的時段，準備時間不算）
     personAwayHits(pid, person, date, A0, A1).forEach(h=>{
-      if(h.kind==='lt') add('leave', h.lt.mode==='allday'? `長期事故：全天不可排${h.lt.reason?`（${h.lt.reason}）`:''}` : `長期事故：每天 ${h.lt.start}-${h.lt.end} 不可排${h.lt.reason?`（${h.lt.reason}）`:''}`);
+      if(h.kind==='lt'){ ltTimeHit=true; addLt(h.lt, h.lt.mode==='allday'? `長期事故：全天不可排${h.lt.reason?`（${h.lt.reason}）`:''}` : `長期事故：每天 ${h.lt.start}-${h.lt.end} 不可排${h.lt.reason?`（${h.lt.reason}）`:''}`); }
       else if(h.kind==='leave') add('leave', `${dl(h.date)}${h.u.allDay?'全天':`${h.u.start}-${h.u.end}`}${h.u.reason?`（${h.u.reason}）`:'（事故）'}`);
       // 休假／事故設成提醒時，事故後的補休要另外算
       else if(h.kind==='rest' && (!h.entryHit || ruleLevel('leave')==='remind')) add('comprest', `${h.u.reason||'事故'}後補休到 ${h.u.restUntil}`);
@@ -4210,19 +4215,28 @@ function personalViolations(ctx, pid){
       restIssues(pid, date, cat.id, sft).forEach(msg=>add('rest6h', msg));
       // 8 準備時間
       if(engPrepConflict(pid, date, cat, sft)) add('prep', '這班開始前30分鐘內還在忙其他勤務，沒時間準備');
-      // 9 昨天同一時段
-      if(assignedSameShiftYesterday(pid, date, cat.id, sft.id)) add('yesterday', '昨天也值這個時段');
+      else { const lt=engPrepLongTerm(pid, person, date, sft); if(lt) add('prep', `開班前30分鐘還在${lt.reason? '「'+lt.reason+'」' : '長期事故'}（${lt.start}-${lt.end}），沒時間準備`); }
+      // 9 昨天同一時段（v180：不同崗位、開始跟結束時間一樣也算）
+      { const y=sameSlotOnDay(pid, prevDateStr(date), sft); if(y) add('yesterday', y.cat.id===cat.id? '昨天也值這個時段' : `昨天也值這個時段（${y.cat.name} ${y.sft.label||y.sft.start+'-'+y.sft.end}）`); }
     }
     // 4 這班下哨後的補休跟他其他已排的勤務衝突（v169：打飯班這種有補休的類別也算；
     //   另一邊那一格也會算成「在補休時間內」，兩邊一致）
     if(engRestWindowConflict(pid, date, sft, {catId:cat.id, shiftId:sft.id})) add('comprest', `下哨後補休（到 ${sft.restUntil}）的時段已排了其他勤務`);
+    // v182：長期事故（在營、每天固定時段，例如伙房 04:30-20:00）是他已經在執勤的時間：補休碰到就沒辦法補休
+    else if(!ltTimeHit && sft.restUntil){ const b=catShiftAbs(date, sft, date)[1], g=restGapAfter(b, toMin(sft.restUntil)); const lt=g? ltDutyHit(pid, person, date, b, b+g) : null; if(lt) add('comprest', restHitsLtMsg('', sft.restUntil, lt)); }
   } else {
     const m=ctx.entry, preset=presetForEntry(m);
     const rn=miscSlotName(m, ctx.idx);
     // 14 資格、15 車長需士官以上（崗位定義那一份，全系統同一套）
     slotQualificationIssues(person, preset, rn, m).forEach(q=>add(q.key, q.msg));
     // 4 這個勤務下班後的補休跟他其他已排的勤務衝突
-    if(m.restUntil && m.end && !miscGovernedElsewhere(m, pid) && miscRestWindowConflict(pid, date, m)) add('comprest', `${m.role}後補休（到 ${m.restUntil}）的時段已排了其他勤務`);
+    if(m.restUntil && m.end && !miscGovernedElsewhere(m, pid)){
+      if(miscRestWindowConflict(pid, date, m)) add('comprest', `${m.role}後補休（到 ${m.restUntil}）的時段已排了其他勤務`);
+      // v182：補休碰到長期事故的執勤時間（同上）
+      else if(!ltTimeHit){ const r=miscRestAbs(m, date, date); const lt=r? ltDutyHit(pid, person, date, r[0], r[1]) : null;
+        // v185：預排管的項目照排、只提醒（同上）
+        if(lt) add('comprest', `${planOwnedSelf? '預排照排，但' : ''}${restHitsLtMsg(`${m.role}後`, m.restUntil, lt)}`, planOwnedSelf? {level:'remind', autoBlock:true, planLt:true} : undefined); }
+    }
   }
   // 同一條規則、同一句話只留一筆
   const seen=new Set();
@@ -4287,6 +4301,29 @@ function standbyCampClash(standbyEntry, other){
   if(op && op.isAllDayAway) return `待命「${standbyEntry.role}${standbyEntry.start&&standbyEntry.end?` ${standbyEntry.start}-${standbyEntry.end}`:''}」不能離開營區，「${other.role}」是營外勤務`;
   if(sp && op && baseDutyRole(sp.role)!==baseDutyRole(op.role) && requirementOverlap(sp, op)) return `待命「${standbyEntry.role}${standbyEntry.start&&standbyEntry.end?` ${standbyEntry.start}-${standbyEntry.end}`:''}」跟「${other.role}」要同樣的資格，同時段只能擔任一個`;
   return '';
+}
+/* v180：在營的長期事故（伙房、二級廠、文書…，「在營」的那種）做到開班前 30 分鐘以內，也算沒時間準備。
+   休假、不在營的長期事故照舊不算（收假時間由使用者決定，準備時間不跟休假比）。
+   這一班本身就碰到長期事故的，由規則1（休假／事故／長期事故）管，這裡不重複。回傳那一筆長期事故或 null。
+   只看有時段的（如伙房 04:30-20:00）；「全天」只是標記那天不排，沒有真的做到 24:00，隔天 00:00 的班不受影響。 */
+function engPrepLongTerm(pid, person, date, sft){
+  if(!person || personLongTerm(person).mode!=='range') return null;
+  const a=catShiftAbs(date, sft, date)[0];
+  if(personAwayHits(pid, person, date, a, a+1).some(h=>h.kind==='lt')) return null;
+  const h=personAwayHits(pid, person, date, a-PREP_MINUTES, a).find(h=>h.kind==='lt' && h.lt.mode==='range' && h.lt.inCamp!==false);
+  return h? h.lt : null;
+}
+/* v182：在營、每天固定時段的長期事故（伙房 04:30-20:00、二級廠 08:00-18:00…）＝他已經在執勤的時間。
+   時間軸 [s,e)（ref 當天 00:00 起算）碰到的那一筆長期事故，沒有回傳 null。「全天」的只是標記那天
+   不排、不在營的（受訓等）不是執勤，都不算。用在補休：下勤後要補休的時段他其實要上工，等於沒補休。 */
+function ltDutyHit(pid, person, ref, s, e){
+  if(!person || !(e>s) || personLongTerm(person).mode!=='range') return null;
+  const h=personAwayHits(pid, person, ref, s, e).find(h=>h.kind==='lt' && h.lt.mode==='range' && h.lt.inCamp!==false);
+  return h? h.lt : null;
+}
+// 下拉選單只顯示前 16 個字：原因放前面（「要補休到 08:00，但「伙房」…」）
+function restHitsLtMsg(prefix, until, lt){
+  return `${prefix}要補休到 ${until}，但${lt.reason? '「'+lt.reason+'」' : '長期事故 '}${lt.start} 就要執勤（每天 ${lt.start}-${lt.end}）`;
 }
 function engPrepConflict(pid, date, cat, sft){
   if(!cat.enforceRest) return false;
@@ -4458,8 +4495,8 @@ function placementViolations(ctx, pid){
   if(ctx.kind==='cat'){
     const arr=((((state.assign[ctx.date]||{})[ctx.cat.id])||{})[ctx.shift.id]||[]).slice();
     if(person && wouldBreakOutrankRule(person, ctx.cat, ctx.shift, ctx.date, arr, ctx.idx)) out.push({key:'outrank', level:ruleLevel('outrank'), msg:'會違反「安全士官階級要高於同時段衛哨」'});
-    // 9 反方向：明天同一時段已經排了他（違規會記在明天那一格）
-    if(ctx.cat.enforceRest && ((((state.assign[nextDateStr(ctx.date)]||{})[ctx.cat.id])||{})[ctx.shift.id]||[]).includes(pid)) out.push({key:'yesterday', level:ruleLevel('yesterday'), msg:'明天也排了這個時段'});
+    // 9 反方向：明天同一時段已經排了他（違規會記在明天那一格；v180：不同崗位也算）
+    if(ctx.cat.enforceRest){ const t=sameSlotOnDay(pid, nextDateStr(ctx.date), ctx.shift); if(t) out.push({key:'yesterday', level:ruleLevel('yesterday'), msg: t.cat.id===ctx.cat.id? '明天也排了這個時段' : `明天也排了這個時段（${t.cat.name} ${t.sft.label||t.sft.start+'-'+t.sft.end}）`}); }
     if(ctx.shift.minNCO){
       arr[ctx.idx]=pid;
       const ids=arr.slice(0, ctx.shift.count).filter(Boolean);
@@ -4475,7 +4512,7 @@ function placementViolations(ctx, pid){
   }
   return out;
 }
-function blocksAutoAssign(v){ return !!v.hard || v.level!=='remind'; }
+function blocksAutoAssign(v){ return !!v.hard || !!v.autoBlock || v.level!=='remind'; }
 /* 這一格（ctx）除了 excludeIds 以外，放進去不會違反任何事實/嚴重/一般規
    則的人，照這一格平常的優先順序排 */
 function compliantCandidates(ctx, excludeIds){
@@ -4485,8 +4522,18 @@ function compliantCandidates(ctx, excludeIds){
 }
 function sortCandidatesForCtx(ctx, list){
   const load=new Map(list.map(p=>[p.id, personDutySummary(p.id, ctx.date).length]));
+  // v180：跟自動排班一樣——標「輪流」的階級先，裡面前後 7 天排得少的先；其他照優先順序
+  const lead=ctx.kind==='cat'? leadRankSet(ctx.cat, ctx.idx, ctx.shift) : null;
+  const recent=ctx.kind==='cat'? recentDutyCounts(ctx.date, ROTATE_DAYS) : null;
   return list.slice().sort((a,b)=>{
-    if(ctx.kind==='cat'){ const d=dutySortIndex(a.rank,ctx.cat,ctx.idx,ctx.shift)-dutySortIndex(b.rank,ctx.cat,ctx.idx,ctx.shift); if(d) return d; }
+    if(ctx.kind==='cat'){
+      const aL=lead.has(a.rank)? 0 : 1, bL=lead.has(b.rank)? 0 : 1;
+      if(aL!==bL) return aL-bL;
+      const aR=recent.get(a.id)||0, bR=recent.get(b.id)||0;
+      if(aL===0 && aR!==bR) return aR-bR;
+      const d=dutySortIndex(a.rank,ctx.cat,ctx.idx,ctx.shift)-dutySortIndex(b.rank,ctx.cat,ctx.idx,ctx.shift); if(d) return d;
+      if(aR!==bR) return aR-bR;
+    }
     return load.get(a.id)-load.get(b.id) || groupIndex(a.group)-groupIndex(b.group) || rankIndex(a.rank)-rankIndex(b.rank);
   });
 }
@@ -4501,7 +4548,8 @@ function closestCandidates(ctx, excludeIds, n){
     const serious=vs.filter(v=>v.level==='serious').length, normal=vs.filter(v=>v.level==='normal').length;
     scored.push({person:p, vs, serious, normal});
   });
-  scored.sort((a,b)=>a.serious-b.serious || a.normal-b.normal);
+  scored.forEach(x=>{ x.auto=x.vs.filter(v=>v.autoBlock).length; });
+  scored.sort((a,b)=>a.serious-b.serious || a.normal-b.normal || a.auto-b.auto);
   return scored.slice(0, n||3);
 }
 
@@ -5190,13 +5238,14 @@ function autoAssignLeftoverSlots(date){
   });
   return out;
 }
-function openAutoAssignLeftoverModal(date, leftovers){
-  if(!leftovers.length){ showToast('自動補空缺完成，全部補上了'); return; }
+function openAutoAssignLeftoverModal(date, leftovers, note){
+  if(!leftovers.length){ showToast(note? `自動補空缺完成，全部補上了；${note}` : '自動補空缺完成，全部補上了'); return; }
   const modal=document.createElement('div');
   modal.className='sheet-modal'; modal.style.zIndex='96';
   modal.innerHTML=`
     <div class="sheet-inner">
       <div class="section-title"><h2 style="margin:0">有 ${leftovers.length} 格補不上</h2><button class="ghost small" id="alClose">關閉</button></div>
+      ${note? `<div class="hint" style="margin-bottom:8px">補到預排來的格子，${esc(note)}</div>` : ''}
       <div class="hint" style="margin-bottom:8px">自動排班不會破任何規則，這幾格任何人排進去都會違反規則（或根本沒人有空）。下面列出每一格最接近能排的人，要排的話按「排他」，會照規則等級問原因。</div>
       ${leftovers.map((l,li)=>`
         <div class="card" style="padding:10px;margin-bottom:8px">
@@ -5230,18 +5279,32 @@ migrateSupportOccupants();
 migrateStandbyHolidaysV168();
 // v167：假日的休假改成跟著留守名單自動算（大表上自己登的不動）
 if(migrateLeaveModelV2()) writeStateToStorage(JSON.stringify(state));
+// v182：v181 的「不排衛哨」勾選清掉
+const __noSentryDropped = dropNoSentryV182();
+const __rankRangeMigrated = migrateRankRangeV185();
 // v168：留守表的時間照規則（跟規則一樣的不再各存一份）
-if(migrateStandbyTimesV168() || __dutySpecMigrated) writeStateToStorage(JSON.stringify(state)); // 也會存到上面補的假日設定、資格收進崗位定義
+if(migrateStandbyTimesV168() || __dutySpecMigrated || __noSentryDropped || __rankRangeMigrated) writeStateToStorage(JSON.stringify(state)); // 也會存到上面補的假日設定、資格收進崗位定義
 lastSavedSnapshot = JSON.stringify(state);
 initPlanSync();
 /* 事故/請假 (uses a preset reason list or a custom typed one) */
 /* 衛哨 (安全士官/橋哨/指管) rule: the same person should not stand the same
-   time-slot two days running — check whether they held this exact shift
-   (same category + same shift) on the immediately preceding calendar date. */
+   time-slot two days running.
+   v180：不同崗位也算——前一天（隔天）的班表上，任何衛哨崗位、開始跟結束時間一樣的那一班有排他就算
+   （例：昨天橋哨 06-08、今天安管 06-08）。以前只看同一個崗位的同一班。回傳那一班 {cat, sft} 或 null。 */
+function sameSlotOnDay(personId, day, sft){
+  const da=state.assign[day]; if(!da || !sft) return null;
+  for(const c of state.categories){
+    if(!c.enforceRest) continue;
+    const ca=da[c.id]; if(!ca) continue;
+    for(const o of effectiveShifts(c, day)) if(o.start===sft.start && o.end===sft.end && (ca[o.id]||[]).slice(0, o.count).includes(personId)) return {cat:c, sft:o};
+  }
+  return null;
+}
 function assignedSameShiftYesterday(personId, date, catId, shiftId){
-  const prev=prevDateStr(date);
-  const arr=((state.assign[prev]||{})[catId]||{})[shiftId] || [];
-  return arr.includes(personId);
+  const cat=state.categories.find(c=>c.id===catId);
+  const sft=cat && effectiveShifts(cat, date).find(s=>s.id===shiftId);
+  if(!sft){ const arr=((state.assign[prevDateStr(date)]||{})[catId]||{})[shiftId] || []; return arr.includes(personId); }
+  return !!sameSlotOnDay(personId, prevDateStr(date), sft);
 }
 
 /* ---------------- time utils ---------------- */
@@ -5593,7 +5656,8 @@ function windowsOverlapRecurring(aS,aE,bS,bE){
 }
 
 /* ---------------- long-term unavailability ---------------- */
-/* p.longTerm = {mode:'off'|'allday'|'range', start, end, reason, inCamp}.
+/* p.longTerm = {mode:'off'|'allday'|'range', start, end, reason, inCamp, weekdayOnly}.
+   v182：在營、每天固定時段的長期事故＝已經在執勤的時間（ltDutyHit），勤務下勤後的補休碰到就不能排。
    Falls back to the legacy boolean field p.longTermUnavailable from
    earlier versions. `reason` is a free label (usually one of
    LONGTERM_REASON_PRESETS) explaining WHY duty assignment skips this
@@ -5668,6 +5732,32 @@ function effectiveLongTerm(person, date){
   const lt = personLongTerm(person);
   if(lt.mode!=='off' && lt.weekdayOnly && isHolidayDate(date)) return {mode:'off'}; // v168：只認假日設定
   return lt;
+}
+/* v182：v181 的「整天不排衛哨」勾選拿掉（改成照執勤時間判斷：補休碰到長期事故的執勤時間就不排）。
+   v181 存過的勾選、記號清掉；沒有的就不動（每次開 App、匯入都檢查，有清才回 true） */
+function dropNoSentryV182(){
+  let changed=false;
+  (state.personnel||[]).forEach(p=>{ if(p.longTerm && Object.prototype.hasOwnProperty.call(p.longTerm, 'noSentry')){ delete p.longTerm.noSentry; changed=true; } });
+  if(Object.prototype.hasOwnProperty.call(state, 'noSentryV')){ delete state.noSentryV; changed=true; }
+  return changed;
+}
+/* v185：輪流範圍改成直接設定（使用者：打飯班士官長、少尉中尉以上都盡量不排，範圍以外的最後考慮）。
+   只做一次（state.rankRangeV185 記著）：每個類別把現在實際輪流的範圍寫上去（之後拖曳優先順序不會改到範圍）；
+   打飯班帶隊設成 下士～上士。v184 的「排最後階級」收掉（士官長在範圍外，一樣最後考慮）。有改才回 true */
+function migrateRankRangeV185(){
+  if(state.rankRangeV185) return false;
+  state.rankRangeV185=1;
+  delete state.lastRanksV184;
+  (state.categories||[]).forEach(c=>{
+    delete c.lastRanks;
+    const first=effectiveShifts(c, todayStr()).find(sf=>!noLeaderShift(c, sf)) || (c.shifts||[])[0];
+    if(!c.rankRange){
+      if(c.id==='meal') c.rankRange={from:'下士', to:'上士'};
+      else { const r=derivedRankRange(slotPriorityOrder(c, 0, first), c); if(r) c.rankRange=r; }
+    }
+    if(c.needsNCO && !c.rankRangeHelper){ const r=derivedRankRange(c.customPriorityHelper || MEAL_HELPER_PRIORITY, c); if(r) c.rankRangeHelper=r; }
+  });
+  return true;
 }
 /* 留守區塊的「例假日第一天～最後一天」本來就是放假日（例如中秋＋教師節連
    假，就算假日設定裡沒有把那幾天標成國定假日）——「僅平日不可排」的人這幾
@@ -5974,8 +6064,59 @@ function autoPlacedInRange(from, to){
   });
   return out;
 }
+/* v180：一格的優先順序（跟 dutySortIndex 同一份），跟最前面同一類的階級（例如安全士官的下士、中士、上士；
+   橋哨的二兵、一兵、上兵）——自動排班在這幾個階級裡輪流（前後 7 天排得少的先），後面的照優先順序 */
+function slotPriorityOrder(cat, slotIdx, shift){
+  if(noLeaderShift(cat, shift)) return cat.customPriorityHelper || MEAL_HELPER_PRIORITY;
+  if(cat.needsNCO) return (slotIdx||0)===0? (cat.customPriority||NCO_LEAD_PRIORITY) : (cat.customPriorityHelper||MEAL_HELPER_PRIORITY);
+  return cat.customPriority || (cat.preferLowRank? LOW_RANK_PRIORITY : RANK_DEFS.map(r=>r.rank));
+}
+/* v185：輪流範圍——使用者直接設定階級範圍（例：打飯班帶隊 下士～上士）。範圍裡的階級一起輪流
+   （前後 7 天排得少的先）；範圍以外的最後考慮（範圍裡的人都排不上才排，照優先順序）。
+   範圍存在類別上：rankRange（一份清單的、或「帶隊」那一份）、rankRangeHelper（打飯班其餘成員／整天）；
+   沒設定的照優先順序最前面同一類的那幾個（v180 的做法）。不可排、盡量避免的階級不算在輪流裡。 */
+function rangeRanks(range){
+  if(!range || !range.from || !range.to) return null;
+  const a=rankIndex(range.from), b=rankIndex(range.to);
+  if(a>=RANK_DEFS.length || b>=RANK_DEFS.length) return null;
+  return RANK_DEFS.slice(Math.min(a,b), Math.max(a,b)+1).map(r=>r.rank);
+}
+/* 沒設定範圍時：優先順序最前面同一類的那幾個（不可排、盡量避免的跳過）的高低範圍；from＝低階、to＝高階 */
+function derivedRankRange(order, cat){
+  const list=(order||[]).filter(r=>!(cat.avoidRanks||[]).includes(r) && !rankExcludedFromCategory(r, cat) && rankIndex(r)<RANK_DEFS.length);
+  if(!list.length) return null;
+  const c0=rankCategory(list[0]), run=[];
+  for(const r of list){ if(rankCategory(r)!==c0) break; run.push(rankIndex(r)); }
+  return {from:RANK_DEFS[Math.max(...run)].rank, to:RANK_DEFS[Math.min(...run)].rank};
+}
+function rankRangeKey(cat, slotIdx, shift){ return (cat.needsNCO && (noLeaderShift(cat, shift) || (slotIdx||0)!==0))? 'rankRangeHelper' : 'rankRange'; }
+function effectiveRankRange(cat, slotIdx, shift){
+  return cat[rankRangeKey(cat, slotIdx, shift)] || derivedRankRange(slotPriorityOrder(cat, slotIdx, shift), cat);
+}
+/* 範圍裡、這個類別可以排（不是不可排、盡量避免）的階級＝一起輪流的 */
+function rotationGroupOfRange(range, cat){
+  return new Set((rangeRanks(range)||[]).filter(r=>!(cat.avoidRanks||[]).includes(r) && !rankExcludedFromCategory(r, cat)));
+}
+function leadRankSet(cat, slotIdx, shift){
+  // 照這一格的優先順序排（顯示、比較用；內容就是範圍裡可以排的階級）
+  const g=rotationGroupOfRange(effectiveRankRange(cat, slotIdx, shift), cat), order=slotPriorityOrder(cat, slotIdx, shift)||[];
+  return new Set([...order.filter(r=>g.has(r)), ...[...g].filter(r=>!order.includes(r))]);
+}
+function rankRangeLabel(range){ return range? (range.from===range.to? range.from : `${range.from}～${range.to}`) : '（沒有）'; }
+/* 每個人在這一天前後 days 天（不含這一天）的班表上排了幾班衛哨／打飯班（支援的人不算） */
+function recentDutyCounts(date, days){
+  const m=new Map();
+  for(let k=-days;k<=days;k++){
+    if(!k) continue;
+    const d=dateAddDays(date, k), da=state.assign[d]; if(!da) continue;
+    state.categories.forEach(c=>{ const ca=da[c.id]; if(!ca) return; effectiveShifts(c, d).forEach(sf=>(ca[sf.id]||[]).slice(0, sf.count).forEach(id=>{ if(id && !isSupportId(id)) m.set(id, (m.get(id)||0)+1); })); });
+  }
+  return m;
+}
+const ROTATE_DAYS=7;
 function autoAssignDay(date){
   const __occ=slotOccupancy(date);
+  const recent=recentDutyCounts(date, ROTATE_DAYS);
   if(!state.assign[date]) state.assign[date]={};
   const assignCount={};
   const allSlots=[];
@@ -5988,6 +6129,9 @@ function autoAssignDay(date){
     });
   });
   allSlots.sort((a,b)=>a.absStart-b.absStart);
+  const filledNow=new Set(); // 這次自動排進去的格子（v183 對調只動這些）
+  const pass=()=>{
+  const assignCount={};
   allSlots.forEach(({cat,s})=>{
     const arr=state.assign[date][cat.id][s.id];
     const sMin=toMin(s.start), eMin=wrapEndMin(sMin, toMin(s.end));
@@ -6007,19 +6151,31 @@ function autoAssignDay(date){
         );
         const ncoOnly = ncoStillNeeded>0? rawCandidatesAll.filter(p=>['士官','軍官'].includes(rankCategory(p.rank))) : [];
         const rawCandidates = ncoOnly.length? ncoOnly : rawCandidatesAll;
-        const candidates = rawCandidates;
+        // v185：輪流範圍以外的最後考慮——範圍裡有人可以排，就不排範圍外的（例：打飯班帶隊範圍
+        //   下士～上士，士官長、少尉、中尉以上都要範圍裡的人都排不上才排）
+        const lead=leadRankSet(cat, idx, s);
+        const inRange = rawCandidates.filter(p=>lead.has(p.rank));
+        const candidates = inRange.length? inRange : rawCandidates;
         if(candidates.length){
+        // v180：同類階級內輪流——輪流範圍裡的階級先排（v185 起照使用者設定的範圍），裡面前後 7 天排得少的先；
+        //   範圍外的照原本的優先順序，同一個階級裡一樣排得少的先
         candidates.sort((a,b)=>{
           const aCnt=assignCount[a.id]||0, bCnt=assignCount[b.id]||0;
           if(aCnt!==bCnt) return aCnt-bCnt;
+          const aL=lead.has(a.rank)? 0 : 1, bL=lead.has(b.rank)? 0 : 1;
+          if(aL!==bL) return aL-bL;
+          const aR=recent.get(a.id)||0, bR=recent.get(b.id)||0;
+          if(aL===0 && aR!==bR) return aR-bR;
           const aDuty=dutySortIndex(a.rank,cat,idx,s), bDuty=dutySortIndex(b.rank,cat,idx,s);
           if(aDuty!==bDuty) return aDuty-bDuty;
+          if(aR!==bR) return aR-bR;
           const aGap=minAdjacentGap(a.id,date,cat,s), bGap=minAdjacentGap(b.id,date,cat,s);
           if(aGap!==bGap) return bGap-aGap;
           return rankIndex(a.rank)-rankIndex(b.rank);
         });
         const chosen=candidates[0];
         arr[idx]=chosen.id;
+        filledNow.add(`${cat.id}|${s.id}|${idx}`);
         assignCount[chosen.id]=(assignCount[chosen.id]||0)+1;
         if(['士官','軍官'].includes(rankCategory(chosen.rank))) ncoStillNeeded=Math.max(0,ncoStillNeeded-1);
         }
@@ -6028,14 +6184,59 @@ function autoAssignDay(date){
       }
     }
   });
+  };
+  pass();
+  // v183：補不上的格子，試著跟同時段的安全士官對調後再補一次
+  if(repairOutrankGaps(date, filledNow)) pass();
   markAutoPlaced(date, __occ);
   saveState();
+}
+/* v183：同一個時段只剩比安全士官（「階級須不低於同時段其他哨」的類別）高階的人時，貪心照時間排會把
+   安全士官先排成較低階的，結果同時段其他哨補不上。補不上的格子：找「只被安全士官階級擋下」的人 X，
+   X 改當安全士官、原本的安全士官改排這一格，兩格都不違規才換（只動這次自動排進去的）。有換回 true */
+function repairOutrankGaps(date, filledNow){
+  const da=state.assign[date]; if(!da) return false;
+  const leads=state.categories.filter(c=>c.mustOutrankOthers);
+  if(!leads.length) return false;
+  let swapped=false;
+  state.categories.forEach(cat=>{
+    if(cat.mustOutrankOthers || !cat.isSentry) return;
+    effectiveShifts(cat, date).forEach(s=>{
+      const arr=((da[cat.id]||{})[s.id])||[];
+      for(let idx=0; idx<s.count; idx++){
+        if(arr[idx]) continue;
+        const gapCtx={kind:'cat', date, cat, shift:s, idx};
+        const [g0,g1]=catShiftAbs(date, s, date);
+        const blockedByRankOnly=pid=>{ const v=placementViolations(gapCtx, pid).filter(blocksAutoAssign); return v.length>0 && v.every(x=>x.key==='outrank'); };
+        for(const lc of leads){
+          for(const ls of effectiveShifts(lc, date)){
+            if(arr[idx]) break;
+            const [l0,l1]=catShiftAbs(date, ls, date); if(!absOverlap(g0,g1,l0,l1)) continue;
+            const larr=((da[lc.id]||{})[ls.id])||[];
+            for(let li=0; li<ls.count && !arr[idx]; li++){
+              const H=larr[li]; if(!H || !filledNow.has(`${lc.id}|${ls.id}|${li}`)) continue;
+              const xs=state.personnel.filter(p=>p.id!==H && !isDepartedOn(p, date) && !arr.includes(p.id) && blockedByRankOnly(p.id));
+              const prevGap=arr[idx];
+              for(const X of xs){
+                larr[li]=X.id; arr[idx]=H;
+                const ok=!placementViolations({kind:'cat', date, cat:lc, shift:ls, idx:li}, X.id).some(blocksAutoAssign)
+                      && !placementViolations(gapCtx, H).some(blocksAutoAssign);
+                if(ok){ filledNow.add(`${cat.id}|${s.id}|${idx}`); swapped=true; break; }
+                larr[li]=H; arr[idx]=prevGap;
+              }
+            }
+          }
+        }
+      }
+    });
+  });
+  return swapped;
 }
 
 const MISC_SIBLING_ROLE={'採買':'愛心便當','愛心便當':'採買'};
 /* opts.includePlanOwned：今天以後「預排管的格子」（值星/查哨/救護車…）預設
    不動——預排才是依據，補進去等於改預排。排班頁的「自動補空缺」按鈕會
-   傳true一起補，存檔時再問要不要一起更新預排（不要的話只還原那幾格）。 */
+   傳true一起補，存檔時直接一起寫回預排（v184 起不再問）。 */
 function autoAssignMiscForDate(date, opts){
   opts=opts||{};
   const __occ=slotOccupancy(date);
@@ -6566,7 +6767,11 @@ function ruleIssuesInRange(fromDate, toDate, filterFn){
   return out;
 }
 function collectMiscConflicts(fromDate, toDate){
-  return ruleIssuesInRange(fromDate, toDate, v=>v.ctx && v.ctx.kind==='misc' && isPlanOwnedEntry(v.ctx.entry));
+  const own=v=>v.ctx && v.ctx.kind==='misc' && isPlanOwnedEntry(v.ctx.entry);
+  const out=ruleIssuesInRange(fromDate, toDate, own);
+  // v185：預排排到長期事故的人（照排、提醒）也列出來提醒，另外一區
+  dateRangeList(fromDate, toDate).forEach(d=>{ dayRuleStatus(d).reminders.forEach(v=>{ if(v.planLt && own(v)) out.push({date:d, role:v.label||'', message:`${v.pid? personName(v.pid)+'：' : ''}${v.msg}`, pid:v.pid, v, remind:true}); }); });
+  return out;
 }
 /* renders the full conflict list grouped by date, scrollable — no
    truncation, since "…還有N筆" isn't much use when you actually need to
@@ -6578,7 +6783,12 @@ function collectMiscConflicts(fromDate, toDate){
    唯讀模擬、跑完會復原，那時候按了也沒有東西可以綁，所以只有「全部預排
    匯入」（資料真的寫進去了）才顯示這個按鈕。 */
 function conflictListHTML(clashes, showSuspendBtn){
-  if(!clashes.length) return `<div class="hint">目前看起來沒有衝突。</div>`;
+  // v185：預排排到長期事故的人只是提醒（預排為準，照排），列在最後另一區
+  const rem=clashes.filter(c=>c.remind);
+  clashes=clashes.filter(c=>!c.remind);
+  const remHTML=rem.length? `<div class="hint" style="margin:8px 0 4px">💡 提醒（預排為準，照排，不用處理）：${rem.length} 筆</div>
+    <div style="max-height:30vh;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:8px">${rem.map(c=>`<div class="muted">・${esc(shortDateLabel(c.date))} ${esc(c.role)}：${esc(c.message)}</div>`).join('')}</div>` : '';
+  if(!clashes.length) return `<div class="hint">目前看起來沒有衝突。</div>${remHTML}`;
   const byDate={};
   clashes.forEach(c=>{ if(!byDate[c.date]) byDate[c.date]=[]; byDate[c.date].push(c); });
   const dates=Object.keys(byDate).sort();
@@ -6592,7 +6802,7 @@ function conflictListHTML(clashes, showSuspendBtn){
           ${showSuspendBtn && c.isHardBlock && c.pid && c.entryId? `<button class="ghost small" data-conflict-confirm="1" data-conflict-confirm-date="${d}" data-conflict-confirm-entry="${c.entryId}" data-conflict-confirm-pid="${c.pid}">暫停這次</button>` : ''}
         </div>`).join('')}
       `).join('')}
-    </div>`;
+    </div>${remHTML}`;
 }
 function openAllPreplanImportModal(){
   const ym = preplanMonth || monthOf(currentDate);
@@ -7771,7 +7981,7 @@ function openUnitRulesModal(opts){
     // 換collapseState並呼叫drawScheduleCategories()重繪，同時擋掉事件往
     // 上冒泡，避免document那層監聽也跟著多切一次、兩邊互相抵銷。
     const guardSectionInner = `
-      <div class="hint">安全士官／橋哨／指管：前後兩班（衛哨對衛哨）需間隔≥6小時、單日累計上限6小時（系統自動檢查，違反會標紅；此規則不含準備時間，純粹以衛哨排定時間計算）。每班衛哨開始前需空30分鐘準備：若前一段時間還在忙其他勤務（如採買、打飯班），系統會擋下並標紅，避免像「採買到08:00、緊接著08:00-12:00衛哨」這種沒時間準備的排法。橋哨／指管優先排下士，其次其他士兵/士官。打飯班早/午/晚每班2人＝1位帶隊士官（優先下士→中士→上士）＋1位士兵，盡量避免安排軍官；整天固定2人優先排訓練役，沒有訓練役才依二兵→一兵→上兵遞補。下拉選單已依此優先順序排序，越上面越優先。有設定「補休至」的班別（例：22:00-06:00 各節衛哨補休至08:00、06-08衛哨與早餐打飯班補休至08:30、午餐打飯班補休至15:30），下班後系統會自動把該員在補休時段內標示為不可排，也會檢查補休時段有沒有跟已排的其他勤務衝突，可到各類別「編輯」調整補休時間。</div>
+      <div class="hint">安全士官／橋哨／指管：前後兩班（衛哨對衛哨）需間隔≥6小時、單日累計上限6小時（系統自動檢查，違反會標紅；此規則不含準備時間，純粹以衛哨排定時間計算）。每班衛哨開始前需空30分鐘準備：若前一段時間還在忙其他勤務（如採買、打飯班，或在營的長期事故：伙房、二級廠…），系統會擋下並標紅，避免像「採買到08:00、緊接著08:00-12:00衛哨」這種沒時間準備的排法。橋哨／指管優先排下士，其次其他士兵/士官。打飯班早/午/晚每班2人＝1位帶隊士官（優先下士→中士→上士）＋1位士兵，盡量避免安排軍官；整天固定2人優先排訓練役，沒有訓練役才依二兵→一兵→上兵遞補。下拉選單已依此優先順序排序，越上面越優先。有設定「補休至」的班別（例：22:00-06:00 各節衛哨補休至08:00、06-08衛哨與早餐打飯班補休至08:30、午餐打飯班補休至15:30），下班後系統會自動把該員在補休時段內標示為不可排，也會檢查補休時段有沒有跟已排的其他勤務衝突，可到各類別「編輯」調整補休時間。</div>
       <div class="hint">下拉選單中的 🚫不可排 已同時涵蓋：休假/事故、長期事故、補休、以及當天其他勤務的重複指派。</div>
       <div class="hint" style="margin-top:8px">點下面任一個類別可以進去改名稱/班次時段/補休等設定——這裡點進去預設是「套用到所有日期（預設）」，改了就是改這個類別長期的預設值；刪除類別也在同一個編輯畫面裡。如果只是想調整「今天」某一天的班次，到排班分頁該類別卡片右上角「⋯ → 只改今天的班別」，那邊只套用到當天，不會動到這裡的預設。</div>
       <div id="scheduleCategoriesContainer">${orderedCategories().map(catRow).join('')}</div>`;
@@ -8194,6 +8404,12 @@ function fixedSlotOrder(type){
 /* 查哨輪到別的單位的那一班：預排上記成 {personIds:[], note:'憲兵連', otherUnit:'憲兵連'}
    （舊資料沒有 otherUnit，看備註是不是輪值序列裡的其他單位）。這種班我們不
    用排，預排畫面、月曆、班表都不顯示，回傳單位名稱；不是的話回傳空字串。 */
+/* v183：固定時段（查哨）這一班的補休。這一班有設（含刻意清空）就照它；沒設過的（舊版匯入的
+   資料少帶了補休）照「查哨各時段補休」設定——夜間查哨補休到 08:00，下勤後不能排其他勤務 */
+function slotRestOf(key, i, cfg){
+  if(cfg && cfg.restUntil!==undefined && cfg.restUntil!==null) return cfg.restUntil;
+  return key==='patrol'? ((state.patrolRestDefaults||{})[i]||'') : '';
+}
 function otherUnitOfSlot(cfg){
   if(!cfg) return '';
   if((cfg.personIds||(cfg.personId?[cfg.personId]:[])).some(Boolean)) return '';
@@ -8732,9 +8948,9 @@ function openPreplanTextImportModal(key, ym, onDone){
       modal.remove();
       if(onDone) onDone();
       offerPastPlanSync(pick.map(d=>({type, date:d})), ()=>{
-        const items=newPlanFacts(factsBefore, pick);
-        if(items.length) confirmPlanConflicts(items, null);
-        else showAlert(`已套用 ${pick.length} 天的內容到「${type.name}」預排。`);
+        const items=newPlanFacts(factsBefore, pick), ok=`已套用 ${pick.length} 天的內容到「${type.name}」預排。`;
+        if(items.length) confirmPlanConflicts(items, null, null, ok);
+        else showAlert(ok);
       });
     };
   };
@@ -9110,7 +9326,7 @@ function openDutyRangeFillModal(onDone){
     const msg=`已排好：${minguoLabel(from)} ${H} 接班 → ${minguoLabel(days[days.length-1].date)} ${H==='00:00'?'24:00':H} 交班（${n} 天）。`;
     offerPastPlanSync(dates.map(d=>({type, date:d})), ()=>{
       const items=newPlanFacts(factsBefore, dates);
-      if(items.length) confirmPlanConflicts(items, null); else showAlert(msg);
+      if(items.length) confirmPlanConflicts(items, null, null, msg); else showAlert(msg);
     });
   };
 }
@@ -9146,7 +9362,7 @@ function openPreplanCalendar(key){
     modal.innerHTML=`
       <div class="section-title"><h2 style="margin:0">${type.icon} ${type.name}</h2><button class="ghost small" id="calClose">關閉</button></div>
       <div class="hint" style="margin-bottom:8px">${type.hint}</div>
-      <div class="hint plan-live-hint" style="margin-bottom:8px">✅ 存檔就直接生效：今天以後的班表會自動跟著更新（已經過去的日期不會自動改，改到的話會問你要不要一起改班表）。在排班頁改了這些格子，也會問你要不要一起更新這裡。</div>
+      <div class="hint plan-live-hint" style="margin-bottom:8px">✅ 存檔就直接生效：今天以後的班表會自動跟著更新（已經過去的日期不會自動改，改到的話會問你要不要一起改班表）。在排班頁改了這些格子，這裡也會直接跟著改（要還原按 ↩️）。</div>
       <div class="row" style="gap:6px;align-items:center;margin-bottom:8px">
         <button class="ghost small" id="calPrev">◀</button>
         <span class="grow" style="text-align:center;font-weight:600">民國${y-1911}年${m}月<br><span class="hint">本月已排 ${plannedCount} 天</span></span>
@@ -9861,10 +10077,12 @@ function planRuleDates(dates){
   (dates||[]).forEach(d=>{ if(d>=today) set.add(d); const n=nextDateStr(d); if(n>=today) set.add(n); });
   return [...set].sort();
 }
+/* v185：預排排到長期事故的人（照排、提醒）也一起列出來提醒一次 */
+function planNoticeOf(st){ return st.facts.concat(st.open, st.reminders.filter(v=>v.planLt)); }
 function planFactSnapshot(dates){
   invalidateRuleStatus();
   const out={};
-  planRuleDates(dates).forEach(d=>{ const st=dayRuleStatus(d); out[d]=new Set(st.facts.concat(st.open).map(violationId)); });
+  planRuleDates(dates).forEach(d=>{ const st=dayRuleStatus(d); out[d]=new Set(planNoticeOf(st).map(violationId)); });
   return out;
 }
 function newPlanFacts(before, dates){
@@ -9873,21 +10091,26 @@ function newPlanFacts(before, dates){
   planRuleDates(dates).forEach(d=>{
     const had=before[d]||new Set();
     const st=dayRuleStatus(d);
-    st.facts.concat(st.open).forEach(v=>{ if(!had.has(violationId(v))) items.push({date:d, v}); });
+    planNoticeOf(st).forEach(v=>{ if(!had.has(violationId(v))) items.push({date:d, v}); });
   });
   return items;
 }
-function confirmPlanConflicts(items, reopen, done){
+function confirmPlanConflicts(items, reopen, done, okMsg){
   if(!items.length){ if(done) done(); return; }
   const ign=items.filter(x=>ruleDisposition(x.v)==='conflict');
   const hard=items.filter(x=>ruleDisposition(x.v)==='hard');
   const rules=items.filter(x=>ruleDisposition(x.v)==='reason');
+  const rem=items.filter(x=>ruleDisposition(x.v)==='remind');
   const line=x=>`・${shortDateLabel(x.date)} ${x.v.label||''}${x.v.pid? ' '+personName(x.v.pid) : ''}：${x.v.msg}`;
   const list=arr=>arr.slice(0,12).map(line).join('\n')+(arr.length>12? `\n…還有 ${arr.length-12} 筆` : '');
+  const remText=rem.length? `💡 提醒（預排為準，照排）：\n${list(rem)}` : '';
+  // v185：只有提醒（預排排到長期事故的人）：說一聲就好
+  if(!ign.length && !hard.length && !rules.length){ showAlert(okMsg? `${okMsg}\n\n${remText}` : remText); if(done) done(); return; }
   const parts=[];
   if(ign.length) parts.push(`衝突（可以忽略一次）：\n${list(ign)}`);
   if(rules.length) parts.push(`違反規則（${[...new Set(rules.map(x=>RULE_LEVEL_LABEL[x.v.level]))].join('／')}，要換人或在排班頁按「處理」記原因）：\n${list(rules)}`);
   if(hard.length) parts.push(`不能排（要換人）：\n${list(hard)}`);
+  if(remText) parts.push(remText);
   const msg=`這次排的有問題：\n${parts.join('\n\n')}${ign.length? '\n\n「忽略一次」＝照排、只記錄有衝突，排班頁不會再問。' : ''}`;
   const choices=[];
   if(ign.length) choices.push({label: ign.length>1? `衝突全部忽略一次（${ign.length} 筆）` : '衝突忽略一次', primary:true, onPick:()=>{
@@ -9930,7 +10153,7 @@ function draftSlotIssues(date, draft, idx, people, opts){
 function candidateIssueGroups(vs){
   const g={hard:[], conflict:[], reason:[], remind:[]};
   (vs||[]).forEach(v=>g[ruleDisposition(v)].push(v));
-  g.rank = g.hard.length? 3 : g.reason.length? 2 : g.conflict.length? 1 : 0;
+  g.rank = g.hard.length? 3 : g.reason.length? 2 : g.conflict.length? 1 : g.remind.some(v=>v.autoBlock)? 0.5 : 0;
   return g;
 }
 function candidateIssuesHTML(g){
@@ -10123,9 +10346,9 @@ function openPreplanDayEditor(key, date, onSaved){
             </label>
           </div>
           <div class="pp-slot-body" data-slot-body="${i}" style="display:${on?'block':'none'}">
-            ${restRow('ppSlotRest'+i, cfg.restUntil||preplanDefault(key,'slotRest'+i,''))}
+            ${restRow('ppSlotRest'+i, (cfg.restUntil===undefined || cfg.restUntil===null)? (slotRestOf(key, i, cfg)||preplanDefault(key,'slotRest'+i,'')) : cfg.restUntil)}
             ${searchBlock('ppSearchS'+i)}
-            ${listBox(checkRows(ids, 'pp-slot'+i, issuesFnFor({start:sl.split('-')[0], end:sl.split('-')[1], restUntil:cfg.restUntil||'', personIds:ids.filter(Boolean)}, 0, {groupRules:false}), cfg.nominalIds), 'ppListS'+i)}
+            ${listBox(checkRows(ids, 'pp-slot'+i, issuesFnFor({start:sl.split('-')[0], end:sl.split('-')[1], restUntil:slotRestOf(key, i, cfg), personIds:ids.filter(Boolean)}, 0, {groupRules:false}), cfg.nominalIds), 'ppListS'+i)}
             ${supPeopleRow('ppSlotNote'+i, other? '' : cfg.note)}
           </div>
         </div>`;
@@ -10461,9 +10684,9 @@ function openPreplanCopyModal(key, fromDate, onDone){
     saveState();
     modal.remove(); if(onDone) onDone();
     offerPastPlanSync(dates.map(d=>({type, date:d})), ()=>{
-      const items=newPlanFacts(factsBefore, dates);
-      if(items.length) confirmPlanConflicts(items, null);
-      else showAlert(`已複製到 ${dates.length} 個日期。`);
+      const items=newPlanFacts(factsBefore, dates), ok=`已複製到 ${dates.length} 個日期。`;
+      if(items.length) confirmPlanConflicts(items, null, null, ok);
+      else showAlert(ok);
     });
   };
 }
@@ -11892,7 +12115,7 @@ function importPreplanForDate(key, date){
       const ids=[...(cfg.personIds||(cfg.personId?[cfg.personId]:[])).filter(Boolean), ...supportTokens(cfg.note).map(supportIdOf)];
       if(!ids.length && !plan.support) return;
       state.misc[date].push({id:uid(), role:roleName, start:st, end:en,
-        restUntil:cfg.restUntil||'', personIds:ids, nominalIds:cfg.nominalIds||[],
+        restUntil:slotRestOf(key, Number(idx), cfg), personIds:ids, nominalIds:cfg.nominalIds||[],
         fromPreplan:true, ...mergeSupport(plan.support), ...(planImportTagging? {pp:{kind:'slot', si:Number(idx)}} : {})});
       wrote=true;
     });
@@ -13791,6 +14014,8 @@ document.getElementById('importFile').addEventListener('change', (e)=>{
         migrateDutySpecsV171();
         migrateDutySpecsV173();
         migrateDutySpecsV174();
+        dropNoSentryV182();
+        migrateRankRangeV185();
         ensureV173Fields();
         (state.dutyDefinitions||[]).forEach(d=>syncDutyDefinitionToLegacy(d));
         refreshPreplanTypesFromDefs();
@@ -16479,21 +16704,36 @@ function renderSchedule(){
   document.getElementById('importDefaultMiscBtn2').onclick=()=>doImportDefaultMisc();
   app.querySelectorAll('[data-edit-adhoc]').forEach(b=>{ b.onclick=()=>openAdhocTaskModal(currentDate, b.dataset.editAdhoc); });
   document.getElementById('autoAssignBtn2').onclick=()=>{
+    // v179：這天的班碰到還沒有留守表的假日（假日前一天放假以後、假日後一天收假以前也算）：誰留守、
+    //   誰放假還不知道，先問要不要建立留守表（照樣補的話，之後建留守表時會列出要換的人）
+    const run=standbyMissingRunFor(currentDate);
+    if(run){
+      const span=`${shortDateLabel(run.start)}${run.end!==run.start?'～'+shortDateLabel(run.end):''}`;
+      showChoice(`假日 ${span} 還沒有留守表，誰留守、誰放假還不知道。現在自動補，可能會排到之後要放假的人。`, [
+        {label:'先建立留守表', primary:true, onPick:()=>{ const own=dateRangeList(run.start, run.end).map(x=>standbyPlansOn(x)[0]).find(Boolean); const sb=(state.preplan||{}).standby||{}; const anchor=own? Object.keys(sb).find(k=>sb[k]===own) : run.start; openStandbyEditor(anchor, ()=>render()); }},
+        {label:'照樣自動補', onPick:runAutoAssign},
+      ]);
+      return;
+    }
+    runAutoAssign();
+  };
+  const runAutoAssign=()=>{
     // 其他勤務 runs FIRST: rare qualifications (大客車駕照, EMT, 專長...) should
     // get first pick of personnel, since 衛哨 (安全士官/橋哨/指管/打飯班) has no
     // license/skill requirements at all and can be filled by almost anyone —
     // running it first would let it use up the one person with a rare
     // license on a duty that never needed that license in the first place.
-    // 預排來的格子也一起補；補到的話存檔時會問要不要一起更新預排，不要的
-    // 話只還原那幾格，其他補好的照樣保留（見handlePlanOwnedEdits）
+    // 預排來的格子也一起補；補到的話存檔時直接一起寫回預排（預排表達不了的
+    // 那幾格才還原，其他補好的照樣保留；見handlePlanOwnedEdits）
+    planWriteBackNote = null;
     planWriteBackPartialNext = true;
     autoAssignMiscForDate(currentDate, {includePlanOwned:true});
     planWriteBackPartialNext = false;
     autoAssignDay(currentDate);
     render();
     // 補不上的格子：列出原因跟最接近能排的人（自動排班不會破任何規則）
-    const d=currentDate;
-    const showLeft=()=>openAutoAssignLeftoverModal(d, autoAssignLeftoverSlots(d));
+    const d=currentDate, note=planWriteBackNote; planWriteBackNote=null;
+    const showLeft=()=>openAutoAssignLeftoverModal(d, autoAssignLeftoverSlots(d), note);
     if(planWriteBackPending) whenPlanWriteBackSettled(showLeft); else showLeft();
   };
   { const pdb=document.getElementById('planDriftFixBtn'); if(pdb) pdb.onclick=()=>maybeShowPlanDrift('check'); }
@@ -16751,7 +16991,7 @@ function categoryPriorityLabel(cat){
   if(cat.needsNCO){
     const lead = cat.customPriority || normalizePriorityArray(NCO_LEAD_PRIORITY);
     const helper = cat.customPriorityHelper || normalizePriorityArray(MEAL_HELPER_PRIORITY);
-    return `帶隊(第1位)優先：${lead.join('→')}｜其餘成員優先：${helper.join('→')}｜整天班全部依：${helper.join('→')}`;
+    return `帶隊(第1位)優先：${lead.join('→')}｜其餘成員優先：${helper.join('→')}｜不用士官帶隊的班（整天、需 0 位士官）全部依：${helper.join('→')}`;
   }
   if(cat.preferLowRank){
     return `優先順序：${(cat.customPriority || normalizePriorityArray(LOW_RANK_PRIORITY)).join('→')}`;
@@ -17102,7 +17342,7 @@ function renderCategoryCard(cat, dragIdx, opts){
         ${Array.from({length:s.count}).map((_,idx)=>{
           const pid = assigned[idx]||'';
           return `<div class="slot-select">
-            ${cat.needsNCO? `<div class="muted" style="margin-bottom:2px">${(idx===0 && s.label!=='整天')? '帶隊(士官)':'第'+(idx+1)+'人'}</div>`:''}
+            ${cat.needsNCO? `<div class="muted" style="margin-bottom:2px">${(idx===0 && !noLeaderShift(cat, s))? '帶隊(士官)':'第'+(idx+1)+'人'}</div>`:''}
             <div class="row" style="gap:4px">
               <select data-assign-cat="${cat.id}" data-assign-shift="${s.id}" data-assign-idx="${idx}" class="grow">
                 <option value="">（未排）</option>
@@ -17232,11 +17472,16 @@ function wireCategoryEvents(){
    畫，不然編輯完類別名稱/班次後，設定裡的清單摘要會顯示舊的)。 */
 // 「需士官帶隊」勾不勾，優先順序是一份還是兩份（帶隊／其餘成員）
 function catPriorityListsHTML(needsNCO){
+  // v185：每一份優先順序上面一行「輪流範圍」（選單內容由類別編輯畫面填）
+  const rr=k=>`<div class="row pri-range" style="gap:6px;align-items:center;margin-bottom:6px;flex-wrap:nowrap"><span class="hint nw">輪流範圍</span><select id="priRangeFrom_${k}" data-pri-range="${k}" style="flex:1;min-width:0"></select><span class="nw">～</span><select id="priRangeTo_${k}" data-pri-range="${k}" style="flex:1;min-width:0"></select></div>`;
   return needsNCO? `
           <div class="muted" style="margin-bottom:4px">帶隊(第1位)優先順序</div>
+          ${rr('lead')}
           <div id="priListLead"></div>
           <div class="muted" style="margin:10px 0 4px">其餘成員／整天優先順序</div>
+          ${rr('helper')}
           <div id="priListHelper"></div>` : `
+          ${rr('main')}
           <div id="priListMain"></div>`;
 }
 function openCategoryEditor(catId, initialScope, onDone){
@@ -17276,6 +17521,7 @@ function openCategoryEditor(catId, initialScope, onDone){
           <select id="catAvoid" multiple size="4">${RANK_DEFS.map(r=>`<option value="${r.rank}" ${(cat.avoidRanks||[]).includes(r.rank)?'selected':''}>${r.rank}</option>`).join('')}</select>
         </div>
       </div>
+
       <div class="divider"></div>
       <h3>班別時段</h3>
       <div class="row wrap" style="margin-bottom:8px">
@@ -17302,6 +17548,7 @@ function openCategoryEditor(catId, initialScope, onDone){
       <div class="divider"></div>
       <div class="section-title"><h3 style="margin:0">階級優先順序（可自行調整，越上面越優先）</h3><button class="ghost small" id="priToggle">▼ 展開</button></div>
       <div id="priSection" style="display:none">
+        <div class="hint" style="margin-bottom:8px">自動排班時，「輪流範圍」裡的階級（標「輪流」）一起輪流，前後 7 天排得少的先排；範圍以外的最後考慮——範圍裡的人都排不上才排，照下面的順序。</div>
         <div id="priLists">${catPriorityListsHTML(cat.needsNCO)}</div>
         <button class="ghost small" id="priReset" style="margin-top:8px">還原成預設順序</button>
       </div>
@@ -17319,11 +17566,24 @@ function openCategoryEditor(catId, initialScope, onDone){
   };
   let priorityDraft = normalizePriorityArray(cat.customPriority || defaultPriorityArray(cat));
   let priorityHelperDraft = cat.needsNCO ? normalizePriorityArray(cat.customPriorityHelper || defaultHelperPriorityArray()) : null;
+  // v185：輪流範圍（null＝沒設定，照優先順序最前面同一類的那幾個）；動過才寫進類別
+  let rangeDraft = cat.rankRange? Object.assign({}, cat.rankRange) : null;
+  let rangeHelperDraft = cat.rankRangeHelper? Object.assign({}, cat.rankRangeHelper) : null;
+  let rangeTouched=false, rangeHelperTouched=false;
+  const effRange=listId=>listId==='helper'? (rangeHelperDraft || derivedRankRange(priorityHelperDraft, cat)) : (rangeDraft || derivedRankRange(priorityDraft, cat));
+  function fillRangeSelects(listId){
+    const r=effRange(listId)||{from:'', to:''};
+    [['From','from'],['To','to']].forEach(([id,end])=>{
+      const el=document.getElementById(`priRange${id}_${listId}`); if(!el) return;
+      el.innerHTML=RANK_DEFS.slice().reverse().map(x=>`<option value="${x.rank}" ${x.rank===r[end]?'selected':''}>${x.rank}</option>`).join('');
+    });
+  }
   function renderPriorityListHTML(listId, arr){
+    const grp=rotationGroupOfRange(effRange(listId), cat); // 自動排班在這幾個階級裡輪流（v185：照輪流範圍）
     return `<div id="priContainer_${listId}">${arr.map((r,i)=>`
       <div class="row" style="margin-bottom:4px" data-drag-idx="${i}">
         <span data-drag-handle style="cursor:grab;padding:4px 8px;font-size:16px;color:var(--dim)">⠿</span>
-        <span class="grow">${i+1}. ${r}</span>
+        <span class="grow">${i+1}. ${r}</span>${grp.has(r)? '<span class="tag" data-rot-tag>輪流</span>':''}
       </div>`).join('')}</div>`;
   }
   function arrForList(listId){
@@ -17335,11 +17595,21 @@ function openCategoryEditor(catId, initialScope, onDone){
     if(cat.needsNCO){
       document.getElementById('priListLead').innerHTML = renderPriorityListHTML('lead', priorityDraft);
       document.getElementById('priListHelper').innerHTML = renderPriorityListHTML('helper', priorityHelperDraft);
+      fillRangeSelects('lead'); fillRangeSelects('helper');
     } else {
       document.getElementById('priListMain').innerHTML = renderPriorityListHTML('main', priorityDraft);
+      fillRangeSelects('main');
     }
     wirePriorityButtons();
   }
+  // 改輪流範圍：先記進草稿（capture，比下面「改了就存」先跑），存的時候寫進類別；低的放前面
+  modal.addEventListener('change', e=>{
+    const k=e.target && e.target.dataset && e.target.dataset.priRange; if(!k) return;
+    const f=document.getElementById('priRangeFrom_'+k).value, t=document.getElementById('priRangeTo_'+k).value;
+    const r=rankIndex(f)>=rankIndex(t)? {from:f, to:t} : {from:t, to:f};
+    if(k==='helper'){ rangeHelperDraft=r; rangeHelperTouched=true; } else { rangeDraft=r; rangeTouched=true; }
+    rerenderPriorityLists();
+  }, true);
   // 使用者真的動過優先順序（拖曳／還原）才寫進類別；沒動過的跟著預設走（勾選改了，預設也跟著換）
   let priTouched=false, helperTouched=false;
   function wirePriorityButtons(){
@@ -17490,6 +17760,8 @@ function openCategoryEditor(catId, initialScope, onDone){
         id:newId, name:newName, shifts:newShifts,
         excludeRanks: [...(cat.excludeRanks||[])],
         avoidRanks: [...(cat.avoidRanks||[])],
+        rankRange: cat.rankRange? Object.assign({}, cat.rankRange) : undefined,
+        rankRangeHelper: cat.rankRangeHelper? Object.assign({}, cat.rankRangeHelper) : undefined,
         customPriority: cat.customPriority? [...cat.customPriority] : undefined,
         customPriorityHelper: cat.customPriorityHelper? [...cat.customPriorityHelper] : undefined,
         sortOrder: nextSortOrder(),
@@ -17537,8 +17809,13 @@ function openCategoryEditor(catId, initialScope, onDone){
     setIf('isSentry', document.getElementById('catSentry').checked, !!cat.isSentry);
     setIf('mustOutrankOthers', document.getElementById('catOutrank').checked, !!cat.mustOutrankOthers);
     setIf('excludeFromExport', document.getElementById('catNoExport').checked, !!cat.excludeFromExport);
+    const rk0=JSON.stringify([cat.excludeRanks||[], cat.avoidRanks||[]]);
     setIf('excludeRanks', [...document.getElementById('catExclude').selectedOptions].map(o=>o.value), cat.excludeRanks||[]);
     setIf('avoidRanks', [...document.getElementById('catAvoid').selectedOptions].map(o=>o.value), cat.avoidRanks||[]);
+    const rkChanged=rk0!==JSON.stringify([cat.excludeRanks||[], cat.avoidRanks||[]]); // 「輪流」標示跟著換
+    // v185：輪流範圍（動過才寫）
+    if(rangeTouched && rangeDraft) setIf('rankRange', Object.assign({}, rangeDraft), cat.rankRange);
+    if(rangeHelperTouched && rangeHelperDraft) setIf('rankRangeHelper', Object.assign({}, rangeHelperDraft), cat.rankRangeHelper);
     // 優先順序：動過才寫；沒動過、也沒有自訂的，畫面跟著新的預設（例如勾了建議低階／需士官帶隊）
     // （換內容不換陣列：拖曳功能接在原本那個陣列上，換掉的話下一次拖曳會不見）
     const fillArr=(arr, vals)=>{ arr.length=0; vals.forEach(v=>arr.push(v)); };
@@ -17551,7 +17828,7 @@ function openCategoryEditor(catId, initialScope, onDone){
     } else if(ncoChanged) delete cat.customPriorityHelper;
     // 改了「需士官帶隊」：優先順序的畫面跟著換成一份／兩份（不然展開或還原會出錯）
     const box=document.getElementById('priLists');
-    if(box && (ncoChanged || !priTouched)){ if(ncoChanged) box.innerHTML=catPriorityListsHTML(nco); rerenderPriorityLists(); }
+    if(box && (ncoChanged || !priTouched || rkChanged)){ if(ncoChanged) box.innerHTML=catPriorityListsHTML(nco); rerenderPriorityLists(); }
     // v173：類別本身的設定（階級限制、班別…）改了，已經排好的可能受影響：有影響先問
     const r=settingsSave(res=>{
       if(res==='saved') render();
@@ -18423,6 +18700,8 @@ function wireMiscCardEvents(){
   wireMiscInlineEditors();
 }
 /* ---------------- init ---------------- */
+// v183：舊資料的查哨補休在第一次畫面之前就補好（不然排班頁會先閃一下「跟預排不一樣」）
+try{ if(syncPatrolRestV183()){ lastSavedSnapshot=JSON.stringify(state); writeStateToStorage(lastSavedSnapshot); initPlanSync(); } }catch(e){ console.error(e); }
 render();
 /* 開 App 時：預排已經有、班表還沒排的（例如舊版留下來還沒匯入的），直接照
    預排補上。這不是使用者的修改，不放進復原紀錄。 */
@@ -18433,22 +18712,37 @@ function commitWithoutUndo(){
   render();
 }
 /* 開 App 時：今天以後班表跟預排不一樣的，一律照預排改好並列出改了什麼（v168）。
-   這支手機第一次開 v160 以後的版本時，另外說明「以預排為準」的做法。 */
-const PLAN_SYNC_INTRO_KEY='drs_plansync_intro_v160';
+   v183：拿掉第一次開 App 的「以預排為準」說明（使用者說不用了）；有改才列出改了什麼 */
+/* v183：舊版匯入的查哨少帶了補休，班表上今天以後照預排產生的查哨只差補休（班表沒有、照設定該有）
+   的，直接補上——不算預排改了什麼，不跳「已照預排改好」的清單、不進復原紀錄 */
+function syncPatrolRestV183(){
+  const type=PREPLAN_TYPES.find(t=>t.key==='patrol'); if(!type) return false;
+  const role=type.presetRole||type.name, today=todayStr(), roles=planOwnedRoleSet();
+  const ppl=m=>JSON.stringify([(m.personIds||[]).filter(Boolean).slice().sort(), (m.nominalIds||[]).slice().sort(), m.support||'']);
+  let changed=false;
+  Object.keys(state.misc||{}).filter(d=>d>=today).forEach(d=>{
+    const actual=(state.misc[d]||[]).filter(m=>m.role===role && !m.restUntil && isPlanOwnedEntry(m, roles));
+    if(!actual.length || !preplanFor('patrol', d)) return;
+    let sim; try{ sim=simulatePlanEntries(type, d); }catch(e){ return; }
+    actual.forEach(m=>{
+      const t=sim.find(x=>x.start===m.start && x.end===m.end && ppl(x)===ppl(m));
+      if(t && t.restUntil){ m.restUntil=t.restUntil; changed=true; }
+    });
+  });
+  if(changed) rebaseLinkedSig();
+  return changed;
+}
 function planSyncOnOpen(){
-  let seen=false;
-  try{ seen = localStorage.getItem(PLAN_SYNC_INTRO_KEY)==='1'; }catch(e){}
-  try{ localStorage.setItem(PLAN_SYNC_INTRO_KEY,'1'); }catch(e){}
   try{
+  if(syncPatrolRestV183()) commitWithoutUndo();
   let drift=computePlanDrift();
   const filled=fillNotYetScheduled(drift);
   if(filled){ commitWithoutUndo(); drift=computePlanDrift(); }
   if(drift.items.some(i=>!i.additive)){
     applyPlanDrift();
     render();
-    openPlanDriftModal(drift, seen? 'open' : 'migrate', filled);
+    openPlanDriftModal(drift, 'open', filled);
   }
-  else if(!seen) showAlert('班表一律「以預排為準」：\n・預排存檔就直接生效，今天以後的班表會自動跟著更新，不用再按「匯入」。\n・班表跟預排不一樣的地方，會直接照預排改好，並列出改了什麼。\n・在排班頁改了預排來的格子（值星、查哨、督伙、救護車等），會問你要不要一起更新預排；不更新的話這次修改會取消。\n・已經過去的日期不會自動跟著預排改（在預排改到過去的日期時，會問你要不要一起改班表）。\n\n'+(filled? `預排已經有、班表還沒排的 ${filled} 項，已經照預排補上；現在今天以後的班表跟預排一致。` : '目前今天以後的班表跟預排完全一致。'));
   else if(filled) showToast(`預排已經有、班表還沒排的 ${filled} 項，已照預排補上`);
   }catch(e){ console.error(e); }
 }
