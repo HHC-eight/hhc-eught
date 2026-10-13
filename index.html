@@ -557,7 +557,7 @@ button.small.card-more{min-width:44px;min-height:40px;font-size:20px;line-height
       <span class="unit-banner-badge"><i data-ico="star"></i></span>
       <span class="unit-banner-titles">
         <span class="unit-banner-text">陸軍第八軍團 本部連</span>
-        <h1 id="pageTitle">衛哨排班系統 <span class="muted">v177</span></h1>
+        <h1 id="pageTitle">衛哨排班系統 <span class="muted">v178</span></h1>
       </span>
     </span>
     <span class="banner-side right">
@@ -2664,8 +2664,13 @@ function simulatePlanEntries(type, date, tag, raw){
 function carryEntryLocals(fresh, old){
   const used=new Set();
   const keyOf=m=>[m.role, m.standbyAnchor||'', m.start||'', m.end||'', planShiftLabelOf(m)].join('|');
+  // v178：先配內容完全一樣的（同一組人），再配同時段的——同一天兩組同時段（例如交接那天）
+  // 才不會把前一組的編號給了另一組
+  const pair=new Map();
+  fresh.forEach(n=>{ const o=old.find(o=>!used.has(o) && planEntrySig(o)===planEntrySig(n)); if(o){ used.add(o); pair.set(n, o); } });
+  fresh.forEach(n=>{ if(pair.has(n)) return; const o=old.find(o=>!used.has(o) && keyOf(o)===keyOf(n)); if(o){ used.add(o); pair.set(n, o); } });
   fresh.forEach(n=>{
-    const o=old.find(o=>!used.has(o) && keyOf(o)===keyOf(n));
+    const o=pair.get(n);
     if(!o) return;
     used.add(o);
     n.id=o.id;
@@ -3904,6 +3909,46 @@ function maybeShowPlanDrift(reason){
   else if(r.filled) (reason==='check'? showAlert(`今天以後的班表跟預排一致（還沒排的 ${r.filled} 項已照預排補上）。`) : showToast(`還沒排的 ${r.filled} 項已照預排補上`));
   else if(reason==='check') showAlert('今天以後的班表跟預排完全一致。');
   return computePlanDrift();
+}
+/* v178：已經過去的日期，預排改了班表不會自動跟著改（過去的紀錄不亂動）。
+   在預排畫面改到過去的日期時，這天的班表跟預排不一樣就列出來，問要不要也照預排改。
+   pairs=[{type, date}] */
+function pastPlanDiffItems(pairs){
+  const today=todayStr(), seen=new Set(), types=planDayTypes();
+  // 類型照 key 重新找（自訂類型的物件會重建，不能比物件本身）
+  return (pairs||[]).map(x=>x && x.type && x.date? {type:types.find(t=>t.key===x.type.key), date:x.date} : null).filter(x=>{
+    if(!x || !x.type || x.date>=today) return false;
+    const k=x.type.key+'|'+x.date; if(seen.has(k)) return false; seen.add(k); return true;
+  }).sort((a,b)=>a.date<b.date?-1:a.date>b.date?1:0).map(({type,date})=>{
+    const role=planRoleName(type);
+    const actual=(state.misc[date]||[]).filter(m=>m.role===role && !m.standbyAnchor);
+    const want=simulatePlanEntries(type, date);
+    if(sameEntrySet(actual, want)) return null;
+    return {type, date, role, actualText:planEntriesText(actual), planText:planEntriesText(want)};
+  }).filter(Boolean);
+}
+function offerPastPlanSync(pairs, done){
+  const items=pastPlanDiffItems(pairs);
+  if(!items.length){ if(done) done(); return; }
+  const many=new Set(items.map(x=>x.date)).size>1;
+  const lines=items.slice(0,6).map(x=>`・${shortDateLabel(x.date)} ${x.role}\n　班表：${x.actualText}\n　預排：${x.planText}${x.actualText===x.planText?'（補休等細節不同）':''}`).join('\n')
+    + (items.length>6? `\n…還有 ${items.length-6} 項` : '');
+  showChoice(`${many?'這幾天':'這天'}已經過去，班表不會自動跟著預排改：\n${lines}\n\n要不要也照預排改${many?'這幾天':'這天'}的班表？`, [
+    {label:'也改班表', primary:true, onPick:()=>{
+      // 按下去的當下再算一次（中間資料可能變了），真的有不一樣的才改、才存
+      const now=pastPlanDiffItems(items);
+      if(now.length){
+        now.forEach(x=>syncPlanDate(x.type, x.date));
+        markPlanSystemChange(); saveState(); render();
+        showToast(`已照預排改好 ${compressDates(now.map(x=>x.date))} 的${[...new Set(now.map(x=>x.role))].join('、')}`);
+      }
+      if(done) done();
+    }},
+  ], {cancelLabel:'只改預排', onCancel:done, zIndex:1200}); // 蓋住上面的復原鍵，問的時候不能復原
+}
+function planDriftAlertHTML(drift){
+  if(!drift || !drift.length) return '';
+  return `<div class="st-alert">${ico('alert')}<span class="grow">這天的${esc(drift.join('、'))}跟預排不一樣</span><button class="ghost small" id="planDriftFixBtn">照預排更新</button></div>`;
 }
 /* 某一天的勤務跟預排不一致的角色（排班頁概況卡用，只看勤務、不看休假） */
 function dayPlanDriftRoles(date){
@@ -8028,7 +8073,7 @@ function openPreplanDrawer(){
     recomputeTypeLists();
     drawer.innerHTML=`
       <div class="section-title"><h2>📅 預排</h2><button class="ghost small" id="drawerClose">關閉</button></div>
-      <div class="hint" style="margin-bottom:10px">這裡放不太會變的東西：人員名冊、跟固定的常態勤務。先建立好就不用每天重填：<b>預排存檔就直接生效</b>，今天以後的班表會自動跟著更新（已經過去的日期不會被改）。長按 ⠿ 可拖曳調整常態勤務的順序。</div>
+      <div class="hint" style="margin-bottom:10px">這裡放不太會變的東西：人員名冊、跟固定的常態勤務。先建立好就不用每天重填：<b>預排存檔就直接生效</b>，今天以後的班表會自動跟著更新（已經過去的日期不會自動改，改到的話會問你）。長按 ⠿ 可拖曳調整常態勤務的順序。</div>
       <div class="drawer-item" data-open-roster="1">
         <span style="font-size:18px">👤</span>
         <span class="grow">人員名冊<br><span class="hint">共 ${state.personnel.length} 人</span></span>
@@ -8647,7 +8692,7 @@ function openPreplanTextImportModal(key, ym, onDone){
     Object.entries(otherUnitFill).forEach(([d,list])=>list.forEach(t=>push(d, 'warn', `${t}，套用後會改成本部連排`)));
     multiInCell.forEach(x=>{ if(changes[x.date] && changes[x.date].length) push(x.date, 'warn', `${x.label}填了不只一個人（${x.text}），只用第一個`); });
     Object.entries(issues).forEach(([d,list])=>list.forEach(x=>push(d, x.level==='fact'? 'bad' : 'warn', `${x.level==='fact'? (x.ignorable? '衝突' : '不能排') : RULE_LEVEL_LABEL[x.level]+'規則'}：${x.text}`)));
-    dates.filter(d=>d<today).forEach(d=>push(d, 'hint', '已經過去的日子：只改預排，班表那天不會跟著改'));
+    dates.filter(d=>d<today).forEach(d=>push(d, 'hint', '已經過去的日子：班表不會自動跟著改，套用後會問你要不要一起改'));
     const problemDays=dates.filter(d=>(perDate[d]||[]).some(x=>x.cls==='bad' || x.cls==='warn'));
     const listTop=(arr, fn, n)=>arr.slice(0,n||8).map(fn).join('<br>')+(arr.length>(n||8)? `<br>…還有 ${arr.length-(n||8)} 筆` : '');
     box.innerHTML=`
@@ -8686,9 +8731,11 @@ function openPreplanTextImportModal(key, ym, onDone){
       saveState();
       modal.remove();
       if(onDone) onDone();
-      const items=newPlanFacts(factsBefore, pick);
-      if(items.length) confirmPlanConflicts(items, null);
-      else showAlert(`已套用 ${pick.length} 天的內容到「${type.name}」預排。`);
+      offerPastPlanSync(pick.map(d=>({type, date:d})), ()=>{
+        const items=newPlanFacts(factsBefore, pick);
+        if(items.length) confirmPlanConflicts(items, null);
+        else showAlert(`已套用 ${pick.length} 天的內容到「${type.name}」預排。`);
+      });
     };
   };
 }
@@ -8895,6 +8942,46 @@ function dutyTermPlanDays(start, days, handover){
   return out;
 }
 function addDays(d, n){ let x=d; for(let i=0;i<n;i++) x=nextDateStr(x); return x; }
+/* v178：值星預排存檔前檢查：同一個位置（值星官／值星班長）同一段時間排了兩個不同的人。
+   照實際時間比這天跟前一天、隔天預排出來的每一組（例如交接那天前一組也寫 12:00-12:00，
+   會一直值到隔天 12:00，跟新的一組重疊）。value＝這天還沒存的預排。回傳說明（空＝沒問題）。 */
+function dutyPlanOverlapLines(date, value){
+  const type=PREPLAN_TYPES.find(t=>t.key==='duty');
+  if(!type) return [];
+  const store=state.preplan.duty || (state.preplan.duty={});
+  const had=Object.prototype.hasOwnProperty.call(store, date), old=store[date];
+  if(value) store[date]=JSON.parse(JSON.stringify(value)); else delete store[date];
+  const spans=[];
+  try{
+    [[prevDateStr(date),-1440],[date,0],[nextDateStr(date),1440]].forEach(([d,off])=>{
+      simulatePlanEntries(type, d).forEach(m=>{
+        if(!m.start || !m.end || isEmptyPlanEntry(m)) return;
+        const s=toMin(m.start), e0=m.end==='24:00'? 1440 : toMin(m.end);
+        spans.push({m, d, off, s:off+s, e:off+(e0<=s? e0+1440 : e0)});
+      });
+    });
+  } finally { if(had) store[date]=old; else delete store[date]; }
+  const at=x=>{ const k=Math.floor(x/1440); const d=k<0? prevDateStr(date) : k>0? addDays(date, k) : date; const mm=((x%1440)+1440)%1440; return `${shortDateLabel(d)} ${String(Math.floor(mm/60)).padStart(2,'0')}:${String(mm%60).padStart(2,'0')}`; };
+  const who=id=>isSupportId(id)? supportNameOf(id) : personName(id);
+  const span=x=>`${at(x.s)}～${at(x.e)}`;
+  const out=[];
+  for(let i=0;i<spans.length;i++) for(let j=i+1;j<spans.length;j++){
+    const A=spans[i], B=spans[j];
+    if(A.off!==0 && B.off!==0) continue; // 只看跟這天有關的
+    if(!absOverlap(A.s, A.e, B.s, B.e)) continue;
+    const a=A.m.personIds||[], b=B.m.personIds||[];
+    // 同一組人只是前後兩筆位置記得不一樣（舊資料照階級排）不算
+    const sa0=[...new Set(a.filter(Boolean))].sort().join(','), sb0=[...new Set(b.filter(Boolean))].sort().join(',');
+    if(sa0===sb0) continue;
+    if(A.m.roles && B.m.roles){
+      A.m.roles.forEach((r,k)=>{ if(a[k] && b[k] && a[k]!==b[k]) out.push(`・${r} ${who(a[k])}（${span(A)}）跟 ${who(b[k])}（${span(B)}）`); });
+    } else {
+      const sa=a.filter(Boolean), sb=b.filter(Boolean);
+      if(sa.length && sb.length) out.push(`・${sa.map(who).join('、')}（${span(A)}）跟 ${sb.map(who).join('、')}（${span(B)}）`);
+    }
+  }
+  return [...new Set(out)];
+}
 function openDutyRangeFillModal(onDone){
   const type=PREPLAN_TYPES.find(t=>t.key==='duty');
   const pos=dutyPositions();
@@ -9020,9 +9107,11 @@ function openDutyRangeFillModal(onDone){
     saveState();
     modal.remove();
     if(onDone) onDone();
-    const items=newPlanFacts(factsBefore, dates);
     const msg=`已排好：${minguoLabel(from)} ${H} 接班 → ${minguoLabel(days[days.length-1].date)} ${H==='00:00'?'24:00':H} 交班（${n} 天）。`;
-    if(items.length) confirmPlanConflicts(items, null); else showAlert(msg);
+    offerPastPlanSync(dates.map(d=>({type, date:d})), ()=>{
+      const items=newPlanFacts(factsBefore, dates);
+      if(items.length) confirmPlanConflicts(items, null); else showAlert(msg);
+    });
   };
 }
 function openPreplanCalendar(key){
@@ -9057,7 +9146,7 @@ function openPreplanCalendar(key){
     modal.innerHTML=`
       <div class="section-title"><h2 style="margin:0">${type.icon} ${type.name}</h2><button class="ghost small" id="calClose">關閉</button></div>
       <div class="hint" style="margin-bottom:8px">${type.hint}</div>
-      <div class="hint plan-live-hint" style="margin-bottom:8px">✅ 存檔就直接生效：今天以後的班表會自動跟著更新（已經過去的日期不會被改）。在排班頁改了這些格子，也會問你要不要一起更新這裡。</div>
+      <div class="hint plan-live-hint" style="margin-bottom:8px">✅ 存檔就直接生效：今天以後的班表會自動跟著更新（已經過去的日期不會自動改，改到的話會問你要不要一起改班表）。在排班頁改了這些格子，也會問你要不要一起更新這裡。</div>
       <div class="row" style="gap:6px;align-items:center;margin-bottom:8px">
         <button class="ghost small" id="calPrev">◀</button>
         <span class="grow" style="text-align:center;font-weight:600">民國${y-1911}年${m}月<br><span class="hint">本月已排 ${plannedCount} 天</span></span>
@@ -10260,17 +10349,38 @@ function openPreplanDayEditor(key, date, onSaved){
   document.getElementById('ppDelete').onclick=()=>{
     setPreplan(key, date, null);
     saveState(); close(); if(onSaved) onSaved();
+    offerPastPlanSync([{type, date}]); // v178：已經過去的日子問要不要也改班表
   };
   document.getElementById('ppCopy').onclick=()=>{
     if(!supClashOk()) return;
     const value=collect();
     if(!value){ showAlert('這天還沒有填任何內容，沒有東西可以複製。'); return; }
-    setPreplan(key, date, value); saveState();
-    openPreplanCopyModal(key, date, ()=>{ close(); if(onSaved) onSaved(); });
+    const go=()=>{
+      setPreplan(key, date, value); saveState();
+      // v178：這天已經過去的話先問這天要不要也改班表，再開複製
+      offerPastPlanSync([{type, date}], ()=>openPreplanCopyModal(key, date, ()=>{ close(); if(onSaved) onSaved(); }));
+    };
+    const ov = key==='duty'? dutyPlanOverlapLines(date, value) : [];
+    if(ov.length){
+      showChoice(`值星時間重疊：\n${ov.join('\n')}\n\n交接那天，前一組要寫到交接時間為止（例如 00:00-12:00），不然會一直值到隔天。`,
+        [{label:'照這樣存', onPick:go}], {cancelLabel:'回去改'});
+      return;
+    }
+    go();
   };
   document.getElementById('ppSave').onclick=()=>{
     if(!supClashOk()) return;
     const value=collect();
+    // v178：值星同一個位置、同一段時間兩個人（交接那天前一組也寫到隔天）先提醒
+    const ov = key==='duty'? dutyPlanOverlapLines(date, value) : [];
+    if(ov.length){
+      showChoice(`值星時間重疊：\n${ov.join('\n')}\n\n交接那天，前一組要寫到交接時間為止（例如 00:00-12:00），不然會一直值到隔天。`,
+        [{label:'照這樣存', onPick:()=>savePlanDay(value)}], {cancelLabel:'回去改'});
+      return;
+    }
+    savePlanDay(value);
+  };
+  const savePlanDay=(value)=>{
     const factsBefore=planFactSnapshot([date]);
     setPreplan(key, date, value);
     // remember the shape (times / rest) so the next day opens pre-filled
@@ -10288,7 +10398,8 @@ function openPreplanDayEditor(key, date, onSaved){
       }
     }
     saveState(); close(); if(onSaved) onSaved();
-    confirmPlanConflicts(newPlanFacts(factsBefore, [date]), ()=>openPreplanDayEditor(key, date, onSaved));
+    // v178：已經過去的日子：問要不要也改班表，再看有沒有新的規則問題
+    offerPastPlanSync([{type, date}], ()=>confirmPlanConflicts(newPlanFacts(factsBefore, [date]), ()=>openPreplanDayEditor(key, date, onSaved)));
   };
 }
 /* copy one day's plan onto other dates — the common "20th is the same as
@@ -10349,9 +10460,11 @@ function openPreplanCopyModal(key, fromDate, onDone){
     });
     saveState();
     modal.remove(); if(onDone) onDone();
-    const items=newPlanFacts(factsBefore, dates);
-    if(items.length) confirmPlanConflicts(items, null);
-    else showAlert(`已複製到 ${dates.length} 個日期。`);
+    offerPastPlanSync(dates.map(d=>({type, date:d})), ()=>{
+      const items=newPlanFacts(factsBefore, dates);
+      if(items.length) confirmPlanConflicts(items, null);
+      else showAlert(`已複製到 ${dates.length} 個日期。`);
+    });
   };
 }
 /* 休假暨事故大表: pick a person, then tick every day they're off — the reverse of
@@ -15233,8 +15346,9 @@ function dayDutyIntervals(date){
       (m.personIds||[]).forEach((pid,i)=>{
         if(!pid || isSupportId(pid) || (m.nominalIds||[]).includes(pid)) return;
         const role=(m.roles && m.roles[i])? '・'+m.roles[i] : '';
-        const label=`${m.role}${role}${m.shiftLabel? ' '+m.shiftLabel:''} ${m.start}-${m.end}`;
-        out.push({kind:'duty', pid, s:a, e:b, start:a, label, tag});
+        const rk=`${m.role}${role}${m.shiftLabel? ' '+m.shiftLabel:''}`;
+        const label=`${rk} ${m.start}-${m.end}`;
+        out.push({kind:'duty', pid, s:a, e:b, start:a, label, tag, rk});
         if(restEnd) out.push({kind:'rest', pid, s:b, e:restEnd, start:b, label:`${m.role}後補休到 ${m.restUntil}`, tag});
       });
     });
@@ -15254,7 +15368,13 @@ function hourDutyMap(intervals, h, kind){
     const label=iv.label+(iv.tag? `（${iv.tag}）`:'');
     if(!map.has(iv.pid)) map.set(iv.pid, []);
     const list=map.get(iv.pid);
-    if(!list.some(x=>x.label===label)) list.push({label, start:iv.start});
+    // v178：同一個人、同一個勤務（同角色、同位置）前一天的還沒結束、這天的又開始（例如交接那天
+    // 前一組 00:00-12:00 跟前一天的 12:00-12:00）只列一次，列這天的
+    if(iv.rk){
+      const j=list.findIndex(x=>x.rk===iv.rk);
+      if(j>-1 && list[j].tag!==iv.tag){ if(list[j].tag && !iv.tag) list[j]={label, start:iv.start, rk:iv.rk, tag:iv.tag}; return; }
+    }
+    if(!list.some(x=>x.label===label)) list.push({label, start:iv.start, rk:iv.rk, tag:iv.tag});
   });
   return map;
 }
@@ -15847,7 +15967,7 @@ function dayProgressBarHTML(ctaHTML){
     ${s.pendingChanges? `<div class="st-alert">${ico('alert')}未遞補異動 ${s.pendingChanges} 筆，請到下方異動紀錄處理</div>` : ''}
     ${ruleStatusLineHTML(currentDate)}
     ${standbyIssuesLineHTML()}
-    ${(()=>{ const drift=dayPlanDriftRoles(currentDate); return drift.length? `<div class="st-alert">${ico('alert')}<span class="grow">這天的${esc(drift.join('、'))}跟預排不一樣</span><button class="ghost small" id="planDriftFixBtn">照預排更新</button></div>` : ''; })()}
+    ${planDriftAlertHTML(dayPlanDriftRoles(currentDate))}
     ${ctaHTML? `<div class="st-cta">${ctaHTML}</div>` : ''}
   </div>`;
 }
@@ -16310,7 +16430,7 @@ function renderSchedule(){
   const notes = [
     sum.pendingChanges? `<div class="st-alert">${ico('alert')}<span class="grow">未遞補異動 ${sum.pendingChanges} 筆，到第 3 段「異動紀錄」處理</span></div>` : '',
     standbyIssuesLineHTML(),
-    drift.length? `<div class="st-alert">${ico('alert')}<span class="grow">這天的${esc(drift.join('、'))}跟預排不一樣</span><button class="ghost small" id="planDriftFixBtn">照預排更新</button></div>` : '',
+    planDriftAlertHTML(drift),
   ].join('');
   const chip=(id, n, label, cls)=>`<button type="button" class="pchip ${cls}" data-jump="${id}"><span class="n">${n}</span><span class="l">${label}</span></button>`;
   const taskRowHTML=r=>`<div class="task-row"><span class="task-src ${r.src==='plan'?'plan':r.src==='adhoc'?'adhoc':r.src==='sentry'?'sentry':''}">${esc(r.srcLabel)}</span>
@@ -18328,7 +18448,7 @@ function planSyncOnOpen(){
     render();
     openPlanDriftModal(drift, seen? 'open' : 'migrate', filled);
   }
-  else if(!seen) showAlert('班表一律「以預排為準」：\n・預排存檔就直接生效，今天以後的班表會自動跟著更新，不用再按「匯入」。\n・班表跟預排不一樣的地方，會直接照預排改好，並列出改了什麼。\n・在排班頁改了預排來的格子（值星、查哨、督伙、救護車等），會問你要不要一起更新預排；不更新的話這次修改會取消。\n・已經過去的日期不會再被預排改動。\n\n'+(filled? `預排已經有、班表還沒排的 ${filled} 項，已經照預排補上；現在今天以後的班表跟預排一致。` : '目前今天以後的班表跟預排完全一致。'));
+  else if(!seen) showAlert('班表一律「以預排為準」：\n・預排存檔就直接生效，今天以後的班表會自動跟著更新，不用再按「匯入」。\n・班表跟預排不一樣的地方，會直接照預排改好，並列出改了什麼。\n・在排班頁改了預排來的格子（值星、查哨、督伙、救護車等），會問你要不要一起更新預排；不更新的話這次修改會取消。\n・已經過去的日期不會自動跟著預排改（在預排改到過去的日期時，會問你要不要一起改班表）。\n\n'+(filled? `預排已經有、班表還沒排的 ${filled} 項，已經照預排補上；現在今天以後的班表跟預排一致。` : '目前今天以後的班表跟預排完全一致。'));
   else if(filled) showToast(`預排已經有、班表還沒排的 ${filled} 項，已照預排補上`);
   }catch(e){ console.error(e); }
 }
