@@ -557,7 +557,7 @@ button.small.card-more{min-width:44px;min-height:40px;font-size:20px;line-height
       <span class="unit-banner-badge"><i data-ico="star"></i></span>
       <span class="unit-banner-titles">
         <span class="unit-banner-text">陸軍第八軍團 本部連</span>
-        <h1 id="pageTitle">衛哨排班系統 <span class="muted">v185</span></h1>
+        <h1 id="pageTitle">衛哨排班系統 <span class="muted">v186</span></h1>
       </span>
     </span>
     <span class="banner-side right">
@@ -1144,6 +1144,7 @@ function trimUndoStack(){
   while(undoStack.length>1 && total>UNDO_CHAR_BUDGET){ total-=undoStack.shift().length; }
 }
 const UNDO_LIMIT=50;
+var LOOKAHEAD_DAYS=7; // v186：預排快到期、規則問題往後看幾天（排班頁、⚙️設定檢查）
 let undoStack=[];
 let redoStack=[];
 let lastSavedSnapshot; // set on first load, see below
@@ -7040,6 +7041,14 @@ function settingsChecklist(){
   });
   short.slice(0,4).forEach(x=>out.push({msg:x.text, sub:'改崗位的資格，或到個人頁補登證照、專長', section:x.d.linkedPreplan? 'dutyDefs' : 'scheduleCategories'}));
   if(short.length>4) out.push({msg:`還有 ${short.length-4} 個勤務符合資格的人不夠`, section:'dutyDefs'});
+  // v186：預排快到期、接下來 7 天還有規則問題
+  try{
+    const ex=preplanExpiryIssues();
+    ex.slice(0,3).forEach(it=>out.push({msg:`「${it.name}」預排：接下來 ${LOOKAHEAD_DAYS} 天有 ${it.gaps.length} 天還沒排`, sub:`${compressDates(it.gaps)}；按這裡去排`, action:'planExpiry', key:it.key}));
+    if(ex.length>3) out.push({msg:`還有 ${ex.length-3} 種預排接下來 ${LOOKAHEAD_DAYS} 天沒排完`, sub:'到預排分頁看', action:'preplanTab'});
+    const days=upcomingRuleIssueDays();
+    if(days.length) out.push({msg:`接下來 ${LOOKAHEAD_DAYS} 天還有 ${days.reduce((n,x)=>n+x.n,0)} 項規則問題`, sub:`${days.map(x=>`${shortDateLabel(x.date)}（${x.n}）`).join('、')}；按這裡看 ${shortDateLabel(days[0].date)}`, action:'ruleIssues', date:days[0].date});
+  }catch(e){ console.error(e); }
   // 查哨候選名單
   if(Array.isArray(state.patrolCandidateIds) && !state.patrolCandidateIds.some(id=>active.some(p=>p.id===id)))
     out.push({msg:'查哨候選名單是空的', sub:'崗位定義 → 查哨 → 候選名單', section:'dutyDefs'});
@@ -7197,6 +7206,10 @@ function openUnitRulesModal(opts){
         const c=checks[Number(b.dataset.urCheck)]; if(!c) return;
         if(c.section){ section=c.section; draw(); return; }
         if(c.action==='people'){ modal.remove(); unpark(); currentTab='people'; window.scrollTo(0,0); render(); return; }
+        // v186：預排快到期 → 打開那一種預排的月曆；規則問題 → 跳到那一天的規則檢查
+        if(c.action==='planExpiry'){ modal.remove(); unpark(); currentTab='preplan'; render(); openPlanExpiry(c.key); return; }
+        if(c.action==='preplanTab'){ modal.remove(); unpark(); currentTab='preplan'; window.scrollTo(0,0); render(); return; }
+        if(c.action==='ruleIssues'){ modal.remove(); unpark(); goToDateRuleIssues(c.date); return; }
         if(c.action==='export') openExportModal();
       };
     });
@@ -8170,6 +8183,57 @@ function openHolidaySettingsModal(){
 function planDaysOfType(t){ const d=(state.dutyDefinitions||[]).find(x=>x.key===t.key && x.linkedPreplan); return (d && d.planDays) || 'none'; }
 function planDayNeeded(pd, date){ if(pd==='daily') return true; if(pd==='weekday') return !isHolidayDate(date); if(pd==='holiday') return isHolidayDate(date); return false; }
 function preplanHasDay(t, date){ const v=preplanFor(t.key, date); if(!v) return false; try{ return !!String(preplanCellMark(t, v)||'').replace(/<[^>]+>/g,'').trim(); }catch(e){ return true; } }
+/* v186：預排快到期——每種每日預排（照崗位定義「哪些日子要排」：每天／平日／假日；不固定的不算），
+   接下來 7 天（今天起）還沒排的日子（LOOKAHEAD_DAYS 定義在最前面） */
+function preplanExpiryIssues(){
+  const out=[];
+  planDayTypes().forEach(t=>{
+    let st; try{ st=preplanTypeStatus(t, LOOKAHEAD_DAYS); }catch(e){ return; }
+    if(st.planDays==='none' || !st.gaps.length) return;
+    out.push({key:t.key, name:t.name, gaps:st.gaps, text:`「${t.name}」預排：接下來 ${LOOKAHEAD_DAYS} 天有 ${st.gaps.length} 天還沒排（${compressDates(st.gaps)}）`});
+  });
+  return out;
+}
+/* v186：接下來 7 天（今天起）還有規則問題（事實衝突、還沒記原因的）的日子：[{date, n}]，n＝幾項（同一格同一個人算一項）。
+   排班頁每次重畫都會用：存檔（lastSavedSnapshot）跟今天都沒變就用上次算的 */
+var upcomingIssuesCache=null; // var：開 App 最早的 render 也拿得到
+function upcomingRuleIssueDays(){
+  const today=todayStr();
+  if(upcomingIssuesCache && upcomingIssuesCache.snap===lastSavedSnapshot && upcomingIssuesCache.today===today) return upcomingIssuesCache.list;
+  const list=[];
+  for(let k=0;k<LOOKAHEAD_DAYS;k++){
+    const d=dateAddDays(today, k);
+    let st; try{ st=dayRuleStatus(d); }catch(e){ console.error(e); continue; }
+    const n=new Set(st.facts.concat(st.open).map(v=>`${v.subject}#${v.pid||''}#${v.memberSig||''}`)).size;
+    if(n) list.push({date:d, n});
+  }
+  upcomingIssuesCache={snap:lastSavedSnapshot, today, list};
+  return list;
+}
+/* 去排：打開那一種預排的月曆，從第一個還沒排的日子那個月開始 */
+function openPlanExpiry(key){
+  const it=preplanExpiryIssues().find(x=>x.key===key);
+  preplanMonth=monthOf(it? it.gaps[0] : todayStr());
+  openPreplanCalendar(key);
+}
+/* 跳到那一天，打開那天的規則檢查 */
+function goToDateRuleIssues(d){
+  currentDate=d; saveLastDate(currentDate); refreshGlobalDate();
+  currentTab='schedule'; render();
+  openDayRuleIssuesModal(d);
+}
+/* 排班頁上方的提醒：預排快到期、接下來 7 天（正在看的這天以外）還有規則問題的日子 */
+function lookaheadAlertsHTML(){
+  let out='';
+  try{
+    const ex=preplanExpiryIssues();
+    out+=ex.slice(0,3).map(it=>`<div class="st-alert">${ico('alert')}<span class="grow">${esc(it.text)}</span><button class="ghost small" data-plan-expiry="${esc(it.key)}">去排</button></div>`).join('')
+      + (ex.length>3? `<div class="hint" style="margin:2px 0 0 4px">…還有 ${ex.length-3} 種預排接下來 ${LOOKAHEAD_DAYS} 天沒排完</div>` : '');
+    const days=upcomingRuleIssueDays().filter(x=>x.date!==currentDate);
+    if(days.length) out+=`<div class="st-alert" style="align-items:flex-start">${ico('alert')}<span class="grow">接下來 ${LOOKAHEAD_DAYS} 天還有規則問題，點日期看：<span class="lookahead-days" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px">${days.map(x=>`<button class="ghost small" data-upcoming-issue="${x.date}">${esc(shortDateLabel(x.date))}（${x.n} 項）</button>`).join('')}</span></span></div>`;
+  }catch(e){ console.error(e); }
+  return out;
+}
 function preplanTypeStatus(t, days){
   days=days||30;
   const today=todayStr();
@@ -16655,6 +16719,7 @@ function renderSchedule(){
   const notes = [
     sum.pendingChanges? `<div class="st-alert">${ico('alert')}<span class="grow">未遞補異動 ${sum.pendingChanges} 筆，到第 3 段「異動紀錄」處理</span></div>` : '',
     standbyIssuesLineHTML(),
+    lookaheadAlertsHTML(),
     planDriftAlertHTML(drift),
   ].join('');
   const chip=(id, n, label, cls)=>`<button type="button" class="pchip ${cls}" data-jump="${id}"><span class="n">${n}</span><span class="l">${label}</span></button>`;
@@ -16739,6 +16804,8 @@ function renderSchedule(){
   { const pdb=document.getElementById('planDriftFixBtn'); if(pdb) pdb.onclick=()=>maybeShowPlanDrift('check'); }
   document.querySelectorAll('[data-sbissue-anchor]').forEach(b=>{ b.onclick=()=>openStandbyEditor(b.dataset.sbissueAnchor, ()=>render()); });
   document.querySelectorAll('[data-sbissue-new]').forEach(b=>{ b.onclick=()=>openStandbyEditor(b.dataset.sbissueNew, ()=>render()); });
+  document.querySelectorAll('[data-plan-expiry]').forEach(b=>{ b.onclick=()=>openPlanExpiry(b.dataset.planExpiry); });
+  document.querySelectorAll('[data-upcoming-issue]').forEach(b=>{ b.onclick=()=>goToDateRuleIssues(b.dataset.upcomingIssue); });
   wireRuleFlags(app);
   document.querySelectorAll('[data-del-dutychange]').forEach(b=>{
     b.onclick=()=>{
