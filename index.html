@@ -557,7 +557,7 @@ button.small.card-more{min-width:44px;min-height:40px;font-size:20px;line-height
       <span class="unit-banner-badge"><i data-ico="star"></i></span>
       <span class="unit-banner-titles">
         <span class="unit-banner-text">陸軍第八軍團 本部連</span>
-        <h1 id="pageTitle">衛哨排班系統 <span class="muted">v186</span></h1>
+        <h1 id="pageTitle">衛哨排班系統 <span class="muted">v188</span></h1>
       </span>
     </span>
     <span class="banner-side right">
@@ -3993,7 +3993,7 @@ function dayPlanDriftRoles(date){
    掉或規則不再違反，紀錄就不再適用。
    ================================================================ */
 var RULE_CATALOG=[
-  {key:'leave',        no:1,  name:'休假／事故／長期事故期間',           level:'fact',    note:'預排的優先權比較高：預排管的項目（值星、查哨、督伙、救護車、留守子勤務…）排到有長期事故的人，照排、只提醒💡（自動排班不會挑他）'},
+  {key:'leave',        no:1,  name:'休假／事故／長期事故期間',           level:'fact',    note:'預排的優先權比較高：預排管的項目（值星、查哨、督伙、救護車、留守子勤務…）排到有長期事故的人，照排、只提醒💡（自動排班不會挑他）；也可以「暫停」他那幾天的長期事故（人員頁，或按💡旁邊的「暫停長期事故」），暫停的日子整天當作沒有長期事故'},
   {key:'departed',     no:2,  name:'已離退',                           level:'fact',    note:'已離退的人不在名冊上，挑人清單、自動排班本來就不會出現；這個等級管的是已經排在班表上的'},
   {key:'overlap',      no:3,  name:'同時段已排其他勤務',                 level:'fact',    note:'同一個人在同一班排兩格，不管設什麼等級都不能排'},
   {key:'comprest',     no:4,  name:'補休時間內',                        level:'normal'},
@@ -4088,13 +4088,20 @@ function personalViolations(ctx, pid){
      照排、只提醒（💡）；自動排班、一鍵排查哨、找人選還是不會挑他（autoBlock） */
   const planOwnedSelf = ctx.kind==='misc' && isPlanOwnedEntry(ctx.entry);
   const ltWhat = lt=>lt.mode==='allday'? `整天${lt.reason? '・'+lt.reason : ''}` : `每天 ${lt.start}-${lt.end}${lt.reason? ' '+lt.reason : ''}`;
-  const addLt = (lt, msg)=>{ if(planOwnedSelf) add('leave', `預排照排，但這段時間是他的長期事故（${ltWhat(lt)}）`, {level:'remind', autoBlock:true, planLt:true}); else add('leave', msg); };
+  // v188：ltDates＝碰到的是哪幾天的長期事故（日曆日），「暫停這幾天」用
+  const addLt = (lt, msg, ltDate)=>{
+    if(!planOwnedSelf){ add('leave', msg); return; }
+    const pm=`預排照排，但這段時間是他的長期事故（${ltWhat(lt)}）`;
+    const ex=out.find(v=>v.planLt && v.key==='leave' && v.msg===pm);
+    if(ex){ if(ltDate && !ex.ltDates.includes(ltDate)) ex.ltDates.push(ltDate); }
+    else add('leave', pm, {level:'remind', autoBlock:true, planLt:true, ltDates: ltDate? [ltDate] : []});
+  };
   // 2 已離退
   if(person.departureDate && date>=person.departureDate) add('departed', `已離退（${minguoLabel(person.departureDate)}起）`);
   if(!win){
     // 沒有時段的項目：至少整天不在的（整天休假／事故、全天長期事故）一定排不了
     const lt=effectiveLongTerm(person, date);
-    if(lt.mode==='allday') addLt(lt, `長期事故：全天不可排${lt.reason?`（${lt.reason}）`:''}`);
+    if(lt.mode==='allday') addLt(lt, `長期事故：全天不可排${lt.reason?`（${lt.reason}）`:''}`, date);
     (state.unavail[date]||[]).forEach(u=>{ if(u.personId===pid && isAwayDayEntry(u)) add('leave', `${u.allDay?'全天':`${u.start}-${u.end}`}${u.reason?`（${u.reason}）`:'（事故）'}`); });
   }
   // 3 同一班（或同一個多人項目）重複排了同一個人；車長＋駕駛同一人由規則16管
@@ -4115,7 +4122,7 @@ function personalViolations(ctx, pid){
     const dl=X=>X===date? '' : `${shortDateLabel(X)} `;
     // 1 休假／事故／長期事故（只看班本身的時段，準備時間不算）
     personAwayHits(pid, person, date, A0, A1).forEach(h=>{
-      if(h.kind==='lt'){ ltTimeHit=true; addLt(h.lt, h.lt.mode==='allday'? `長期事故：全天不可排${h.lt.reason?`（${h.lt.reason}）`:''}` : `長期事故：每天 ${h.lt.start}-${h.lt.end} 不可排${h.lt.reason?`（${h.lt.reason}）`:''}`); }
+      if(h.kind==='lt'){ ltTimeHit=true; addLt(h.lt, h.lt.mode==='allday'? `長期事故：全天不可排${h.lt.reason?`（${h.lt.reason}）`:''}` : `長期事故：每天 ${h.lt.start}-${h.lt.end} 不可排${h.lt.reason?`（${h.lt.reason}）`:''}`, h.date); }
       else if(h.kind==='leave') add('leave', `${dl(h.date)}${h.u.allDay?'全天':`${h.u.start}-${h.u.end}`}${h.u.reason?`（${h.u.reason}）`:'（事故）'}`);
       // 休假／事故設成提醒時，事故後的補休要另外算
       else if(h.kind==='rest' && (!h.entryHit || ruleLevel('leave')==='remind')) add('comprest', `${h.u.reason||'事故'}後補休到 ${h.u.restUntil}`);
@@ -4234,9 +4241,9 @@ function personalViolations(ctx, pid){
     if(m.restUntil && m.end && !miscGovernedElsewhere(m, pid)){
       if(miscRestWindowConflict(pid, date, m)) add('comprest', `${m.role}後補休（到 ${m.restUntil}）的時段已排了其他勤務`);
       // v182：補休碰到長期事故的執勤時間（同上）
-      else if(!ltTimeHit){ const r=miscRestAbs(m, date, date); const lt=r? ltDutyHit(pid, person, date, r[0], r[1]) : null;
+      else if(!ltTimeHit){ const r=miscRestAbs(m, date, date); const hit=r? ltDutyHitAt(pid, person, date, r[0], r[1]) : null; const lt=hit && hit.lt;
         // v185：預排管的項目照排、只提醒（同上）
-        if(lt) add('comprest', `${planOwnedSelf? '預排照排，但' : ''}${restHitsLtMsg(`${m.role}後`, m.restUntil, lt)}`, planOwnedSelf? {level:'remind', autoBlock:true, planLt:true} : undefined); }
+        if(lt) add('comprest', `${planOwnedSelf? '預排照排，但' : ''}${restHitsLtMsg(`${m.role}後`, m.restUntil, lt)}`, planOwnedSelf? {level:'remind', autoBlock:true, planLt:true, ltDates:[hit.date]} : undefined); }
     }
   }
   // 同一條規則、同一句話只留一筆
@@ -4317,10 +4324,12 @@ function engPrepLongTerm(pid, person, date, sft){
 /* v182：在營、每天固定時段的長期事故（伙房 04:30-20:00、二級廠 08:00-18:00…）＝他已經在執勤的時間。
    時間軸 [s,e)（ref 當天 00:00 起算）碰到的那一筆長期事故，沒有回傳 null。「全天」的只是標記那天
    不排、不在營的（受訓等）不是執勤，都不算。用在補休：下勤後要補休的時段他其實要上工，等於沒補休。 */
-function ltDutyHit(pid, person, ref, s, e){
+function ltDutyHit(pid, person, ref, s, e){ const h=ltDutyHitAt(pid, person, ref, s, e); return h? h.lt : null; }
+/* 同上，連那一筆是哪一天的長期事故一起回傳 {date, lt}（v188：暫停用） */
+function ltDutyHitAt(pid, person, ref, s, e){
   if(!person || !(e>s) || personLongTerm(person).mode!=='range') return null;
   const h=personAwayHits(pid, person, ref, s, e).find(h=>h.kind==='lt' && h.lt.mode==='range' && h.lt.inCamp!==false);
-  return h? h.lt : null;
+  return h? {date:h.date, lt:h.lt} : null;
 }
 // 下拉選單只顯示前 16 個字：原因放前面（「要補休到 08:00，但「伙房」…」）
 function restHitsLtMsg(prefix, until, lt){
@@ -4510,6 +4519,27 @@ function placementViolations(ctx, pid){
     trial.personIds[ctx.idx]=pid;
     const before=new Set(miscGroupViolations(ctx.date, m).map(v=>v.key+v.msg));
     miscGroupViolations(ctx.date, trial).forEach(v=>{ if(!before.has(v.key+v.msg)) out.push({key:v.key, level:v.level, msg:v.msg}); });
+    // v187：規則5 反方向——把他排進值星，他這段時間其他自己出勤的勤務就會變成「值星自行出勤」
+    //   （違規記在那些勤務上；這裡先算出來，自動排班、挑人清單才知道）
+    if(m.role==='值星' && person && (state.misc[ctx.date]||[]).includes(m)){
+      const days=[prevDateStr(ctx.date), ctx.date, nextDateStr(ctx.date), dateAddDays(ctx.date, 2)];
+      // 他這幾天自己出勤的勤務（值星本身不算）；沒有的話就不用比
+      const own=[]; days.forEach(d=>personSlotCtxs(d, pid).forEach(c=>{ if(!(c.kind==='misc' && c.entry.role==='值星')) own.push(c); }));
+      const keyOf=c=>`${c.date}|${ctxLabel(c)}`;
+      const dutyHits=list=>{ const hit=new Map(); list.forEach(c=>{
+        if(personalViolations(c, pid).some(v=>v.key==='dutyOfficer')) hit.set(keyOf(c), c);
+      }); return hit; };
+      // 先算排進值星之後哪些會變成值星自行出勤；只有那幾項才要再看「本來就是」（效能：大部分的人一項都沒有）
+      const keep=m.personIds;
+      let now=new Map();
+      if(own.length){
+        m.personIds=(keep||[]).slice(); m.personIds[ctx.idx]=pid;
+        try{ now=dutyHits(own); } finally{ m.personIds=keep; }
+      }
+      const had=now.size? dutyHits(own.filter(c=>now.has(keyOf(c)))) : new Map();
+      const lbl=[...now.entries()].filter(([k])=>!had.has(k)).map(([,c])=>{ const cd=c.kind==='cat'? catShiftCalendar(c.date, c.shift).date : c.date; return `${cd===ctx.date? '' : shortDateLabel(cd)+' '}${ctxLabel(c)}`; });
+      if(lbl.length) out.push({key:'dutyOfficer', level:ruleLevel('dutyOfficer'), msg:`當值星的話，他排的「${[...new Set(lbl)].join('」「')}」會變成值星自行出勤`});
+    }
   }
   return out;
 }
@@ -4735,7 +4765,17 @@ function gateAssignment(date, mutate, focus, onDone, onRevert, opts){
     exDates.forEach((d,i)=>{ const v=JSON.parse(snapX[i]); if(v) state.ruleExceptions[d]=v; else delete state.ruleExceptions[d]; });
   };
   const revert=()=>{ restore(); if(onRevert) onRevert(); else render(); };
-  const commit=()=>{ saveState(); if(onDone) onDone(); };
+  // v188：這次把有長期事故的人排進預排管的項目（照排、提醒）：存好之後問要不要暫停他這幾天的長期事故
+  const offerLtPause=()=>{
+    const lt=fresh.filter(v=>v.planLt && v.pid);
+    if(!lt.length) return;
+    invalidateRuleStatus();
+    const k=v=>`${(v.ctx && v.ctx.date)||date}|${v.pid}|${v.key}|${v.msg}`;
+    const still=new Map(gateViolations(date).filter(v=>v.planLt && v.pid).map(v=>[k(v), v]));
+    const items=lt.filter(v=>still.has(k(v))).map(v=>({date:(v.ctx && v.ctx.date)||date, v:still.get(k(v))}));
+    if(items.length) openLongTermPauseSheet(planLtGroups(items), {}, null);
+  };
+  const commit=()=>{ saveState(); if(onDone) onDone(); offerLtPause(); };
   const hardFacts=fresh.filter(v=>ruleDisposition(v)==='hard');
   if(hardFacts.length){
     revert();
@@ -4925,7 +4965,9 @@ function ruleFlagsHTML(date, subject, pid, opts){
     out.push(`<div class="rule-flag ex-${lv}"><span class="grow">${lv==='serious'?'🟥':'🟧'} ${who}破例：${esc([...new Set(covered.map(v=>ruleDef(v.key).name))].join('、'))}<br><span class="rule-sub">原因：${why}</span></span></div>`);
   }
   if(rem.length && !opts.hideReminders){
-    out.push(`<div class="rule-flag lv-remind">💡 ${who}${esc([...new Set(rem.map(v=>v.msg))].join('・'))}</div>`);
+    // v188：預排排到長期事故的人：可以直接暫停他這幾天的長期事故
+    const ltPid=(rem.find(v=>v.planLt && v.pid)||{}).pid;
+    out.push(`<div class="rule-flag lv-remind"><span class="grow">💡 ${who}${esc([...new Set(rem.map(v=>v.msg))].join('・'))}</span>${ltPid? `<button class="ghost small" data-lt-pause="${esc(ltPid)}">暫停長期事故</button>` : ''}</div>`);
   }
   return out.join('');
 }
@@ -5101,9 +5143,13 @@ function openDayRuleIssuesModal(date){
         ${facts.length? `<h3>⛔ 事實衝突（${facts.length}）</h3>${facts.map(vs=>itemHTML(vs, v=>`<button class="ghost small" data-ri-fix="${ruleFixToken(v)}">處理</button>`)).join('')}`:''}
         ${open.length? `<h3>⚠️ 待記原因（${open.length}）</h3>${open.map(vs=>itemHTML(vs, v=>`<button class="ghost small" data-ri-fix="${ruleFixToken(v)}">處理</button>`)).join('')}`:''}
         ${covered.length? `<h3>破例紀錄（${covered.length}）</h3>${covered.map(vs=>itemHTML(vs, v=>`<button class="ghost small danger" data-ri-undo="${v.record.id}">撤銷</button>`)).join('')}`:''}
-        ${rem.length? collapsibleCardHTML('ruleReminders', `💡 提醒（${rem.length}，不用記錄）`, rem.map(vs=>itemHTML(vs, ()=>'')).join('')) : ''}
+        ${rem.length? collapsibleCardHTML('ruleReminders', `💡 提醒（${rem.length}，不用記錄）`, rem.map(vs=>itemHTML(vs, v=>vs.some(x=>x.planLt) && v.pid? `<button class="ghost small" data-ri-ltpause="${esc(v.pid)}">暫停長期事故</button>` : '')).join('')) : ''}
       </div>`;
     dialogEl(modal,'riClose').onclick=()=>modal.remove();
+    // 這個視窗不是 #app 的一部分：收合／展開自己重畫（不然按了沒反應）
+    modal.querySelectorAll('[data-collapse-toggle]').forEach(btn=>{ btn.onclick=(e)=>{ e.stopPropagation(); collapseState[btn.dataset.collapseToggle]=!collapseState[btn.dataset.collapseToggle]; draw(); }; });
+    // v188：預排排到長期事故的人：暫停他這幾天的長期事故
+    modal.querySelectorAll('[data-ri-ltpause]').forEach(b=>{ b.onclick=()=>{ modal.remove(); openLongTermPauseFor(b.dataset.riLtpause, date); }; });
     modal.querySelectorAll('[data-ri-fix]').forEach(b=>{ b.onclick=()=>{ const [subject,pid,sig]=JSON.parse(decodeURIComponent(b.dataset.riFix)); modal.remove(); openRuleFixDialog(date, subject, pid, sig); }; });
     modal.querySelectorAll('[data-ri-undo]').forEach(b=>{ b.onclick=()=>{
       showConfirm('撤銷這筆破例紀錄？撤銷後這一格會回到「待記原因」。', ()=>{
@@ -5120,6 +5166,7 @@ function wireRuleFlags(root){
     b.onclick=(e)=>{ e.stopPropagation(); const [subject,pid,sig]=JSON.parse(decodeURIComponent(b.dataset.ruleFix)); openRuleFixDialog(currentDate, subject, pid, sig); };
   });
   (root||document).querySelectorAll('[data-open-rule-issues]').forEach(b=>{ b.onclick=()=>openDayRuleIssuesModal(currentDate); });
+  (root||document).querySelectorAll('[data-lt-pause]').forEach(b=>{ b.onclick=(e)=>{ e.stopPropagation(); openLongTermPauseFor(b.dataset.ltPause, currentDate); }; });
 }
 /* 今日破例紀錄卡 */
 function todayExceptionsCardHTML(date){
@@ -5694,7 +5741,9 @@ function longTermLabel(p){
   const timePart = lt.mode==='range'? ` ${lt.start}–${lt.end}` : (lt.mode==='allday'? '（全天）':'');
   const scopePart = lt.weekdayOnly? '（僅平日，假日仍可排）' : '';
   const campPart = lt.inCamp? '在營，不排勤務' : '不在營';
-  return `${reasonPart}${timePart}${scopePart}（${campPart}）`;
+  const pz=upcomingLongTermPauses(p); // v188
+  const pausePart = pz.length? `・暫停 ${pz.map(pauseRangeLabel).join('、')}` : '';
+  return `${reasonPart}${timePart}${scopePart}（${campPart}）${pausePart}`;
 }
 
 /* ---------------- compensatory rest (補休) ---------------- */
@@ -5732,8 +5781,29 @@ function personCompRestWindows(personId, date){
 function effectiveLongTerm(person, date){
   const lt = personLongTerm(person);
   if(lt.mode!=='off' && lt.weekdayOnly && isHolidayDate(date)) return {mode:'off'}; // v168：只認假日設定
+  if(lt.mode!=='off' && longTermPausedOn(person, date)) return {mode:'off', paused:true}; // v188：暫停的日子
   return lt;
 }
+/* v188：長期事故暫停（例如伙房的人這週去當值星班長）：p.longTermPauses=[{start,end}]（含頭尾的日期）。
+   暫停的日子整天當作沒有長期事故：不會被長期事故擋、也不會再提醒；長期事故本身的設定不動。 */
+function longTermPauses(p){ return (p && Array.isArray(p.longTermPauses))? p.longTermPauses.filter(x=>x && x.start && x.end && x.start<=x.end) : []; }
+function longTermPausedOn(p, date){ return !!p && Array.isArray(p.longTermPauses) && p.longTermPauses.some(x=>x && x.start<=date && date<=x.end); }
+/* 一串日期 → 連續的幾段 [{start,end}] */
+function datesToRanges(dates){
+  const sorted=[...new Set(dates)].filter(Boolean).sort(); const out=[];
+  sorted.forEach(d=>{ const last=out[out.length-1]; if(last && d===nextDateStr(last.end)) last.end=d; else out.push({start:d, end:d}); });
+  return out;
+}
+/* 把這些日子加進他的暫停（跟原本的合併成連續的幾段） */
+function addLongTermPauseDates(p, dates){
+  const all=[];
+  longTermPauses(p).forEach(x=>{ let d=x.start; for(let i=0;i<1000 && d<=x.end;i++){ all.push(d); d=nextDateStr(d); } });
+  p.longTermPauses=datesToRanges(all.concat(dates||[]));
+  if(!p.longTermPauses.length) delete p.longTermPauses;
+}
+function pauseRangeLabel(x){ return x.start===x.end? shortDateLabel(x.start) : `${shortDateLabel(x.start)}～${shortDateLabel(x.end)}`; }
+/* 今天以後（含今天還在暫停的）那幾段 */
+function upcomingLongTermPauses(p){ const t=todayStr(); return longTermPauses(p).filter(x=>x.end>=t); }
 /* v182：v181 的「整天不排衛哨」勾選拿掉（改成照執勤時間判斷：補休碰到長期事故的執勤時間就不排）。
    v181 存過的勾選、記號清掉；沒有的就不動（每次開 App、匯入都檢查，有清才回 true） */
 function dropNoSentryV182(){
@@ -8199,7 +8269,7 @@ function preplanExpiryIssues(){
 var upcomingIssuesCache=null; // var：開 App 最早的 render 也拿得到
 function upcomingRuleIssueDays(){
   const today=todayStr();
-  if(upcomingIssuesCache && upcomingIssuesCache.snap===lastSavedSnapshot && upcomingIssuesCache.today===today) return upcomingIssuesCache.list;
+  if(upcomingIssuesCache && upcomingIssuesCache.snap===lastSavedSnapshot && upcomingIssuesCache.today===today && upcomingIssuesCache.ref===state) return upcomingIssuesCache.list;
   const list=[];
   for(let k=0;k<LOOKAHEAD_DAYS;k++){
     const d=dateAddDays(today, k);
@@ -8207,7 +8277,7 @@ function upcomingRuleIssueDays(){
     const n=new Set(st.facts.concat(st.open).map(v=>`${v.subject}#${v.pid||''}#${v.memberSig||''}`)).size;
     if(n) list.push({date:d, n});
   }
-  upcomingIssuesCache={snap:lastSavedSnapshot, today, list};
+  upcomingIssuesCache={snap:lastSavedSnapshot, today, list, ref:state};
   return list;
 }
 /* 去排：打開那一種預排的月曆，從第一個還沒排的日子那個月開始 */
@@ -8241,7 +8311,9 @@ function preplanTypeStatus(t, days){
   const last=Object.keys(store).filter(d=>d>=today && preplanHasDay(t, d)).sort().pop()||null;
   const pd=planDaysOfType(t);
   const gaps=[];
-  if(pd!=='none'){ let d=today; for(let i=0;i<days;i++){ if(planDayNeeded(pd, d) && !preplanHasDay(t, d)) gaps.push(d); d=nextDateStr(d); } }
+  // v187：留守表整個接手這個勤務的日子（例如留守期間的值星，留守表排了人）不算沒排
+  const role=planRoleName(t);
+  if(pd!=='none'){ let d=today; for(let i=0;i<days;i++){ if(planDayNeeded(pd, d) && !preplanHasDay(t, d) && !standbyCoverFor(role, d).whole) gaps.push(d); d=nextDateStr(d); } }
   return {last, gaps, planDays:pd};
 }
 function preplanStatusSub(t, st){
@@ -10159,8 +10231,108 @@ function newPlanFacts(before, dates){
   });
   return items;
 }
+/* ================= v188：預排排到有長期事故的人 → 問要不要暫停他們這幾天的長期事故 =================
+   同一個人合在一起：碰到的是哪幾天的長期事故（v.ltDates）。
+   預設勾不勾：有哪一天他長期事故的時段整段都在做預排的勤務（例如一整週當值星）→ 勾；
+   只碰到一點（查哨 04-06 碰到伙房 04:30、查哨後的補休碰到隔天早上）→ 不勾（那天其他時間他還在做長期事故的事）。 */
+function planLtGroups(items){
+  const by=new Map();
+  items.forEach(x=>{
+    const v=x.v; if(!v || !v.planLt || !v.pid) return;
+    let g=by.get(v.pid); if(!g) by.set(v.pid, g={pid:v.pid, dates:new Set()});
+    ((v.ltDates&&v.ltDates.length)? v.ltDates : [x.date]).forEach(d=>g.dates.add(d));
+  });
+  // 同一個人分成連續的幾段，每一段自己勾不勾（例如一整週值星＝勾；另外某天的查哨＝不勾）
+  const out=[];
+  [...by.values()].forEach(g=>datesToRanges([...g.dates]).forEach(r=>{
+    const dates=dateRangeList(r.start, r.end);
+    out.push({pid:g.pid, dates, checked:dates.some(d=>ltWindowCoveredByPlan(g.pid, d))});
+  }));
+  return out;
+}
+/* 那一天他長期事故的時段，是不是整段都在做預排管的勤務 */
+function ltWindowCoveredByPlan(pid, X){
+  const p=personById(pid); if(!p) return false;
+  const lt=personLongTerm(p);
+  if(lt.mode==='off' || (lt.weekdayOnly && isHolidayDate(X))) return false;
+  let W0=0, W1=1440;
+  if(lt.mode==='range'){ if(!lt.start || !lt.end) return false; W0=toMin(lt.start); W1=W0+spanMin(W0, toMin(lt.end)); }
+  const spans=personMiscSpans(pid, X, W0, W1)
+    .filter(x=>x.span && isPlanOwnedEntry(x.m) && (x.m.personIds||[]).includes(pid) && !(x.m.nominalIds||[]).includes(pid))
+    .map(x=>[Math.max(W0, x.span[0]), Math.min(W1, x.span[1])]).filter(s=>s[1]>s[0]).sort((a,b)=>a[0]-b[0]);
+  let cur=W0;
+  for(const [a,b] of spans){ if(a>cur) break; cur=Math.max(cur, b); }
+  return cur>=W1;
+}
+/* 他在 date 前後連續幾天（預排排到他、碰到長期事故）的那些日子：排班頁按「暫停長期事故」用 */
+function planLtRunDates(pid, date){
+  const datesOf=X=>{
+    const ds=new Set();
+    personSlotCtxs(X, pid).forEach(c=>{
+      if(c.kind!=='misc' || !isPlanOwnedEntry(c.entry)) return;
+      personalViolations(c, pid).forEach(v=>{ if(v.planLt) ((v.ltDates&&v.ltDates.length)? v.ltDates : [X]).forEach(d=>ds.add(d)); });
+    });
+    return ds;
+  };
+  const all=datesOf(date);
+  if(!all.size) return [];
+  for(const dir of [-1, 1]){
+    let X=date;
+    for(let i=0;i<62;i++){ X=dateAddDays(X, dir); const ds=datesOf(X); if(!ds.size) break; ds.forEach(d=>all.add(d)); }
+  }
+  return [...all].sort();
+}
+function pauseDatesLabel(dates){ return compressDates(dates).replace(/~/g, '～'); }
+/* groups：[{pid, dates, checked}]；opts：{okMsg, reopen}；問完（暫停或不用）呼叫 next */
+function openLongTermPauseSheet(groups, opts, next){
+  opts=opts||{};
+  const done=()=>{ if(next) next(); };
+  groups=(groups||[]).filter(g=>g && g.pid && g.dates && g.dates.length);
+  if(!groups.length){ done(); return; }
+  const ltDesc=p=>{ const lt=personLongTerm(p); return lt.mode==='allday'? `${lt.reason||'長期事故'} 整天` : `${lt.reason||'長期事故'} 每天 ${lt.start}-${lt.end}`; };
+  const modal=document.createElement('div');
+  modal.className='sheet-modal'; modal.style.zIndex='1100';
+  modal.innerHTML=`<div class="sheet-inner">
+      <div class="section-title"><h2 style="margin:0">預排排到有長期事故的人</h2></div>
+      ${opts.okMsg? `<div class="ok" style="margin-bottom:8px">${esc(opts.okMsg)}</div>` : ''}
+      <div class="hint" style="margin-bottom:8px">勾選的人，這幾天整天當作沒有長期事故：不會再提醒，這幾天也可能被排到其他勤務。<br>不勾的照排，排班頁會用 💡 提醒。</div>
+      ${groups.map((g,i)=>{ const p=personById(g.pid); return `<label class="list-item" style="align-items:flex-start;gap:8px;cursor:pointer">
+        <input type="checkbox" data-ltp="${i}" style="width:auto;margin-top:3px" ${g.checked?'checked':''}>
+        <span class="grow"><b>${esc(personName(g.pid))}</b>（${esc(p? ltDesc(p) : '長期事故')}）<br><span class="hint">暫停 ${esc(pauseDatesLabel(g.dates))}</span></span></label>`; }).join('')}
+      <button class="primary" id="ltpOk" style="width:100%;margin-top:8px">暫停勾選的人</button>
+      <button class="ghost" id="ltpSkip" style="width:100%;margin-top:6px">不用，照排</button>
+      ${opts.reopen? `<button class="ghost" id="ltpBack" style="width:100%;margin-top:6px">回去改</button>` : ''}
+    </div>`;
+  document.body.appendChild(modal);
+  dialogEl(modal,'ltpSkip').onclick=()=>{ modal.remove(); done(); };
+  const back=dialogEl(modal,'ltpBack');
+  if(back) back.onclick=()=>{ modal.remove(); opts.reopen(); };
+  dialogEl(modal,'ltpOk').onclick=()=>{
+    const picked=groups.filter((g,i)=>{ const cb=modal.querySelector(`[data-ltp="${i}"]`); return cb && cb.checked; });
+    modal.remove();
+    if(picked.length){
+      picked.forEach(g=>{ const p=personById(g.pid); if(p) addLongTermPauseDates(p, g.dates); });
+      invalidateRuleStatus(); saveState(); render();
+      showToast(`已暫停長期事故：${picked.map(g=>`${personName(g.pid)} ${pauseDatesLabel(g.dates)}`).join('、')}（要還原按 ↩️）`);
+    }
+    done();
+  };
+}
+/* 排班頁的 💡（預排排到長期事故）按「暫停長期事故」：他前後連續那幾天一起問 */
+function openLongTermPauseFor(pid, date){
+  const dates=planLtRunDates(pid, date);
+  if(!dates.length){ render(); return; }
+  openLongTermPauseSheet([{pid, dates, checked:true}], {}, null);
+}
 function confirmPlanConflicts(items, reopen, done, okMsg){
   if(!items.length){ if(done) done(); return; }
+  // v188：預排排到有長期事故的人：先問要不要暫停他們這幾天的長期事故，再講其他問題
+  const ltItems=items.filter(x=>x.v.planLt);
+  if(ltItems.length){
+    const rest=items.filter(x=>!x.v.planLt);
+    openLongTermPauseSheet(planLtGroups(ltItems), {okMsg, reopen}, ()=>{ if(rest.length) confirmPlanConflicts(rest, reopen, done, null); else if(done) done(); });
+    return;
+  }
   const ign=items.filter(x=>ruleDisposition(x.v)==='conflict');
   const hard=items.filter(x=>ruleDisposition(x.v)==='hard');
   const rules=items.filter(x=>ruleDisposition(x.v)==='reason');
@@ -13865,6 +14037,15 @@ function openPersonEditor(personId){
         <div class="grow"><label>每天開始</label>${timeSelectHTML('epLTStart', lt.start||'18:00')}</div>
         <div class="grow"><label>到隔天/當天</label>${timeSelectHTML('epLTEnd', lt.end||'08:30')}</div>
       </div>
+      <div id="epLTPauseBlock" style="margin-bottom:10px;display:${lt.mode!=='off'?'block':'none'}">
+        <label>暫停（這幾天整天當作沒有長期事故，例如這週去當值星）</label>
+        <div id="epLTPauseList"></div>
+        <div class="row wrap" style="margin:6px 0 4px">
+          <div class="grow"><label>從</label><input type="date" id="epLTPauseFrom" value="${todayStr()}"></div>
+          <div class="grow"><label>到</label><input type="date" id="epLTPauseTo" value="${todayStr()}"></div>
+        </div>
+        <button class="ghost" id="epLTPauseAdd" style="width:100%">＋加入暫停</button>
+      </div>
       <label>外散宿限制</label>
       <select id="epOutingRestriction" style="margin-bottom:8px">
         <option value="normal" ${(p.outingRestriction||'normal')==='normal'?'selected':''}>正常可外散宿</option>
@@ -13902,7 +14083,34 @@ function openPersonEditor(personId){
     document.getElementById('epLongTermDetails').style.display = isOn? 'flex':'none';
     document.getElementById('epLTInCampRow').style.display = isOn? 'flex':'none';
     document.getElementById('epLTWeekdayOnlyRow').style.display = isOn? 'flex':'none';
+    document.getElementById('epLTPauseBlock').style.display = isOn? 'block':'none';
     if(!isOn) document.getElementById('epLTReasonCustomRow').style.display='none';
+  };
+  /* v188：長期事故暫停（今天以後的那幾段；過去的不列） */
+  const drawPauses=()=>{
+    const list=document.getElementById('epLTPauseList');
+    if(!list) return;
+    const pz=upcomingLongTermPauses(p);
+    list.innerHTML=pz.length? pz.map(x=>`<div class="list-item"><span class="grow">${esc(pauseRangeLabel(x))}</span><button class="ghost small danger" data-ep-pause-del="${esc(x.start)}|${esc(x.end)}">刪除</button></div>`).join('') : '<div class="hint">（沒有）</div>';
+    list.querySelectorAll('[data-ep-pause-del]').forEach(b=>{ b.onclick=()=>{
+      const [a,z]=b.dataset.epPauseDel.split('|');
+      p.longTermPauses=longTermPauses(p).filter(x=>!(x.start===a && x.end===z));
+      if(!p.longTermPauses.length) delete p.longTermPauses;
+      saveState(); render(); drawPauses();
+      showToast(`已取消暫停 ${pauseRangeLabel({start:a, end:z})}`);
+    }; });
+  };
+  drawPauses();
+  document.getElementById('epLTPauseAdd').onclick=()=>{
+    let a=document.getElementById('epLTPauseFrom').value, z=document.getElementById('epLTPauseTo').value;
+    const okDate=v=>/^\d{4}-\d{2}-\d{2}$/.test(v||'') && Number(v.slice(0,4))>=2000 && Number(v.slice(0,4))<=2099;
+    if(!okDate(a) || !okDate(z)){ showAlert('請選暫停的開始和結束日期'); return; }
+    if(a>z){ const t=a; a=z; z=t; }
+    const days=dateRangeList(a, z);
+    if(days[days.length-1]!==z){ showAlert('一次最多暫停一年'); return; }
+    addLongTermPauseDates(p, days);
+    saveState(); render(); drawPauses();
+    showToast(`已暫停長期事故 ${pauseRangeLabel({start:a, end:z})}（要還原按 ↩️）`);
   };
   document.getElementById('epLTReason').onchange=(e)=>{
     const v=e.target.value;
