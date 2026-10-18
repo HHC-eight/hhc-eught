@@ -557,7 +557,7 @@ button.small.card-more{min-width:44px;min-height:40px;font-size:20px;line-height
       <span class="unit-banner-badge"><i data-ico="star"></i></span>
       <span class="unit-banner-titles">
         <span class="unit-banner-text">陸軍第八軍團 本部連</span>
-        <h1 id="pageTitle">衛哨排班系統 <span class="muted">v188</span></h1>
+        <h1 id="pageTitle">衛哨排班系統 <span class="muted">v191</span></h1>
       </span>
     </span>
     <span class="banner-side right">
@@ -3170,6 +3170,67 @@ function standbyStatusSummary(plan, pid, draft){
   while(i<days.length){ let j=i; while(j+1<days.length && st[j+1]===st[i]) j++; parts.push(`${shortDateLabel(days[i])}${j>i?'～'+shortDateLabel(days[j]):''} ${st[i]}`); i=j+1; }
   return parts.join('、');
 }
+/* v190：留守人數提醒——留守期間能站哨、這段又沒有其他勤務的「下士～上士」「訓練役～上兵」各要 9 人以上
+   （用使用者的資料模擬 6 週：各 9 人排得滿；各 8 人缺 1–2 格、各 7 人約缺 10 格、各 6 人約缺 25 格，
+   最先補不上的是收假日早上 06-08 的哨）。算法跟模擬一樣，只算這種人：
+   - 在留守名單上（名單外、整段標「在營」的也算）
+   - 階級是下士～上士，或訓練役～上兵（安全士官、橋哨、指管、打飯班的人）
+   - 留守第一天到收假那天都沒有長期事故（二級廠這種平日的，收假日早上就站不了）
+   - 留守期間沒有整天的休假／事故（大表、快速請假；留守自動產生的不算）
+   - 前一天放假開始到收假那天收假，沒有排其他勤務（值星、救護車、中央監控、查哨…；留守表自己的子勤務、待命的不算，
+     但子勤務是值星、整天專職的照算）
+   statusDraft：留守畫面上還沒存的名單外狀態（pid→'leave'|'camp'） */
+const STANDBY_MIN_SENTRY=9;
+const STANDBY_NCO_RANKS=['下士','中士','上士'], STANDBY_SOL_RANKS=['訓練役','二兵','一兵','上兵'];
+function standbySentryPool(plan, statusDraft){
+  const out={nco:[], sol:[], skipped:[], min:STANDBY_MIN_SENTRY};
+  if(!plan || !plan.startDate || !plan.endDate || plan.startDate>plan.endDate) return out;
+  const days=dateRangeList(plan.startDate, plan.endDate);
+  const back=nextDateStr(plan.endDate);
+  const roster=new Set(plan.personIds||[]);
+  const camp=standbyOffPeople(plan).filter(p=>days.every(d=>standbyDayStatus(plan, p.id, d, statusDraft&&statusDraft[p.id])==='在營')).map(p=>p.id);
+  // 其他勤務：前一天放假開始 ～ 收假那天收假（時間軸以第一天 00:00 為 0）
+  const t=standbyTimesOf(plan);
+  const W0=dayOffMin(prevDateStr(plan.startDate), plan.startDate)+toMin(t.leaveStartTime);
+  const W1=dayOffMin(back, plan.startDate)+toMin(t.endTime);
+  const busy=new Map();
+  dateRangeList(dateAddDays(plan.startDate, -2), back).forEach(X=>(state.misc[X]||[]).forEach(m=>{
+    const mode=standbyModeOf(presetForEntry(m));
+    // 留守表自己的子勤務（消防車、日督、夜督…）本來就從這些人裡排，不扣；但值星、整天專職的一定站不了哨
+    if(m.standbyAnchor && m.role!=='值星' && mode!=='exclusive') return;
+    // 待命的（時段內可以做別的勤務）不影響站哨
+    if(mode==='flexible') return;
+    const sp=miscAbs(m, X, plan.startDate);
+    if(!sp || !absOverlap(sp[0], sp[1], W0, W1)) return;
+    (m.personIds||[]).forEach(id=>{ if(id && !isSupportId(id) && !(m.nominalIds||[]).includes(id) && !busy.has(id)) busy.set(id, m.role); });
+  }));
+  [...roster, ...camp].forEach(pid=>{
+    const p=personById(pid);
+    if(!p || isDepartedOn(p, plan.startDate)) return;
+    const grp=STANDBY_NCO_RANKS.includes(p.rank)? 'nco' : STANDBY_SOL_RANKS.includes(p.rank)? 'sol' : null;
+    if(!grp) return;
+    let why='';
+    if(busy.has(pid)) why=busy.get(pid);
+    else if([...days, back].some(d=>effectiveLongTerm(p, d).mode!=='off')) why=personLongTerm(p).reason||'長期事故';
+    else {
+      const leaveDates=new Set(Object.values(((state.preplan.leave||{})[pid])||{}).flatMap(r=>(r&&r.dates)||[]));
+      if(days.some(d=>leaveDates.has(d) || (state.unavail[d]||[]).some(u=>u.personId===pid && isAwayDayEntry(u) && !STANDBY_TAGS.includes(u.reason)))) why='休假';
+    }
+    if(why) out.skipped.push({pid, why});
+    else out[grp].push(pid);
+  });
+  return out;
+}
+function standbyPoolShort(pool){ return pool.nco.length<pool.min || pool.sol.length<pool.min; }
+/* 留守畫面、挑人畫面上那一行 */
+function standbyPoolHTML(pool, opts){
+  opts=opts||{};
+  const short=standbyPoolShort(pool);
+  const cnt=`能站哨的：下士～上士 <b>${pool.nco.length}</b> 人、訓練役～上兵 <b>${pool.sol.length}</b> 人`;
+  const skip=opts.showSkipped && pool.skipped.length? `<div class="hint" style="margin-top:2px">名單上沒算進去：${pool.skipped.slice(0,10).map(x=>`${esc(personName(x.pid))}（${esc(x.why)}）`).join('、')}${pool.skipped.length>10? ` …等 ${pool.skipped.length} 人` : ''}</div>` : '';
+  if(short) return `<div class="badge-issue" style="margin-bottom:8px">⚠️ ${cnt}。各要 ${pool.min} 人以上才排得滿；不夠的話，收假日早上 06-08 的哨最先補不上。${skip}</div>`;
+  return `<div class="hint" style="margin-bottom:8px">✓ ${cnt}（各要 ${pool.min} 人以上）${skip}</div>`;
+}
 /* 今天以後還要注意的留守／假日問題（排班頁概況卡、預排抽屜用） */
 function standbyPlanningIssues(horizonDays){
   const today=todayStr(), horizon=shiftDays(today, horizonDays||30);
@@ -3182,6 +3243,9 @@ function standbyPlanningIssues(horizonDays){
     if(nh.length) out.push({kind:'nonHoliday', anchor, text:`留守 ${span}：${nh.map(shortDateLabel).join('、')} 不是假日設定裡的假日`});
     const un=standbyUnconfirmed(plan);
     if(un.length) out.push({kind:'unconfirmed', anchor, text:`留守 ${span}：名單外 ${un.length} 人的狀態還沒確認`});
+    // v190：能站哨的人不夠
+    const pool=standbySentryPool(plan);
+    if(standbyPoolShort(pool)) out.push({kind:'thin', anchor, text:`留守 ${span}：能站哨的下士～上士 ${pool.nco.length} 人、訓練役～上兵 ${pool.sol.length} 人，各要 ${pool.min} 人以上才排得滿`});
   });
   // 假日還沒有留守表（有任何一天沒被留守表蓋到）
   const seen=new Set();
@@ -4354,13 +4418,20 @@ function engPrepConflict(pid, date, cat, sft){
   }
   return false;
 }
+/* v189：補休時間裡不能開始的其他勤務——一般的、整天專職的（軍餐班、技工…：跟伙房一樣是真的要上工）都算；
+   掛名、值星（規則5另外管）、待命（時段內可以休息，只是不能離開營區）不算 */
+function miscBlocksRest(m, pid){
+  if((m.nominalIds||[]).includes(pid)) return false;
+  if(m.role==='值星') return false;
+  return standbyModeOf(presetForEntry(m))!=='flexible';
+}
 function engRestWindowConflict(pid, date, sft, excl){
   if(!sft.restUntil) return false;
   const ws=toMin(sft.end), we=toMin(sft.restUntil);
   // v176：其他勤務是日曆日，照實際時間比
   const b=catShiftAbs(date, sft, date)[1], g=restGapAfter(b, we);
   if(g) for(const x of personMiscSpans(pid, date, b, b+g)){
-    if(x.span && !miscWindowFree(x.m, pid) && absOverlap(b, b+g, x.span[0], x.span[1])) return true;
+    if(x.span && miscBlocksRest(x.m, pid) && absOverlap(b, b+g, x.span[0], x.span[1])) return true;
   }
   const dayAssign=state.assign[date]||{};
   for(const c of state.categories){
@@ -4376,7 +4447,7 @@ function miscRestWindowConflict(pid, date, m){
   // v176：照實際時間（補休跨過午夜到隔天的、隔天班表晚上的衛哨都算）
   const r=miscRestAbs(m, date, date); if(!r) return false;
   if(personCatSpans(pid, date, r[0], r[1]).some(c=>absOverlap(r[0], r[1], c.s, c.e))) return true;
-  return personMiscSpans(pid, date, r[0], r[1]).some(x=>x.m.id!==m.id && x.span && !miscWindowFree(x.m, pid) && absOverlap(r[0], r[1], x.span[0], x.span[1]));
+  return personMiscSpans(pid, date, r[0], r[1]).some(x=>x.m.id!==m.id && x.span && miscBlocksRest(x.m, pid) && absOverlap(r[0], r[1], x.span[0], x.span[1]));
 }
 
 /* ---------- 整組規則 ---------- */
@@ -4497,6 +4568,65 @@ function withDaySnapshot(date, fn){
     if(hadM) state.misc[date]=origM; else delete state.misc[date];
   }
 }
+/* v187／v189：反方向——把他排進值星／整天專職，他「其他勤務」上會多出來的違規（記在那些勤務上）先算出來。
+   placementViolations 用；挑人清單只看個人規則（groupRules:false）的時候也要加這個，不然清單上看不到、存的時候才跳出來 */
+function reverseDutyViolations(ctx, pid){
+  const out=[];
+  if(ctx.kind!=='misc') return out;
+  const m=ctx.entry, person=state.personnel.find(p=>p.id===pid);
+  // v187：規則5 反方向——把他排進值星，他這段時間其他自己出勤的勤務就會變成「值星自行出勤」
+  //   （違規記在那些勤務上；這裡先算出來，自動排班、挑人清單才知道）
+  // v189：規則6 也一樣——把他排進整天專職（軍餐班、技工…），他前一天開始、還沒結束的勤務（例如 24 小時的救護車）
+  //   會變成「整天專職，這段時間還在勤務中」（以前沒先算到，自動排班會自己排出這個衝突）
+  const revKey = m.role==='值星'? 'dutyOfficer' : (standbyModeOf(presetForEntry(m))==='exclusive'? 'standby' : null);
+  if(revKey && person && (state.misc[ctx.date]||[]).includes(m)){
+    const days=revKey==='dutyOfficer'? [prevDateStr(ctx.date), ctx.date, nextDateStr(ctx.date), dateAddDays(ctx.date, 2)] : [prevDateStr(ctx.date), ctx.date, nextDateStr(ctx.date)];
+    // 他這幾天自己出勤的勤務（這一項本身、值星本身不算）；沒有的話就不用比
+    const own=[]; days.forEach(d=>personSlotCtxs(d, pid).forEach(c=>{ if(c.kind==='misc' && (c.entry===m || (revKey==='dutyOfficer' && c.entry.role==='值星'))) return; own.push(c); }));
+    // 整天專職：只有「同一天」「時間碰到這一項」「補休碰到這一項」的勤務會多出違規，其他的不用算（效能：結果一樣）
+    if(revKey==='standby' && own.length){
+      const ms=miscAbs(m, ctx.date, ctx.date) || [0, 1440];
+      const hit=(a,b)=>a!=null && absOverlap(a, b, ms[0], ms[1]);
+      for(let i=own.length-1;i>=0;i--){
+        const c=own[i]; let keep;
+        if(c.kind==='cat'){
+          const [a,b]=catShiftAbs(c.date, c.shift, ctx.date);
+          const g=c.shift.restUntil? restGapAfter(b, toMin(c.shift.restUntil)) : 0;
+          keep=catShiftCalendar(c.date, c.shift).date===ctx.date || hit(a,b) || (g>0 && hit(b, b+g));
+        } else {
+          const sp=miscAbs(c.entry, c.date, ctx.date), rs=miscRestAbs(c.entry, c.date, ctx.date);
+          keep=c.date===ctx.date || (sp && hit(sp[0], sp[1])) || (rs && hit(rs[0], rs[1]));
+        }
+        if(!keep) own.splice(i, 1);
+      }
+    }
+    const keyOf=c=>`${c.date}|${ctxLabel(c)}`;
+    // 整天專職：他其他勤務多出來的「整天專職還在勤務中」（規則6）或「補休時間排了勤務」（規則4，例如前一晚的哨補休到 08:00、軍餐班 05:00 就開始）
+    const keys=revKey==='dutyOfficer'? ['dutyOfficer'] : ['standby','comprest'];
+    const dutyHits=list=>{ const hit=new Map(); list.forEach(c=>{
+      const ks=personalViolations(c, pid).filter(v=>keys.includes(v.key)).map(v=>v.key);
+      if(ks.length) hit.set(keyOf(c), {c, ks});
+    }); return hit; };
+    // 先算排進值星之後哪些會變成值星自行出勤；只有那幾項才要再看「本來就是」（效能：大部分的人一項都沒有）
+    const keep=m.personIds;
+    let now=new Map();
+    if(own.length){
+      m.personIds=(keep||[]).slice(); m.personIds[ctx.idx]=pid;
+      try{ now=dutyHits(own); } finally{ m.personIds=keep; }
+    }
+    const had=now.size? dutyHits(own.filter(c=>now.has(keyOf(c)))) : new Map();
+    const lblOf=c=>{ const cd=c.kind==='cat'? catShiftCalendar(c.date, c.shift).date : c.date; return `${cd===ctx.date? '' : shortDateLabel(cd)+' '}${ctxLabel(c)}`; };
+    const fresh=[...now.entries()].map(([k,x])=>({c:x.c, ks:x.ks.filter(key=>!(had.get(k)||{ks:[]}).ks.includes(key))})).filter(x=>x.ks.length);
+    const lbls=key=>[...new Set(fresh.filter(x=>x.ks.includes(key)).map(x=>lblOf(x.c)))];
+    if(revKey==='dutyOfficer'){ const l=lbls('dutyOfficer'); if(l.length) out.push({key:'dutyOfficer', level:ruleLevel('dutyOfficer'), msg:`當值星的話，他排的「${l.join('」「')}」會變成值星自行出勤`}); }
+    else {
+      const l1=lbls('standby'); if(l1.length) out.push({key:'standby', level:ruleLevel('standby'), msg:`他的「${l1.join('」「')}」跟這項整天專職的時間重疊（整天專職不能再有其他任務）`});
+      // 時間已經重疊的那幾項就不再重複講補休
+      const l2=lbls('comprest').filter(l=>!l1.includes(l)); if(l2.length) out.push({key:'comprest', level:ruleLevel('comprest'), msg:`他的「${l2.join('」「')}」下勤後的補休還沒結束，這項整天專職就開始了`});
+    }
+  }
+  return out;
+}
 /* 快速版（自動排班、找「符合規則的其他人」用）：只看這個人在這一格的個人
    規則，加上這一格所在那一組的整組規則，加上安全士官階級規則的兩個方向 */
 function placementViolations(ctx, pid){
@@ -4519,27 +4649,7 @@ function placementViolations(ctx, pid){
     trial.personIds[ctx.idx]=pid;
     const before=new Set(miscGroupViolations(ctx.date, m).map(v=>v.key+v.msg));
     miscGroupViolations(ctx.date, trial).forEach(v=>{ if(!before.has(v.key+v.msg)) out.push({key:v.key, level:v.level, msg:v.msg}); });
-    // v187：規則5 反方向——把他排進值星，他這段時間其他自己出勤的勤務就會變成「值星自行出勤」
-    //   （違規記在那些勤務上；這裡先算出來，自動排班、挑人清單才知道）
-    if(m.role==='值星' && person && (state.misc[ctx.date]||[]).includes(m)){
-      const days=[prevDateStr(ctx.date), ctx.date, nextDateStr(ctx.date), dateAddDays(ctx.date, 2)];
-      // 他這幾天自己出勤的勤務（值星本身不算）；沒有的話就不用比
-      const own=[]; days.forEach(d=>personSlotCtxs(d, pid).forEach(c=>{ if(!(c.kind==='misc' && c.entry.role==='值星')) own.push(c); }));
-      const keyOf=c=>`${c.date}|${ctxLabel(c)}`;
-      const dutyHits=list=>{ const hit=new Map(); list.forEach(c=>{
-        if(personalViolations(c, pid).some(v=>v.key==='dutyOfficer')) hit.set(keyOf(c), c);
-      }); return hit; };
-      // 先算排進值星之後哪些會變成值星自行出勤；只有那幾項才要再看「本來就是」（效能：大部分的人一項都沒有）
-      const keep=m.personIds;
-      let now=new Map();
-      if(own.length){
-        m.personIds=(keep||[]).slice(); m.personIds[ctx.idx]=pid;
-        try{ now=dutyHits(own); } finally{ m.personIds=keep; }
-      }
-      const had=now.size? dutyHits(own.filter(c=>now.has(keyOf(c)))) : new Map();
-      const lbl=[...now.entries()].filter(([k])=>!had.has(k)).map(([,c])=>{ const cd=c.kind==='cat'? catShiftCalendar(c.date, c.shift).date : c.date; return `${cd===ctx.date? '' : shortDateLabel(cd)+' '}${ctxLabel(c)}`; });
-      if(lbl.length) out.push({key:'dutyOfficer', level:ruleLevel('dutyOfficer'), msg:`當值星的話，他排的「${[...new Set(lbl)].join('」「')}」會變成值星自行出勤`});
-    }
+    reverseDutyViolations(ctx, pid).forEach(v=>out.push(v));
   }
   return out;
 }
@@ -9681,6 +9791,7 @@ function openStandbyEditor(date, onSaved){
       ${nonHol.length? `<div class="badge-issue" style="margin-bottom:10px">📅 ${nonHol.map(shortDateLabel).join('、')} 在「假日設定」裡不是假日，留守表只能排在假日上，這樣不能儲存。如果這幾天是國定假日（例如中秋），把它們加進假日設定。<button class="ghost small" id="sbMarkHoliday" style="margin-top:6px">把 ${nonHol.map(shortDateLabel).join('、')} 設為假日</button></div>` : ''}
       <div class="divider"></div>
       <div class="section-title"><h3 style="margin:0">留守名單（${staying.length}人）</h3><button class="ghost small" id="sbPickPeople">選擇人員</button></div>
+      ${staying.length? standbyPoolHTML(standbySentryPool(plan, statusDraft), {showSkipped:true}) : ''}
       <div id="sbPeopleList" style="margin-bottom:8px">
         ${staying.length? staying.map(pid=>{
           const p=state.personnel.find(x=>x.id===pid);
@@ -9892,6 +10003,7 @@ function openStandbyPeoplePicker(plan, onDone){
         <button class="ghost small" id="spAll">全選(顯示中)</button>
         <button class="ghost small" id="spNone">全部取消</button>
       </div>
+      <div id="spPool"></div>
       <div id="spList" style="max-height:52vh;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:8px;margin-bottom:8px">
         ${sorted.map(p=>{
           /* if this person already has leave booked inside the standby block,
@@ -9915,8 +10027,16 @@ function openStandbyPeoplePicker(plan, onDone){
     const term=searchEl.value.trim();
     modal.querySelectorAll('#spList label').forEach(l=>{ l.style.display=(!term||l.textContent.includes(term))?'flex':'none'; });
   };
-  document.getElementById('spAll').onclick=()=>modal.querySelectorAll('.sp-person').forEach(cb=>{ if(cb.closest('label').style.display!=='none') cb.checked=true; });
-  document.getElementById('spNone').onclick=()=>modal.querySelectorAll('.sp-person').forEach(cb=>cb.checked=false);
+  // v190：勾選的時候就看得到能站哨的人數夠不夠
+  const refreshPool=()=>{
+    const el=document.getElementById('spPool'); if(!el) return;
+    const ids=[...modal.querySelectorAll('.sp-person:checked')].map(cb=>cb.value);
+    el.innerHTML=`<div class="hint" style="margin-bottom:2px">已選 ${ids.length} 人</div>${standbyPoolHTML(standbySentryPool(Object.assign({}, plan, {personIds:ids})))}`;
+  };
+  document.getElementById('spList').addEventListener('change', refreshPool);
+  document.getElementById('spAll').onclick=()=>{ modal.querySelectorAll('.sp-person').forEach(cb=>{ if(cb.closest('label').style.display!=='none') cb.checked=true; }); refreshPool(); };
+  document.getElementById('spNone').onclick=()=>{ modal.querySelectorAll('.sp-person').forEach(cb=>cb.checked=false); refreshPool(); };
+  refreshPool();
   keepSearchFocusOnPick(document.getElementById('spList'), document.getElementById('spSearch'));
   document.getElementById('spSave').onclick=()=>{
     plan.personIds=[...modal.querySelectorAll('.sp-person:checked')].map(cb=>cb.value);
@@ -9985,7 +10105,7 @@ function standbySubDraftIssues(anchor, plan, role, d, idx, cfgDraft, people, opt
         if(trial.roles){ trial.personIds=base.slice(); trial.personIds[i]=undefined; }
         else { trial.personIds=base.filter(id=>id && id!==p.id); i=trial.personIds.length; }
         const ctx={kind:'misc', date:d, entry:trial, idx:i};
-        res.set(p.id, candidateIssueGroups(opts.groupRules===false? personalViolations(ctx, p.id) : placementViolations(ctx, p.id)));
+        res.set(p.id, candidateIssueGroups(opts.groupRules===false? personalViolations(ctx, p.id).concat(reverseDutyViolations(ctx, p.id)) : placementViolations(ctx, p.id)));
       });
     });
   } finally {
@@ -10380,7 +10500,7 @@ function draftSlotIssues(date, draft, idx, people, opts){
       if(trial.roles){ trial.personIds=base.slice(); trial.personIds[i]=undefined; }
       else { trial.personIds=base.filter(id=>id && id!==p.id); i=trial.personIds.length; }
       const ctx={kind:'misc', date, entry:trial, idx:i};
-      res.set(p.id, opts.groupRules===false? personalViolations(ctx, p.id) : placementViolations(ctx, p.id));
+      res.set(p.id, opts.groupRules===false? personalViolations(ctx, p.id).concat(reverseDutyViolations(ctx, p.id)) : placementViolations(ctx, p.id));
     });
   });
   return res;
@@ -15657,7 +15777,7 @@ function reasonPoolManagerHTML(poolKey, toggleKey){
   const pool = state[poolKey]||[];
   const expanded = isExpanded(toggleKey);
   return `<div style="margin-bottom:8px">
-    <button type="button" class="ghost small" data-collapse-toggle="${toggleKey}">${expanded?'▲ 收合':'▼ 管理原因預設列表'}</button>
+    <button type="button" class="ghost small" data-collapse-toggle="${toggleKey}" data-closed-label="▼ 管理原因預設列表">${expanded?'▲ 收合':'▼ 管理原因預設列表'}</button>
     <div style="display:${expanded?'block':'none'};margin-top:6px">
       <div class="row wrap" style="gap:4px">
         ${pool.length? pool.map(r=>`<span class="pill-btn">${esc(r)} <span data-del-reason-pool="${poolKey}" data-del-reason-value="${esc(r)}" style="color:var(--danger);margin-left:3px;cursor:pointer">✕</span></span>`).join('') : `<span class="muted" style="font-size:12px">目前沒有預設項目</span>`}
@@ -16001,16 +16121,37 @@ function collapsibleCardHTML(key, title, innerHtml, extraButtons){
 }
 document.addEventListener('click', (e)=>{
   const btn = e.target.closest('[data-collapse-toggle]');
-  if(btn){ collapseState[btn.dataset.collapseToggle] = !collapseState[btn.dataset.collapseToggle]; render(); return; }
-  /* v159：整條標題列都可以點來展開/收合（原本只能點右邊那顆小按鈕）。只限
-     主畫面(#app)的卡片——彈窗裡的卡片各自有自己的重畫方式；點到標題列上
-     其他按鈕、勾選框、拖曳把手不算。 */
+  if(btn){
+    if(btn.closest('#app')){ collapseState[btn.dataset.collapseToggle] = !collapseState[btn.dataset.collapseToggle]; render(); return; }
+    // v191：彈窗裡的（例如休假暨事故大表的「目前已生效的不在營記錄」）：以前只重畫主畫面(render())，
+    //   彈窗本身沒重畫，點了沒反應——直接把那一塊打開／收起來
+    toggleCollapseInPlace(btn, btn.dataset.collapseToggle);
+    return;
+  }
+  /* v159：整條標題列都可以點來展開/收合（原本只能點右邊那顆小按鈕）。點到標題列上
+     其他按鈕、勾選框、拖曳把手不算。v191：彈窗裡的卡片也可以（就地打開／收起來）。 */
   const row = e.target.closest('[data-collapse-row]');
-  if(row && row.closest('#app') && !e.target.closest('button,input,label,select,a,[data-drag-handle]')){
-    collapseState[row.dataset.collapseRow] = !collapseState[row.dataset.collapseRow];
-    render();
+  if(row && !e.target.closest('button,input,label,select,a,[data-drag-handle]')){
+    if(row.closest('#app')){ collapseState[row.dataset.collapseRow] = !collapseState[row.dataset.collapseRow]; render(); }
+    else toggleCollapseInPlace(row, row.dataset.collapseRow);
   }
 });
+/* v191：彈窗裡的展開／收合：改 collapseState（彈窗之後自己重畫也會照這個），並就地切換那一塊。
+   collapsibleCardHTML 的卡片＝標題列後面那一塊；其他（例如「管理原因預設列表」）＝按鈕後面那一塊 */
+function toggleCollapseInPlace(el, key){
+  collapseState[key]=!collapseState[key];
+  const open=!!collapseState[key];
+  const title=el.closest('.section-title');
+  let body=null, btns=[];
+  if(title && title.parentElement && title.parentElement.classList.contains('card')){ body=title.nextElementSibling; btns=[...title.querySelectorAll('[data-collapse-toggle]')]; }
+  else { const b=el.matches('[data-collapse-toggle]')? el : el.querySelector('[data-collapse-toggle]'); if(b){ body=b.nextElementSibling; btns=[b]; } }
+  if(body) body.style.display=open? 'block' : 'none';
+  btns.forEach(b=>{
+    b.setAttribute('aria-expanded', String(open));
+    if(b.classList.contains('collapse-btn')) b.innerHTML=`${open?'收合':'展開'}${ico('chevD')}`;
+    else if(b.dataset.closedLabel) b.textContent=open? '▲ 收合' : b.dataset.closedLabel;
+  });
+}
 function renderGroupRankStats(){
   const activePersonnel = rosterOn(currentDate);
   if(!activePersonnel.length) return `<div class="empty">尚未新增人員</div>`;
