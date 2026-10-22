@@ -229,15 +229,44 @@ textarea{min-height:50px;resize:vertical;line-height:1.5;}
 /* ---------------- 班次（時間軸） ---------------- */
 .shift-row{position:relative;background:var(--panel);border-radius:13px;padding:10px 10px 8px 16px;margin-bottom:8px;border:none;box-shadow:0 0 0 1px var(--line);}
 .shift-row::before{content:"";position:absolute;left:6px;top:12px;bottom:12px;width:3px;border-radius:3px;background:var(--line-strong);}
-.shift-row:has(select[data-assign-cat] option[value=""]:checked)::before{background:var(--warn);}
+.shift-row:has(.slot-pick.empty)::before{background:var(--warn);}
 .shift-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 10px;margin-bottom:8px;}
 .shift-head>.muted{margin-left:auto;font-size:12px;}
 .shift-time{font-size:15px;font-weight:800;letter-spacing:.01em;}
 .slot-select{margin-bottom:6px;}
 .slot-select .row{gap:6px;}
 .slot-select button.small{min-width:38px;min-height:40px;}
-select[data-assign-cat]{background-color:var(--input-bg);font-weight:600;border-color:var(--line);}
-select[data-assign-cat]:has(option[value=""]:checked){background-color:var(--warn-soft);border-color:transparent;color:var(--warn);}
+/* v192：排班頁的格子（以前是下拉選單）：點了從下面拉出挑人清單 */
+button.slot-pick{width:100%;display:flex;align-items:center;gap:8px;min-height:44px;padding:9px 12px;text-align:left;
+  background:var(--input-bg);border:1px solid var(--line);border-radius:var(--radius-sm);font-size:15px;font-weight:600;color:var(--text);}
+button.slot-pick.empty{background:var(--warn-soft);border-color:transparent;color:var(--warn);}
+.slot-pick-name{font-weight:700;white-space:nowrap;}
+.slot-pick-meta{flex:1;min-width:0;font-size:12.5px;font-weight:500;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.slot-pick-empty{flex:1;}
+.slot-pick-chev{margin-left:auto;color:var(--dim);font-size:12px;flex-shrink:0;}
+/* v192：挑人清單 */
+.pick-sheet .pick-sub{font-size:13px;font-weight:600;color:var(--dim);}
+.pick-current{display:flex;align-items:center;gap:8px;margin:2px 0 8px;font-size:14px;}
+.pick-search{margin-bottom:8px;}
+.pick-groups{display:flex;gap:6px;overflow-x:auto;-webkit-overflow-scrolling:touch;padding:2px 2px 6px;margin:0 -2px 2px;}
+.pick-groups .chip{flex-shrink:0;}
+.pick-sec-head{display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:13px;font-weight:700;padding:12px 2px 4px;cursor:pointer;}
+.pick-sec-head.s-ok{color:var(--ok);} .pick-sec-head.s-conflict{color:var(--warn);} .pick-sec-head.s-reason{color:var(--danger);} .pick-sec-head.s-hard{color:var(--dim);}
+.pick-sec-tog{font-weight:600;color:var(--dim);white-space:nowrap;}
+.pick-row{display:flex;align-items:center;gap:10px;padding:9px 4px;border-bottom:1px solid var(--line);cursor:pointer;-webkit-tap-highlight-color:transparent;}
+.pick-row:active{background:var(--btn-bg);}
+.pick-row.cur{background:var(--accent-soft);border-radius:var(--radius-xs);}
+.pick-row.s-hard{opacity:.65;}
+.pick-dot{width:9px;height:9px;border-radius:50%;flex-shrink:0;background:var(--ok);}
+.pick-dot.s-conflict{background:var(--warn);} .pick-dot.s-reason{background:var(--danger);} .pick-dot.s-hard{background:var(--line-strong);}
+.pick-main{flex:1;min-width:0;}
+.pick-main b{font-size:15px;}
+.pick-meta{font-size:12.5px;color:var(--dim);}
+.pick-why{font-size:11.5px;line-height:1.35;color:var(--warn);overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;}
+.pick-why.s-reason,.pick-why.s-hard{color:var(--danger);}
+.pick-why.rem{color:var(--dim);}
+.pick-count{font-size:12px;color:var(--dim);white-space:nowrap;flex-shrink:0;}
+.pick-chosen{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;}
 .badge-issue{display:block;width:fit-content;max-width:100%;font-size:12.5px;font-weight:600;line-height:1.45;color:var(--danger);background:var(--danger-soft);
   border-radius:8px;padding:4px 8px;margin-top:5px;}
 
@@ -557,7 +586,7 @@ button.small.card-more{min-width:44px;min-height:40px;font-size:20px;line-height
       <span class="unit-banner-badge"><i data-ico="star"></i></span>
       <span class="unit-banner-titles">
         <span class="unit-banner-text">陸軍第八軍團 本部連</span>
-        <h1 id="pageTitle">衛哨排班系統 <span class="muted">v191</span></h1>
+        <h1 id="pageTitle">衛哨排班系統 <span class="muted">v192</span></h1>
       </span>
     </span>
     <span class="banner-side right">
@@ -17760,11 +17789,7 @@ function renderCategoryCard(cat, dragIdx, opts){
           return `<div class="slot-select">
             ${cat.needsNCO? `<div class="muted" style="margin-bottom:2px">${(idx===0 && !noLeaderShift(cat, s))? '帶隊(士官)':'第'+(idx+1)+'人'}</div>`:''}
             <div class="row" style="gap:4px">
-              <select data-assign-cat="${cat.id}" data-assign-shift="${s.id}" data-assign-idx="${idx}" class="grow">
-                <option value="">（未排）</option>
-                ${isSupportId(pid)? `<option value="${esc(pid)}" selected>${esc(personName(pid))}</option>` : ''}
-                ${assignableOptions(cat, s, pid, idx)}
-              </select>
+              <button type="button" class="slot-pick grow${pid?'':' empty'}" data-assign-cat="${cat.id}" data-assign-shift="${s.id}" data-assign-idx="${idx}">${slotPickLabel(pid)}</button>
               ${pid && !isSupportId(pid)? `<button class="ghost small" data-duty-change="${pid}" title="臨時異動">⚡</button>`:''}
               <button class="ghost small" data-find-sub-cat="${cat.id}" data-find-sub-shift="${s.id}" data-find-sub-idx="${idx}" title="找補位">🔍</button>
             </div>
@@ -17796,86 +17821,173 @@ function clearCategoryDay(catId){
   }, {danger:true, confirmLabel:'清空'});
 }
 
-function assignableOptions(cat, shift, selectedId, slotIdx){
-  // v176：換成實際的日子、時段（班表 D 的 22-24 是前一天晚上）
-  const cw=catShiftCalendar(currentDate, shift);
-  const info = p=>{
-    const excluded = rankExcludedFromCategory(p.rank, cat);
-    const unavailable = excluded || isDepartedOn(p, currentDate) || isPersonUnavailable(p.id, cw.date, cw.s, cw.e, {catId:cat.id, shiftId:shift.id, schedDate:currentDate}) || isPersonOnExclusiveStandby(p.id, cw.date) || isDutyOfficer(p.id, cw.date);
-    return {excluded, unavailable};
+/* ================= v192：挑人清單（排班頁的衛哨、打飯班、其他勤務共用） =================
+   以前是手機的下拉選單，一次只看得到幾個人。改成從下面拉出來的清單：
+   能排的在最上面；有衝突／違反規則／不能排的先收起來（搜尋的時候全部打開）。
+   每個人一行：名字、階級・排組、近 7 天排了幾班（衛哨＝所有衛哨；打飯班＝打飯班；其他勤務＝同一個勤務）。
+   能不能排照樣用規則引擎判斷（等級照「規則等級」），選了之後照樣過排班關卡。 */
+const PICK_SECS=[
+  {key:'ok', title:'可以排'},
+  {key:'conflict', title:'有衝突，可以忽略一次'},
+  {key:'reason', title:'違反規則'},
+  {key:'hard', title:'不能排'},
+];
+function pickSecOf(g){ return !g? 'ok' : g.hard.length? 'hard' : g.reason.length? 'reason' : g.conflict.length? 'conflict' : 'ok'; }
+/* 格子上顯示的：排了誰（名字、階級・排組），沒排就是（未排） */
+function slotPickLabel(pid){
+  const chev='<span class="slot-pick-chev">▾</span>';
+  if(!pid) return `<span class="slot-pick-empty">（未排）</span>${chev}`;
+  const p=isSupportId(pid)? null : personById(pid);
+  return `<span class="slot-pick-name">${esc(personName(pid))}</span><span class="slot-pick-meta">${p? `${esc(p.rank)}・${esc(p.group||'未分組')}` : ''}</span>${chev}`;
+}
+/* 近 7 天（含這一天）排了幾班：衛哨類別＝所有衛哨，其他類別＝同一類；skip＝這一格本身不算（支援的人不算） */
+function recentCatCounts(date, cat, skip){
+  const m=new Map();
+  const cats=cat.enforceRest? state.categories.filter(c=>c.enforceRest) : [cat];
+  for(let k=-6;k<=0;k++){
+    const d=dateAddDays(date, k), da=state.assign[d]; if(!da) continue;
+    cats.forEach(c=>{ const ca=da[c.id]; if(!ca) return; effectiveShifts(c, d).forEach(sf=>(ca[sf.id]||[]).slice(0, sf.count).forEach((id,i)=>{
+      if(!id || isSupportId(id)) return;
+      if(skip && d===date && c.id===skip.catId && sf.id===skip.shiftId && i===skip.idx) return;
+      m.set(id, (m.get(id)||0)+1);
+    })); });
+  }
+  return m;
+}
+/* 其他勤務：近 7 天（含這一天）同一個勤務排了幾次（掛名、支援的不算；skipId＝這一項本身不算） */
+function recentMiscCounts(date, role, skipId){
+  const m=new Map();
+  for(let k=-6;k<=0;k++){
+    (state.misc[dateAddDays(date, k)]||[]).forEach(x=>{
+      if(x.role!==role || x.id===skipId) return;
+      new Set((x.personIds||[]).filter(id=>id && !isSupportId(id) && !(x.nominalIds||[]).includes(id))).forEach(id=>m.set(id, (m.get(id)||0)+1));
+    });
+  }
+  return m;
+}
+/* opts：title、sub（小字）、people、issue(p)＝規則問題分組（candidateIssueGroups）、count(p)＝近 7 天幾班、
+   order(p)＝同一區裡的排序（陣列，小的在前）、badges＝列駕照／醫證／專長、
+   單選：current、onPick(pid)、onClear()（有排人才有「清空這一格」）
+   多選：multi:true、selected、need（需要幾人）、onDone(ids) */
+function openPersonPickSheet(opts){
+  const multi=!!opts.multi;
+  const picked=new Set(multi? (opts.selected||[]).filter(Boolean) : []);
+  const rows=opts.people.map(p=>{
+    const g=opts.issue(p)||null;
+    return {p, g, sec:pickSecOf(g), n:opts.count? (opts.count(p)||0) : null, ord:opts.order? opts.order(p) : [],
+      msg:g? [...new Set([...g.hard, ...g.reason, ...g.conflict].map(v=>v.msg))].join('・') : '',
+      rem:g? [...new Set(g.remind.map(v=>v.msg))].join('・') : ''};
+  });
+  rows.sort((a,b)=>{ const r=(a.g? a.g.rank : 0)-(b.g? b.g.rank : 0); if(r) return r;
+    for(let i=0;i<Math.max(a.ord.length, b.ord.length);i++){ const d=(a.ord[i]||0)-(b.ord[i]||0); if(d) return d; } return 0; });
+  const groups=[...new Set(opts.people.map(p=>p.group||''))].sort((a,b)=>groupIndex(a)-groupIndex(b));
+  let term='', grp=null;
+  const open=new Set(['ok']);
+  if(!rows.some(r=>r.sec==='ok')) open.add('conflict');
+  const cur=!multi? (opts.current||'') : '';
+  const rowHTML=r=>{
+    const p=r.p, on=picked.has(p.id);
+    const why=r.msg? `<div class="pick-why s-${r.sec}">${esc(r.msg)}</div>` : (r.rem? `<div class="pick-why rem">💡 ${esc(r.rem)}</div>` : '');
+    return `<div class="pick-row s-${r.sec}${p.id===cur?' cur':''}" data-pick-pid="${p.id}" role="button" tabindex="0">
+      ${multi? `<input type="checkbox" tabindex="-1" ${on?'checked':''}>` : `<span class="pick-dot s-${r.sec}"></span>`}
+      <span class="pick-main"><b>${esc(p.name)}</b> <span class="pick-meta">${esc(p.rank)}・${esc(p.group||'未分組')}${opts.badges? personBadges(p) : ''}</span>${why}</span>
+      ${r.n!==null? `<span class="pick-count">近 7 天 ${r.n} 班</span>` : ''}
+    </div>`;
   };
-  // available people first (in the usual priority/group order), unavailable
-  // ones pushed to the bottom — matches the same "eligible people on top"
-  // convention as the 其他勤務 picker, instead of mixing them in wherever
-  // their rank/group would otherwise place them
-  // 效能：info()裡面的isPersonUnavailable是整個排班頁最貴的判斷，原本直接
-  // 寫在sort的比較函式裡，91人排序要比較約600次、每次算兩個人，等於每個
-  // 下拉選單把同一個人重算十幾次，最後map又再算一次。先每人只算一次存起
-  // 來，排序跟輸出都讀存好的結果——判斷邏輯、排序結果完全不變（Array.sort
-  // 是穩定排序，比較的值也一模一樣），只是不重複算。
-  const infoById = withCatIndex(()=>new Map(state.personnel.map(p=>[p.id, info(p)])));
-  const sortKey = new Map(state.personnel.map(p=>[p.id, [dutySortIndex(p.rank,cat,slotIdx,shift), groupIndex(p.group)]]));
-  const sorted=[...state.personnel].sort((a,b)=>{
-    const ia=infoById.get(a.id), ib=infoById.get(b.id);
-    if(ia.unavailable!==ib.unavailable) return ia.unavailable? 1 : -1;
-    const ka=sortKey.get(a.id), kb=sortKey.get(b.id);
-    return ka[0]-kb[0] || ka[1]-kb[1];
+  const listHTML=()=>{
+    const f=rows.filter(r=>(!term || r.p.name.includes(term)) && (grp===null || (r.p.group||'')===grp));
+    if(!f.length) return `<div class="empty">找不到符合的人員</div>`;
+    return PICK_SECS.map(sec=>{
+      const list=f.filter(r=>r.sec===sec.key); if(!list.length) return '';
+      const isOpen=open.has(sec.key) || !!term;
+      return `<div class="pick-sec-head s-${sec.key}" data-pick-sec="${sec.key}"><span>${sec.title}（${list.length}）</span>${sec.key==='ok'? '' : `<span class="pick-sec-tog">${isOpen? '收起來 ▾' : '展開 ▸'}</span>`}</div>
+        ${isOpen? list.map(rowHTML).join('') : ''}`;
+    }).join('');
+  };
+  const modal=document.createElement('div');
+  modal.className='sheet-modal'; modal.style.zIndex=String(overlayZAbove(150));
+  modal.innerHTML=`<div class="sheet-inner pick-sheet">
+    <div class="section-title"><h2 style="margin:0">${esc(opts.title)}${opts.sub? ` <span class="pick-sub">${esc(opts.sub)}</span>` : ''}</h2><button class="ghost small" data-pick-close>關閉</button></div>
+    ${cur? `<div class="pick-current"><span class="grow">目前：<b>${esc(personName(cur))}</b></span>${opts.onClear? '<button class="ghost small" data-pick-clear>清空這一格</button>' : ''}</div>` : ''}
+    <input type="text" class="pick-search" data-person-search="1" placeholder="🔍 搜尋姓名" autocomplete="off">
+    ${groups.length>1? `<div class="pick-groups">${['__all__', ...groups].map(g=>`<button type="button" class="chip${g==='__all__'?' on':''}" data-pick-group="${esc(g)}">${g==='__all__'? '全部' : esc(g||'未分組')}</button>`).join('')}</div>` : ''}
+    <div class="pick-list"></div>
+    ${multi? `<button type="button" class="primary" data-pick-done style="width:100%;margin-top:10px"></button>` : ''}
+  </div>`;
+  document.body.appendChild(modal);
+  const listEl=modal.querySelector('.pick-list'), searchEl=modal.querySelector('.pick-search'), doneBtn=modal.querySelector('[data-pick-done]');
+  const doneText=()=>{ if(doneBtn) doneBtn.textContent=`確定（已選 ${picked.size} 人${opts.need? `，需要 ${opts.need} 人` : ''}）`; };
+  const draw=()=>{ listEl.innerHTML=listHTML(); doneText(); };
+  draw();
+  const close=()=>modal.remove();
+  modal.querySelector('[data-pick-close]').onclick=close;
+  modal.addEventListener('click', e=>{ if(e.target===modal) close(); });
+  const clr=modal.querySelector('[data-pick-clear]');
+  if(clr) clr.onclick=()=>{ close(); opts.onClear(); };
+  if(doneBtn) doneBtn.onclick=()=>{ close(); opts.onDone([...picked]); };
+  // 注音打到一半不要篩（不然會一直「找不到」）
+  let composing=false;
+  searchEl.addEventListener('compositionstart', ()=>{ composing=true; });
+  searchEl.addEventListener('compositionend', ()=>{ composing=false; term=searchEl.value.trim(); draw(); });
+  searchEl.addEventListener('input', e=>{ if(composing || e.isComposing) return; term=searchEl.value.trim(); draw(); });
+  modal.querySelectorAll('[data-pick-group]').forEach(b=>{ b.onclick=()=>{
+    grp=b.dataset.pickGroup==='__all__'? null : b.dataset.pickGroup;
+    modal.querySelectorAll('[data-pick-group]').forEach(x=>x.classList.toggle('on', x===b));
+    draw();
+  }; });
+  const choose=row=>{
+    const pid=row.dataset.pickPid;
+    if(multi){
+      if(picked.has(pid)) picked.delete(pid); else picked.add(pid);
+      const cb=row.querySelector('input'); if(cb) cb.checked=picked.has(pid);
+      doneText();
+      // 有在搜尋的話，鍵盤留著（接著搜下一個人）
+      if(term && document.activeElement!==searchEl){ searchEl.dataset.kbRefocus='1'; searchEl.focus({preventScroll:true}); delete searchEl.dataset.kbRefocus; }
+      return;
+    }
+    close(); opts.onPick(pid);
+  };
+  listEl.addEventListener('click', e=>{
+    const head=e.target.closest('[data-pick-sec]');
+    if(head){ const k=head.dataset.pickSec; if(k!=='ok' && !term){ if(open.has(k)) open.delete(k); else open.add(k); draw(); } return; }
+    const row=e.target.closest('[data-pick-pid]'); if(row) choose(row);
   });
-  return sorted.map(p=>{
-    const {unavailable} = infoById.get(p.id);
-    return `<option value="${p.id}" ${p.id===selectedId?'selected':''}>${unavailable?'❗ ':''}${esc(p.name)}（${p.group||'未分組'}·${p.rank}${p.license? '·🚗'+esc(p.license):''}）</option>`;
-  }).join('');
+  listEl.addEventListener('keydown', e=>{ if(e.key!=='Enter' && e.key!==' ') return; const row=e.target.closest('[data-pick-pid]'); if(row){ e.preventDefault(); choose(row); } });
+  return modal;
 }
-
-/* v168：下拉選單打開的時候才用規則引擎把每個人標清楚（等級照「規則等級」，跟排班關卡、
-   自動排班同一套）：⛔不能排、❗衝突（可以掛名／忽略一次）、⚠️違反規則（要記原因）、💡提醒。
-   一打開畫面就每一格都算太慢（整頁幾十格×全連），所以只算被點開的那一格。 */
-function assignableOptionsFull(cat, shift, selectedId, slotIdx){
-  const ctx={kind:'cat', date:currentDate, cat, shift, idx:slotIdx};
-  const people=state.personnel.filter(p=>!isDepartedOn(p, currentDate) || p.id===selectedId);
+/* 衛哨、打飯班的一格 */
+function openCatSlotPicker(cat, shift, idx){
+  const date=currentDate;
+  const ctx={kind:'cat', date, cat, shift, idx};
+  const cur=((((state.assign[date]||{})[cat.id])||{})[shift.id]||[])[idx]||'';
+  const people=state.personnel.filter(p=>!isDepartedOn(p, date) || p.id===cur);
+  // 這一格先當作空的，每個人放進來會怎樣（跟以前下拉選單打開時算的一樣）
   const groups=new Map();
-  withDaySnapshot(currentDate, ()=>{ placeInSlot(ctx, null); people.forEach(p=>groups.set(p.id, candidateIssueGroups(placementViolations(ctx, p.id)))); });
-  const sortKey=new Map(people.map(p=>[p.id, [dutySortIndex(p.rank,cat,slotIdx,shift), groupIndex(p.group)]]));
-  const sorted=people.slice().sort((a,b)=>{
-    const ga=groups.get(a.id), gb=groups.get(b.id);
-    if(ga.rank!==gb.rank) return ga.rank-gb.rank;
-    const ka=sortKey.get(a.id), kb=sortKey.get(b.id);
-    return ka[0]-kb[0] || ka[1]-kb[1];
+  withDaySnapshot(date, ()=>{ placeInSlot(ctx, null); people.forEach(p=>groups.set(p.id, candidateIssueGroups(placementViolations(ctx, p.id)))); });
+  const counts=recentCatCounts(date, cat, {catId:cat.id, shiftId:shift.id, idx});
+  const lead=leadRankSet(cat, idx, shift);
+  // 班別名稱本身就是時間（22-24）就不再重複寫時間；「早」「午」這種才補上時間
+  const time=shift.label? (/\d/.test(shift.label)? shift.label : `${shift.label}（${shift.start}-${shift.end}）`) : `${shift.start}-${shift.end}`;
+  const which=cat.needsNCO? ((idx===0 && !noLeaderShift(cat, shift))? '帶隊' : `第${idx+1}人`) : (shift.count>1? `第${idx+1}格` : '');
+  openPersonPickSheet({
+    title:`${cat.name} ${time}`, sub:`${dayLabelShort(date)}${which? '・'+which : ''}`,
+    people, issue:p=>groups.get(p.id), count:p=>counts.get(p.id)||0,
+    // 跟自動補空缺同一個想法：這一格的輪流範圍裡的階級先，再來最近排得少的
+    order:p=>[lead.has(p.rank)? 0 : 1, counts.get(p.id)||0, dutySortIndex(p.rank, cat, idx, shift), groupIndex(p.group)],
+    current:cur,
+    // v160：先過規則關卡（事實不讓排、嚴重有別人就不讓排、要破例就記原因）
+    onPick:pid=>gateAssignment(date, ()=>placeInSlot(ctx, pid), [{ctx, pid}], ()=>render()),
+    onClear:cur? ()=>gateAssignment(date, ()=>placeInSlot(ctx, undefined), [], ()=>render()) : null,
   });
-  const short=t=>t.length>16? t.slice(0,16)+'…' : t;
-  return sorted.map(p=>{
-    const g=groups.get(p.id);
-    const first=(g.hard[0]||g.conflict[0]||g.reason[0]||g.remind[0]);
-    const prefix=g.hard.length? '⛔ ' : g.conflict.length? '❗ ' : g.reason.length? '⚠️ ' : g.remind.length? '💡 ' : '';
-    return `<option value="${p.id}" ${p.id===selectedId?'selected':''}>${prefix}${esc(p.name)}（${p.group||'未分組'}·${p.rank}${p.license? '·🚗'+esc(p.license):''}）${first? '・'+esc(short(first.msg)) : ''}</option>`;
-  }).join('');
-}
-function upgradeAssignSelect(sel){
-  if(sel.dataset.full) return;
-  const cat=state.categories.find(c=>c.id===sel.dataset.assignCat);
-  const shift=cat && effectiveShifts(cat, currentDate).find(x=>x.id===sel.dataset.assignShift);
-  if(!shift) return;
-  const cur=sel.value;
-  sel.innerHTML=`<option value="">（未排）</option>${isSupportId(cur)? `<option value="${esc(cur)}" selected>${esc(personName(cur))}</option>` : ''}${assignableOptionsFull(cat, shift, cur, Number(sel.dataset.assignIdx))}`;
-  sel.value=cur;
-  sel.dataset.full='1';
 }
 function wireCategoryEvents(){
-  app.querySelectorAll('[data-assign-cat]').forEach(sel=>{
-    const up=()=>upgradeAssignSelect(sel);
-    sel.addEventListener('touchstart', up, {passive:true});
-    sel.addEventListener('mousedown', up);
-    sel.addEventListener('focus', up);
-    sel.addEventListener('keydown', up);
-    sel.onchange=()=>{
-      const catId=sel.dataset.assignCat, shiftId=sel.dataset.assignShift, idx=Number(sel.dataset.assignIdx);
+  app.querySelectorAll('[data-assign-cat]').forEach(btn=>{
+    btn.onclick=()=>{
+      const catId=btn.dataset.assignCat, shiftId=btn.dataset.assignShift, idx=Number(btn.dataset.assignIdx);
       const cat=state.categories.find(c=>c.id===catId);
       const shift=cat && effectiveShifts(cat, currentDate).find(x=>x.id===shiftId);
       if(!shift) return;
-      const pid=sel.value||undefined;
-      const ctx={kind:'cat', date:currentDate, cat, shift, idx};
-      // v160：先過規則關卡（事實不讓排、嚴重有別人就不讓排、要破例就記原因）
-      gateAssignment(currentDate, ()=>placeInSlot(ctx, pid), pid? [{ctx, pid}] : [], ()=>render());
+      openCatSlotPicker(cat, shift, idx);
     };
   });
   // v176：「⋯」——只改今天的班別（從排班頁進去預設只改今天；改預設到⚙️設定→勤務類別）、清空這天的排班
@@ -18819,40 +18931,16 @@ let miscInlineEditId=null;
    the entry's OWN current start/end select values (so changing the time
    live-updates who's flagged busy) and applies the entry's preset
    requirements (license/EMT/skill) the same way the top "新增項目" form does */
-function inlineMiscPeopleListHTML(m, searchFilter){
-  const preset = presetForEntry(m);
-  const startExists = !!document.getElementById('inlineStart-'+m.id+'__h');
-  const startVal = startExists? getTimeSelectValue('inlineStart-'+m.id) : m.start;
-  const endExists = !!document.getElementById('inlineEnd-'+m.id+'__h');
-  const endVal = endExists? getTimeSelectValue('inlineEnd-'+m.id) : m.end;
-  const checkedIds = new Set((m.personIds||[]).filter(Boolean));
-  const container = document.getElementById('inlineMiscPeopleList-'+m.id);
-  if(container){
-    container.querySelectorAll('.inline-misc-person-cb').forEach(cb=>{
-      if(cb.checked) checkedIds.add(cb.value); else checkedIds.delete(cb.value);
-    });
-  }
-  let list=state.personnel.filter(p=>!isDepartedOn(p, currentDate) || checkedIds.has(p.id));
-  if(searchFilter) list = list.filter(p=>p.name.includes(searchFilter));
-  if(!list.length) return `<div class="empty">找不到符合的人員</div>`;
-  // v168：規則引擎判斷（等級照「規則等級」），跟排班頁、自動排班同一套；整組規則（查哨配對）另外在卡片上提示
-  const draft=Object.assign({}, m, {start:startVal||'', end:endVal||'', personIds:[...checkedIds]});
-  const issues=draftSlotIssues(currentDate, draft, 0, list, {groupRules:false});
-  const withInfo = list.map(p=>({p, checked:checkedIds.has(p.id), g:candidateIssueGroups(issues.get(p.id))}));
-  withInfo.sort((a,b)=>a.g.rank-b.g.rank || rankPriorityIndex(a.p.rank,preset)-rankPriorityIndex(b.p.rank,preset) || groupIndex(a.p.group)-groupIndex(b.p.group));
-  return withInfo.map(({p,checked,g})=>`<label style="display:flex;align-items:flex-start;gap:6px;font-size:13px;padding:4px 0;${g.rank>=2?'opacity:.7':''}">
-      <input type="checkbox" class="inline-misc-person-cb" value="${p.id}" style="width:auto;margin-top:2px" ${checked?'checked':''}>
-      <span class="grow">${esc(p.name)}（<span class="nw">${esc(p.group||'未分組')}</span>·<span class="nw">${esc(p.rank)}</span>${personBadges(p)}）${candidateIssuesHTML(g)}</span>
-    </label>`).join('');
-}
 function miscEntryEditorHTML(m){
   let rolesHtml;
   if(m.roles){
+    // v192：每一格是一個按鈕，點了從下面拉出挑人清單（跟衛哨、打飯班同一種）
     rolesHtml = m.roles.map((r,i)=>{
-      const issueFn = inlineRoleIssueFn(m, i, {});
+      const pid=m.personIds[i]||'';
       return `<div class="row wrap" style="margin-bottom:6px">
         <div class="grow"><label>${esc(r)}</label>
-          ${rolePickerHTML('inlineRoleSel-'+m.id+'-'+i, m.personIds[i]||'', issueFn)}
+          <input type="hidden" id="inlineRoleSel-${m.id}-${i}" value="${esc(pid)}">
+          <button type="button" class="slot-pick${pid?'':' empty'}" data-role-pick="${m.id}" data-role-pick-idx="${i}">${slotPickLabel(pid)}</button>
         </div>
         <label style="display:flex;align-items:center;gap:4px;font-size:12px;align-self:flex-end;padding-bottom:8px">
           <input type="checkbox" data-inline-lock="${m.id}-${i}" style="width:auto" ${(m.lockedSlots&&m.lockedSlots[i])?'checked':''}> 🔒暫不排
@@ -18860,14 +18948,12 @@ function miscEntryEditorHTML(m){
       </div>`;
     }).join('');
   } else {
+    // v192：已選的人列成一排，按「選人」從下面拉出挑人清單（可以複選）
     rolesHtml = `
-      <div class="row wrap" style="margin-bottom:6px">
-        <div class="grow"><label>搜尋姓名</label><input type="text" id="inlineMiscSearch-${m.id}" placeholder="輸入姓名關鍵字"></div>
-      </div>
-      <div class="hint" style="margin-bottom:4px">人員（可複選；可以排的在最上面，⚠️有衝突的其次，🚫違反規則的在最下面並標示原因——都照「規則等級」判斷）</div>
-      <div id="inlineMiscPeopleList-${m.id}" style="max-height:260px;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:8px;margin-bottom:8px">
-        ${inlineMiscPeopleListHTML(m, '')}
-      </div>
+      <label>人員</label>
+      <input type="hidden" id="inlineMiscPeople-${m.id}" value="${esc((m.personIds||[]).filter(id=>id && !isSupportId(id)).join(','))}">
+      <div class="pick-chosen" id="inlineMiscChosen-${m.id}"></div>
+      <button type="button" class="ghost" data-misc-pick="${m.id}" style="width:100%;margin-bottom:8px">選人</button>
       ${m.standbyAnchor? '' : `<div class="row wrap" style="margin-bottom:8px">
         <div class="grow"><label>支援人員（別單位的人，手打姓名，多人用「、」分開；會佔名額，自動排班不會再補人）</label><input type="text" id="inlineSupportPeople-${m.id}" value="${esc((m.personIds||[]).filter(isSupportId).map(supportNameOf).join('、'))}" placeholder="例：王小明"></div>
       </div>`}
@@ -18905,13 +18991,6 @@ function inlineRoleIssueFn(m, i, over){
     return candidateIssueGroups(cache.get(p.id));
   };
 }
-/* single-person picker rendered as a searchable tap-list — same look as
-   every other person-picker in the app (search box + eligible-first list,
-   🚫 + combined reason for anyone who can't take it) — instead of a native
-   <select>, which is what 駕駛/車長/話務 role assignment used to use.
-   Keeps a hidden input with `idPrefix` as its id holding the chosen
-   person id, so every existing call site that reads
-   `document.getElementById(idPrefix).value` keeps working unchanged. */
 /* 效能：排序的比較函式會對同一個人反覆呼叫reasonsFn（91人排序約600次比較，
    每次問兩個人），而不可排原因的判斷（isPersonUnavailable等）很貴。同一次
    畫面裡人員資料不會變，所以同一個人只算一次、之後直接讀存好的結果——判斷
@@ -18923,120 +19002,64 @@ function memoPersonFn(fn){
     const v=fn(p); cache.set(p.id, v); return v;
   };
 }
-function rolePickerHTML(idPrefix, selectedId, issueFn){
-  issueFn = memoPersonFn(issueFn);
-  const list=state.personnel.filter(p=>!isDepartedOn(p, currentDate)).sort((a,b)=>{
-    const d=issueFn(a).rank-issueFn(b).rank;
-    if(d) return d;
-    return groupIndex(a.group)-groupIndex(b.group) || rankIndex(a.rank)-rankIndex(b.rank);
-  });
-  return `
-    <input type="hidden" id="${idPrefix}" value="${esc(selectedId||'')}">
-    <input type="text" class="role-picker-search" data-role-picker-search="${idPrefix}" placeholder="輸入姓名關鍵字" style="margin-bottom:6px">
-    <div class="role-picker-list" id="${idPrefix}-list" style="max-height:220px;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:8px">
-      ${rolePickerRows(idPrefix, list, selectedId, issueFn)}
-    </div>`;
-}
-function rolePickerRows(idPrefix, list, selectedId, issueFn){
-  const optOut = `<label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0">
-      <input type="radio" name="${idPrefix}-radio" class="role-picker-radio" data-role-picker="${idPrefix}" value="" ${!selectedId?'checked':''} style="width:auto"> （未指派）
-    </label>`;
-  // 這一格目前是支援的人（別單位）：列在最上面、保持選取
-  const supRow = isSupportId(selectedId)? `<label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0">
-      <input type="radio" name="${idPrefix}-radio" class="role-picker-radio" data-role-picker="${idPrefix}" value="${esc(selectedId)}" checked style="width:auto"> ${esc(personName(selectedId))}
-    </label>` : '';
-  if(!list.length) return optOut + supRow + `<div class="empty">找不到符合的人員</div>`;
-  return optOut + supRow + list.map(p=>{
-    const g = issueFn(p);
-    return `<label style="display:flex;align-items:flex-start;gap:6px;font-size:13px;padding:4px 0;${g.rank>=2?'opacity:.7':''}">
-      <input type="radio" name="${idPrefix}-radio" class="role-picker-radio" data-role-picker="${idPrefix}" value="${p.id}" ${p.id===selectedId?'checked':''} style="width:auto;margin-top:2px">
-      <span class="grow">${esc(p.name)}（<span class="nw">${esc(p.group||'未分組')}</span>·<span class="nw">${esc(p.rank)}</span>${personBadges(p)}）${candidateIssuesHTML(g)}</span>
-    </label>`;
-  }).join('');
-}
-/* wires the hidden-input-sync for every role-picker radio on the page,
-   plus simple client-side name filtering for its search box (shows/hides
-   already-rendered rows rather than re-fetching — the rows already carry
-   everything needed to filter on name). changeCb(idPrefix, newValue), if
-   given, runs whatever used to be wired to the old <select>'s change
-   event (e.g. refreshing the 車長 picker's reasons when 駕駛 changes). */
-function wireRolePickers(changeCb){
-  document.querySelectorAll('.role-picker-radio').forEach(r=>{
-    r.onchange=()=>{
-      const idPrefix = r.dataset.rolePicker;
-      document.getElementById(idPrefix).value = r.value;
-      if(changeCb) changeCb(idPrefix, r.value);
-    };
-  });
-  document.querySelectorAll('[data-role-picker-search]').forEach(input=>{
-    input.oninput=()=>{
-      const idPrefix = input.dataset.rolePickerSearch;
-      const term = input.value.trim();
-      const listEl = document.getElementById(idPrefix+'-list');
-      if(!listEl) return;
-      listEl.querySelectorAll('label').forEach(label=>{
-        const radio = label.querySelector('input[type="radio"]');
-        if(radio && radio.value===''){ label.style.display='flex'; return; }
-        label.style.display = (!term || label.textContent.includes(term))? 'flex':'none';
-      });
-    };
-  });
-}
 function wireMiscInlineEditors(){
-  if(miscInlineEditId){
-    const m = (state.misc[currentDate]||[]).find(mm=>mm.id===miscInlineEditId);
-    if(m && !m.roles){
-      const searchInput = document.getElementById('inlineMiscSearch-'+m.id);
-      const refreshList = ()=>{
-        const val = searchInput? searchInput.value.trim() : '';
-        const container = document.getElementById('inlineMiscPeopleList-'+m.id);
-        if(container) container.innerHTML = inlineMiscPeopleListHTML(m, val);
-      };
-      if(searchInput) searchInput.oninput = refreshList;
-      ['inlineStart-'+m.id+'__h','inlineStart-'+m.id+'__m','inlineEnd-'+m.id+'__h','inlineEnd-'+m.id+'__m'].forEach(subId=>{
-        const el=document.getElementById(subId);
-        if(el) el.addEventListener('change', refreshList);
-      });
-      wireRolePickers();
-    } else if(m && m.roles){
-      // re-render every role-picker's rows for THIS entry whenever any one
-      // of them changes — e.g. picking 駕駛 must immediately re-check
-      // whether each 車長 candidate still outranks them, which the picker
-      // can only reflect by recomputing reasonsFn with the new driver
-      // 畫面上目前的改法（時段、每一格選的人）一起算：換了駕駛，車長清單馬上照新的駕駛判斷
-      const draftNow=()=>({
-        start: document.getElementById('inlineStart-'+m.id+'__h')? getTimeSelectValue('inlineStart-'+m.id) : m.start,
-        end: document.getElementById('inlineEnd-'+m.id+'__h')? getTimeSelectValue('inlineEnd-'+m.id) : m.end,
+  const m = miscInlineEditId? (state.misc[currentDate]||[]).find(mm=>mm.id===miscInlineEditId) : null;
+  if(m){
+    const timeNow=()=>({
+      start: document.getElementById('inlineStart-'+m.id+'__h')? (getTimeSelectValue('inlineStart-'+m.id)||'') : (m.start||''),
+      end: document.getElementById('inlineEnd-'+m.id+'__h')? (getTimeSelectValue('inlineEnd-'+m.id)||'') : (m.end||''),
+    });
+    const counts=()=>recentMiscCounts(currentDate, m.role, m.id);
+    const preset=presetForEntry(m);
+    const sub=t=>`${dayLabelShort(currentDate)}${t.start&&t.end? `・${t.start}-${t.end}` : ''}`;
+    if(m.roles){
+      // 畫面上目前的改法（時段、每一格選的人）一起算：換了駕駛，車長的清單馬上照新的駕駛判斷
+      const draftNow=()=>Object.assign(timeNow(), {
         personIds: m.roles.map((_,idx)=>{ const el=document.getElementById('inlineRoleSel-'+m.id+'-'+idx); return el? (el.value||undefined) : (m.personIds||[])[idx]; }),
       });
-      const refreshRoleLists = ()=>{
-        const over=draftNow();
-        m.roles.forEach((r,i)=>{
-          const idPrefix = 'inlineRoleSel-'+m.id+'-'+i;
-          const listEl = document.getElementById(idPrefix+'-list');
-          const hiddenInput = document.getElementById(idPrefix);
-          if(!listEl || !hiddenInput) return;
-          const currentVal = hiddenInput.value;
-          const issueFn = memoPersonFn(inlineRoleIssueFn(m, i, over));
-          const sorted=state.personnel.filter(p=>!isDepartedOn(p, currentDate)).sort((a,b)=>{
-            const d=issueFn(a).rank-issueFn(b).rank;
-            if(d) return d;
-            return groupIndex(a.group)-groupIndex(b.group) || rankIndex(a.rank)-rankIndex(b.rank);
+      document.querySelectorAll(`[data-role-pick="${m.id}"]`).forEach(btn=>{
+        btn.onclick=()=>{
+          const i=Number(btn.dataset.rolePickIdx);
+          const hidden=document.getElementById(`inlineRoleSel-${m.id}-${i}`);
+          if(!hidden) return;
+          const issueFn=memoPersonFn(inlineRoleIssueFn(m, i, draftNow()));
+          const cnt=counts();
+          const set=v=>{ hidden.value=v||''; btn.classList.toggle('empty', !v); btn.innerHTML=slotPickLabel(v); };
+          openPersonPickSheet({
+            title:`${m.role}・${m.roles[i]}`, sub:sub(timeNow()),
+            people:state.personnel.filter(p=>!isDepartedOn(p, currentDate) || p.id===hidden.value),
+            issue:issueFn, count:p=>cnt.get(p.id)||0,
+            order:p=>[cnt.get(p.id)||0, rankPriorityIndex(p.rank, preset), groupIndex(p.group)],
+            badges:true, current:hidden.value, onPick:set, onClear:hidden.value? ()=>set('') : null,
           });
-          listEl.innerHTML = rolePickerRows(idPrefix, sorted, currentVal, issueFn);
-        });
-        wireRolePickers(refreshRoleLists);
-      };
-      ['inlineStart-'+m.id+'__h','inlineStart-'+m.id+'__m','inlineEnd-'+m.id+'__h','inlineEnd-'+m.id+'__m'].forEach(subId=>{
-        const el=document.getElementById(subId);
-        if(el) el.addEventListener('change', refreshRoleLists);
+        };
       });
-      wireRolePickers(refreshRoleLists);
     } else {
-      wireRolePickers();
+      const hidden=document.getElementById('inlineMiscPeople-'+m.id);
+      const readIds=()=>hidden && hidden.value? hidden.value.split(',').filter(Boolean) : [];
+      const drawChosen=()=>{
+        const el=document.getElementById('inlineMiscChosen-'+m.id); if(!el) return;
+        const ids=readIds();
+        el.innerHTML=ids.length? ids.map(id=>`<button type="button" class="chip" data-unpick="${esc(id)}">${esc(personName(id))} ✕</button>`).join('') : '<span class="hint">還沒選人</span>';
+        el.querySelectorAll('[data-unpick]').forEach(x=>{ x.onclick=()=>{ hidden.value=readIds().filter(id=>id!==x.dataset.unpick).join(','); drawChosen(); }; });
+      };
+      drawChosen();
+      const pickBtn=document.querySelector(`[data-misc-pick="${m.id}"]`);
+      if(pickBtn) pickBtn.onclick=()=>{
+        const ids=readIds(), t=timeNow();
+        const list=state.personnel.filter(p=>!isDepartedOn(p, currentDate) || ids.includes(p.id));
+        // v168：規則引擎判斷（等級照「規則等級」）；整組規則（查哨配對）另外在卡片上提示
+        const issues=draftSlotIssues(currentDate, Object.assign({}, m, {start:t.start, end:t.end, personIds:ids}), 0, list, {groupRules:false});
+        const cnt=counts();
+        openPersonPickSheet({
+          title:m.role, sub:sub(t), people:list,
+          issue:p=>candidateIssueGroups(issues.get(p.id)), count:p=>cnt.get(p.id)||0,
+          order:p=>[cnt.get(p.id)||0, rankPriorityIndex(p.rank, preset), groupIndex(p.group)],
+          badges:true, multi:true, selected:ids, need:(preset && preset.requiredCount) || 0,
+          onDone:sel=>{ hidden.value=sel.join(','); drawChosen(); },
+        });
+      };
     }
-  } else {
-    wireRolePickers();
   }
   document.querySelectorAll('[data-inline-save]').forEach(btn=>{
     btn.onclick=()=>{
@@ -19065,7 +19088,9 @@ function wireMiscInlineEditors(){
         const clash = rosterNameClash(supNames.filter(n=>!(m0.personIds||[]).includes(supportIdOf(n))));
         if(clash.length){ showAlert(`「${clash.join('、')}」是名冊上的人，請直接在上面的名單勾選，不要打在支援人員。`); return; }
         const supIds = supNames.map(supportIdOf);
-        vals.personIds = [...[...document.querySelectorAll('.inline-misc-person-cb:checked')].map(cb=>cb.value), ...supIds];
+        const pickedEl=document.getElementById('inlineMiscPeople-'+id);
+        const picked=pickedEl? pickedEl.value.split(',').filter(Boolean) : (m0.personIds||[]).filter(pid=>pid && !isSupportId(pid));
+        vals.personIds = [...picked, ...supIds];
         const skipCb=document.getElementById('inlineSkipAutoFill-'+id);
         vals.skipAutoFill = skipCb? skipCb.checked : false;
       }
