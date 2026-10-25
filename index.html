@@ -586,7 +586,7 @@ button.small.card-more{min-width:44px;min-height:40px;font-size:20px;line-height
       <span class="unit-banner-badge"><i data-ico="star"></i></span>
       <span class="unit-banner-titles">
         <span class="unit-banner-text">陸軍第八軍團 本部連</span>
-        <h1 id="pageTitle">衛哨排班系統 <span class="muted">v192</span></h1>
+        <h1 id="pageTitle">衛哨排班系統 <span class="muted">v193</span></h1>
       </span>
     </span>
     <span class="banner-side right">
@@ -1040,6 +1040,7 @@ function reopenInPlace(oldEl, open){
   const ph=document.createComment('reopen'), z=oldEl.style.zIndex;
   // 捲到的位置也留著（不要一復原就跳回最上面）
   const scrolls=[oldEl, ...oldEl.querySelectorAll('.sheet-inner')].map(e=>e.scrollTop||0);
+  oldEl.__noFx=true; // v193：原地換一份，不播關掉／打開的動畫
   oldEl.replaceWith(ph);
   const nm=open();
   if(nm && nm.nodeType===1){
@@ -1218,16 +1219,21 @@ function uid(){ return Math.random().toString(36).slice(2,9); }
    iOS Safari's :active pseudo-class doesn't reliably fire on tap by itself,
    so we toggle a class directly on touch/mouse down and up instead. */
 (function(){
+  // v193：手指按著按鈕開始捲動／滑動（動超過 8 點）就取消按下的樣子（跟 iPhone 一樣：捲清單時按鈕不會一個個縮下去）
+  let px=0, py=0, on=false;
   function pressOn(ev){
     const el = ev.target.closest('button, .pill-btn');
     if(el){
-      el.classList.add('pressed');
+      el.classList.add('pressed'); on=true;
       if(navigator.vibrate){ try{ navigator.vibrate(10); }catch(e){} }
     }
+    const t=ev.touches && ev.touches[0]; if(t){ px=t.clientX; py=t.clientY; }
   }
   function pressOff(){
+    on=false;
     document.querySelectorAll('.pressed').forEach(el=>el.classList.remove('pressed'));
   }
+  document.addEventListener('touchmove', ev=>{ if(!on) return; const t=ev.touches && ev.touches[0]; if(t && (Math.abs(t.clientX-px)>8 || Math.abs(t.clientY-py)>8)) pressOff(); }, {passive:true});
   document.addEventListener('touchstart', pressOn, {passive:true});
   document.addEventListener('touchend', pressOff, {passive:true});
   document.addEventListener('touchcancel', pressOff, {passive:true});
@@ -6605,6 +6611,7 @@ function autoAssignMiscForDate(date, opts){
   const staticChildren = new Set(document.body.children);
   function isModalLike(el){
     if(el.nodeType!==1) return false;
+    if(el.classList && el.classList.contains('fx-ghost')) return false; // v193 關掉時播動畫的影子：不算開著的視窗
     if(el.classList && (el.classList.contains('sheet-modal')||el.classList.contains('fullscreen-modal')||el.classList.contains('drawer')||el.classList.contains('drawer-backdrop'))) return true;
     return getComputedStyle(el).position==='fixed';
   }
@@ -6615,26 +6622,233 @@ function autoAssignMiscForDate(date, opts){
   if(typeof MutationObserver!=='undefined') new MutationObserver(refreshBodyScrollLock).observe(document.body, {childList:true});
 })();
 
-/* ---------------- 滑動關閉選單（v162） ----------------
-   底部選單（.sheet-inner）往下拉、全螢幕頁面往右滑或在最上面往下拉、左邊的
-   預排抽屜往左滑，都可以關閉，不用一定要按「關閉」。
-   關閉時一律代按那個選單自己的「關閉／稍後再說／取消」按鈕，所以選單原本關
-   閉時要做的事（例如還有沒存的修改要先確認）照樣會發生；確認之後沒關掉，選
-   單就彈回原位。確認框、提醒框這種要你做決定的小視窗不適用。
-   內容還沒捲到最上面時往下拉是捲動內容，不會關閉；可以左右捲的表格上左右
-   滑也不會關閉。 */
+/* ---------------- v193 視窗：打開／關掉的動畫、滑動返回 ----------------
+   跟 iPhone 一樣：
+   - 從下面拉出來的清單：從下面滑上來，關掉時滑下去；點清單上面暗暗的地方也會關
+   - 整頁畫面（設定、預排月曆、休假大表…）：從右邊滑進來，關掉時往右滑出去；
+     設定裡點進下一層（例如「排組」）也是從右邊滑進來；「← 返回」時這一層往右滑走、
+     上一層從左邊回來，而且回到上一層時停在原本捲到的位置
+   - 確認框：淡入、輕輕放大；關掉時淡出
+   - 清單、整頁畫面上「往左或往右滑」＝返回（跟按「關閉／← 返回」完全一樣：有沒存的
+     修改照樣會先問），畫面跟著手指走，放開時滑得夠遠或夠快才返回，不然彈回原位；
+     內容在最上面時往下拉也可以關。設定的下一層往右滑時，下面看得到上一層。
+     可以左右捲的地方（表格、排組按鈕列）上左右滑是捲動；從螢幕最左／最右邊開始滑一定是返回。
+   關掉的動畫是另外放一份「影子」來播：真正的視窗照原本的程式馬上拿掉（程式邏輯完全
+   不變），影子放在封閉的 shadow DOM 裡（document.getElementById／querySelector 都找不到、
+   也點不到），播完就拿掉。同一瞬間關掉一個又開一個同一種的（確認框接著下一個確認框、
+   重開同一個視窗）直接換，不播。手機設定「減少動態效果」就都不播。 */
+const FX=(function(){
+  const EASE='cubic-bezier(.32,.72,0,1)';
+  const SHADOW='-10px 0 30px rgba(0,0,0,.16)';
+  function motionOK(){
+    if(typeof Element==='undefined' || typeof Element.prototype.animate!=='function') return false;
+    try{ return !(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches); }catch(e){ return true; }
+  }
+  function play(el, frames, opts){ try{ return el.animate(frames, opts); }catch(e){ return null; } }
+  // 視窗的種類：sheet＝從下面拉出來的清單、page＝整頁、dialog＝確認框
+  function kindOf(c){
+    if(!c || c.nodeType!==1 || !c.classList || c.classList.contains('fx-ghost')) return null;
+    if(c.style.position==='fixed' && c.querySelector(':scope > .dialog-box')) return 'dialog';
+    if(c.classList.contains('fullscreen-modal')) return 'page';
+    if(isOverlayEl(c)) return 'sheet';
+    return null;
+  }
+  function panelOf(c, k){
+    if(k==='dialog') return c.querySelector(':scope > .dialog-box');
+    if(k==='sheet') return c.querySelector(':scope > .sheet-inner') || c.firstElementChild;
+    return c;
+  }
+  // 動畫都播完（或最晚 ms+400 毫秒）才做 fn
+  function whenDone(anims, ms, fn){
+    let called=false; const go=()=>{ if(called) return; called=true; try{ fn(); }catch(e){ console.error(e); } };
+    const list=anims.filter(Boolean);
+    setTimeout(go, ms+400);
+    if(!list.length) go();
+    else if(list.every(a=>a.finished && typeof a.finished.then==='function')) Promise.all(list.map(a=>a.finished)).then(go, go);
+  }
+  // ---- 打開 ----
+  function open(c, k){
+    const p=panelOf(c, k); if(!p) return;
+    const list=[];
+    if(k!=='page'){
+      const bg=getComputedStyle(c).backgroundColor;
+      if(bg && bg!=='transparent' && !/^rgba\([^)]*,\s*0\)$/.test(bg)) list.push(play(c, [{backgroundColor:'rgba(0,0,0,0)'},{backgroundColor:bg}], {duration:k==='dialog'? 200 : 300, easing:'ease-out'}));
+    }
+    if(k==='sheet') list.push(play(p, [{transform:'translateY(100%)'},{transform:'translateY(0)'}], {duration:440, easing:EASE}));
+    else if(k==='dialog') list.push(play(p, [{opacity:0, transform:'scale(1.1)'},{opacity:1, transform:'scale(1)'}], {duration:260, easing:'cubic-bezier(.2,.9,.3,1)'}));
+    else {
+      const had=c.style.boxShadow; c.style.boxShadow=SHADOW;
+      const a=play(c, [{transform:'translateX(100%)'},{transform:'translateX(0)'}], {duration:460, easing:EASE});
+      list.push(a);
+      c.__fxShadowOwner=a;
+      whenDone([a], 460, ()=>{ if(c.__fxShadowOwner===a){ c.style.boxShadow=had; c.__fxShadowOwner=null; } });
+    }
+    c.__fxAnims=list.filter(Boolean);
+  }
+  // 手指一碰到正在動的視窗：動畫直接跳到最後（不然手指拉的時候畫面還在自己跑）
+  function settle(c){
+    const l=c && c.__fxAnims; if(!l) return;
+    c.__fxAnims=null;
+    l.forEach(a=>{ try{ a.finish(); }catch(e){} });
+    if(c.__fxShadowOwner){ c.__fxShadowOwner=null; c.style.boxShadow=''; }
+  }
+  // ---- 影子（關掉的動畫、換層的動畫用）----
+  const scrolled=new Set();
+  document.addEventListener('scroll', e=>{
+    const t=e.target; if(!t || t.nodeType!==1) return;
+    t.__fxSy=t.scrollTop; t.__fxSx=t.scrollLeft;
+    if(!scrolled.has(t)){ scrolled.add(t); if(scrolled.size>40) scrolled.forEach(el=>{ if(!el.isConnected) scrolled.delete(el); }); } // 已經拿掉的不要一直留著（省記憶體）
+  }, {capture:true, passive:true});
+  let css=null, sheet=null;
+  function ghost(z){
+    const host=document.createElement('div');
+    host.className='fx-ghost'; host.setAttribute('aria-hidden','true'); host.setAttribute('inert',''); // 不能點、不能被選到、不能拿到游標
+    host.style.cssText=`position:fixed;inset:0;pointer-events:none;z-index:${z};`;
+    let root;
+    try{ root=host.attachShadow({mode:'closed'}); }catch(e){ return null; } // closed：外面（包括測試工具）都摸不到影子裡面
+    if(css===null){ const st=document.querySelector('head style'); css=(st? st.textContent : '')+'\n*,*::before,*::after{pointer-events:none !important;transition:none !important;animation:none !important;}'; }
+    if(sheet===null){
+      try{ sheet=(typeof CSSStyleSheet==='function' && typeof ShadowRoot!=='undefined' && 'adoptedStyleSheets' in ShadowRoot.prototype)? new CSSStyleSheet() : false; if(sheet) sheet.replaceSync(css); }
+      catch(e){ sheet=false; }
+    }
+    let ok=false;
+    if(sheet){ try{ root.adoptedStyleSheets=[sheet]; ok=true; }catch(e){} }
+    if(!ok){ const s=document.createElement('style'); s.textContent=css; root.appendChild(s); }
+    return {host, root};
+  }
+  function pathIn(root, el){ const p=[]; for(let x=el; x && x!==root; x=x.parentElement){ const par=x.parentElement; if(!par) return null; p.unshift(Array.prototype.indexOf.call(par.children, x)); } return p; }
+  function walk(root, p){ let x=root; for(const i of p){ x=x && x.children[i]; } return x||null; }
+  // 拍一份樣子：連捲到的位置、下拉選單選到的一起記
+  function snapshot(src){
+    const node=src.cloneNode(true), scrolls=[];
+    node.querySelectorAll('[autofocus]').forEach(e=>e.removeAttribute('autofocus')); // 影子裡的輸入框不要搶游標
+    // 下拉選單只留選到的那一個選項：畫面一樣，但大畫面（例如每列都有一個全連名單的下拉）複製、畫出來快很多
+    const so=src.querySelectorAll('select'), sg=node.querySelectorAll('select');
+    sg.forEach((s,i)=>{ const keep=so[i]? so[i].selectedIndex : s.selectedIndex; [...s.options].forEach((o,j)=>{ if(j!==keep) o.remove(); }); if(s.options[0]) s.options[0].selected=true; });
+    scrolled.forEach(el=>{
+      if(el===src || src.contains(el)){
+        const p=el===src? [] : pathIn(src, el);
+        if(p) scrolls.push([p, el.isConnected? el.scrollTop : (el.__fxSy||0), el.isConnected? el.scrollLeft : (el.__fxSx||0)]);
+      } else if(!el.isConnected) scrolled.delete(el);
+    });
+    return {node, scrolls};
+  }
+  // 放到畫面上之後才能捲：把記下來的位置套到 node（snap.node 或它的複本）上
+  function restore(snap, node){
+    node=node||snap.node;
+    snap.scrolls.forEach(([p,y,x])=>{ const e=walk(node, p); if(e){ e.scrollTop=y; e.scrollLeft=x; } });
+  }
+  function zOf(c){ return parseInt(c.style.zIndex,10)||80; }
+  // ---- 關掉 ----
+  function close(c, k){
+    if(c.getElementsByTagName('*').length-c.getElementsByTagName('option').length>8000) return; // 太大的畫面直接拿掉（複製一份反而卡）
+    const gh=ghost(zOf(c)); if(!gh) return;
+    const snap=snapshot(c), g=snap.node;
+    let bd=null;
+    if(k!=='page'){ bd=c.cloneNode(false); bd.removeAttribute('id'); g.style.background='transparent'; gh.root.appendChild(bd); }
+    gh.root.appendChild(g);
+    document.body.appendChild(gh.host);
+    restore(snap);
+    const p=panelOf(g, k);
+    const D=k==='dialog'? 180 : k==='page'? 380 : 340;
+    const list=[];
+    if(bd) list.push(play(bd, [{opacity:1},{opacity:0}], {duration:k==='dialog'? 180 : 300, easing:'ease-out', fill:'forwards'}));
+    if(k==='sheet' && p) list.push(play(p, [{transform:'translateY(0)'},{transform:'translateY(100%)'}], {duration:D, easing:EASE, fill:'forwards'}));
+    else if(k==='page'){ g.style.boxShadow=SHADOW; list.push(play(g, [{transform:'translateX(0)'},{transform:'translateX(100%)'}], {duration:D, easing:EASE, fill:'forwards'})); }
+    else if(k==='dialog' && p) list.push(play(p, [{opacity:1, transform:'scale(1)'},{opacity:0, transform:'scale(.96)'}], {duration:D, easing:'ease-in', fill:'forwards'}));
+    whenDone(list, D, ()=>gh.host.remove());
+  }
+  // ---- 同一個整頁畫面裡換層：dir=1 到下一層（從右邊進來）、-1 回上一層；old＝換之前拍的樣子 ----
+  function nav(el, dir, old){
+    if(!old || !el.isConnected || !motionOK()) return;
+    const gh=ghost(zOf(el)); if(!gh) return;
+    const g=old.node.cloneNode(true);
+    g.style.transform=''; g.style.boxShadow=''; g.style.transition='none';
+    gh.root.appendChild(g);
+    el.parentNode.insertBefore(gh.host, dir>0? el : el.nextSibling); // 下一層：舊的在下面；回上一層：舊的（這一層）在上面滑走
+    restore(old, g);
+    const D=dir>0? 460 : 420, list=[];
+    if(dir>0){
+      const dim=document.createElement('div'); dim.style.cssText='position:fixed;inset:0;background:#000;opacity:0;';
+      gh.root.appendChild(dim);
+      list.push(play(g, [{transform:'translateX(0)'},{transform:'translateX(-30%)'}], {duration:D, easing:EASE, fill:'forwards'}));
+      list.push(play(dim, [{opacity:0},{opacity:.08}], {duration:D, easing:EASE, fill:'forwards'}));
+      const had=el.style.boxShadow; el.style.boxShadow=SHADOW;
+      const a=play(el, [{transform:'translateX(100%)'},{transform:'translateX(0)'}], {duration:D, easing:EASE});
+      list.push(a); el.__fxShadowOwner=a;
+      whenDone([a], D, ()=>{ if(el.__fxShadowOwner===a){ el.style.boxShadow=had; el.__fxShadowOwner=null; } });
+    } else {
+      g.style.boxShadow=SHADOW;
+      list.push(play(g, [{transform:'translateX(0)'},{transform:'translateX(100%)'}], {duration:D, easing:EASE, fill:'forwards'}));
+      list.push(play(el, [{transform:'translateX(-30%)'},{transform:'translateX(0)'}], {duration:D, easing:EASE}));
+    }
+    el.__fxAnims=list.filter(Boolean);
+    whenDone(list, D, ()=>gh.host.remove());
+  }
+  // 整頁畫面往右滑返回上一層時，墊在下面的「上一層」
+  function under(el, ent){
+    if(!ent || !ent.snap) return null;
+    const gh=ghost(zOf(el)); if(!gh) return null;
+    const node=ent.snap.node.cloneNode(true);
+    node.style.transition='none'; node.style.boxShadow=''; node.style.transform='translateX(-30%)';
+    gh.root.appendChild(node);
+    const dim=document.createElement('div'); dim.style.cssText='position:fixed;inset:0;background:#000;opacity:.08;';
+    gh.root.appendChild(dim);
+    el.parentNode.insertBefore(gh.host, el);
+    restore(ent.snap, node);
+    return {host:gh.host, node, dim};
+  }
+  // ---- 看 body 底下新開／拿掉的視窗 ----
+  if(typeof MutationObserver==='function' && document.body) new MutationObserver(muts=>{
+    const added=[], removed=[];
+    muts.forEach(m=>{
+      m.addedNodes.forEach(n=>{ const k=kindOf(n); if(k) added.push([n,k]); });
+      m.removedNodes.forEach(n=>{ const k=kindOf(n); if(k) removed.push([n,k]); });
+    });
+    if(!added.length && !removed.length) return;
+    const now=(typeof performance!=='undefined' && performance.now)? performance.now() : Date.now();
+    const moved=new Set(removed.map(([n])=>n));
+    const opened=added.filter(([n])=>n.isConnected && !moved.has(n));
+    const gone=removed.filter(([n])=>!n.isConnected);
+    opened.forEach(([n])=>{ if(!n.__inPlace) n.__fxOpenedAt=now; });
+    const motion=motionOK();
+    const openKinds=new Set(opened.filter(([n])=>!n.__inPlace).map(([,k])=>k)); // 放回原位的（下面那層）不算「換一個新的」
+    const goneKinds=new Set(gone.filter(([n])=>!n.__parked && !n.__noFx).map(([,k])=>k));
+    gone.forEach(([n,k])=>{
+      const sw=n.__fxSwipe; n.__fxSwipe=null;
+      if(!motion || sw || n.__parked || n.__noFx || openKinds.has(k)) return;
+      try{ close(n,k); }catch(e){ console.error(e); }
+    });
+    if(motion) opened.forEach(([n,k])=>{
+      if(n.__inPlace || goneKinds.has(k)) return;
+      try{ open(n,k); }catch(e){ console.error(e); }
+    });
+  }).observe(document.body, {childList:true});
+  return {EASE, SHADOW, motionOK, play, kindOf, panelOf, settle, snapshot, restore, ghost, nav, under, whenDone};
+})();
+
 (function(){
-  // v173：設定的子頁只有「← 返回」：滑掉＝返回上一層（跟按返回一樣，會先存好）
   const CLOSE_TEXT=/^(關閉|稍後再說|取消|← 返回)$/;
   // 拖曳排序的把手、確認框上開始的手勢不管；正在打字的欄位（游標在裡面）也不管
-  const IGNORE='[data-pp-handle],[data-drag-handle],[data-no-swipe],.dialog-box';
+  const IGNORE='[data-pp-handle],[data-drag-handle],[data-no-swipe],.dialog-box,input[type=range]';
   const EDITABLE='textarea,select,[contenteditable],input:not([type=checkbox]):not([type=radio]):not([type=button]):not([type=submit])';
+  const EDGE=24;
+  // data-back：標題列上沒有「關閉」的視窗，指定哪一顆按鈕算「返回」（例如「不用，照排」）
   function closeButtonOf(root){
+    const marked=root.querySelector('button[data-back]');
+    if(marked) return marked;
     const header=root.querySelector('.section-title');
     const hb=header? [...header.querySelectorAll('button')] : [];
     return hb.find(b=>CLOSE_TEXT.test(b.textContent.trim()))
       || [...root.querySelectorAll('button[id]')].find(b=>/(Close|Later|Cancel)$/.test(b.id) && CLOSE_TEXT.test(b.textContent.trim()))
       || null;
+  }
+  // 返回／關閉：一律代按那個視窗自己的「關閉／← 返回」（關閉時要做的事照樣做）；沒有這顆鈕的，先存好再拿掉
+  function doClose(container, panel){
+    const btn=closeButtonOf(panel);
+    if(btn){ btn.click(); return; }
+    try{ if(container.__live && container.__live.flush) container.__live.flush(); }catch(e){ console.error(e); }
+    container.remove();
   }
   function scrollsY(el){ const o=getComputedStyle(el).overflowY; return (o==='auto'||o==='scroll') && el.scrollHeight>el.clientHeight+1; }
   function scrollsX(el){ const o=getComputedStyle(el).overflowX; return (o==='auto'||o==='scroll') && el.scrollWidth>el.clientWidth+1; }
@@ -6642,87 +6856,188 @@ function autoAssignMiscForDate(date, opts){
     for(let el=target; el; el=el.parentElement){ if(scrollsY(el) && el.scrollTop>0) return false; if(el===root) break; }
     return true;
   }
-  // 手指下面有可以左右捲、而且往這個方向還捲得動的內容 → 讓它捲，不當成關閉
-  function xScrollable(target, root, dir){
-    for(let el=target; el; el=el.parentElement){
-      if(scrollsX(el) && (dir>0? el.scrollLeft>0 : el.scrollLeft+el.clientWidth<el.scrollWidth-1)) return true;
-      if(el===root) break;
-    }
+  // 手指下面有可以左右捲的東西（表格、按鈕列；不算視窗本身）→ 左右滑是捲它
+  function inXScroller(target, root){
+    for(let el=target; el && el!==root; el=el.parentElement){ if(scrollsX(el)) return true; }
     return false;
   }
+  function withAlpha(c, f){
+    const m=String(c).match(/rgba?\(([^)]+)\)/); if(!m) return '';
+    const p=m[1].split(',').map(s=>s.trim()), a=p.length>3? parseFloat(p[3]) : 1;
+    return `rgba(${p[0]}, ${p[1]}, ${p[2]}, ${Math.max(0, a*f).toFixed(3)})`;
+  }
+  const now=()=>(typeof performance!=='undefined' && performance.now)? performance.now() : Date.now();
   let g=null;
+  // 真的有拖動（10 點以上）之後放開：接著來的 click 不算（iPhone 拖一點點放開還是會補一個 click，會點到下面的人）
+  let blockClickUntil=0;
   document.addEventListener('touchstart', e=>{
+    blockClickUntil=0; // 手指又放下來＝新的一下，上一次拖動補的 click 已經過了
+    if(g && g.mode) return; // 上一個手勢還沒放開（例如第二根手指）
     g=null;
-    if(e.touches.length!==1) return;
     const t=e.target;
-    if(!(t instanceof Element) || t.closest(IGNORE)) return;
+    if(!(t instanceof Element)) return;
+    // 手指一碰到還在動（剛打開、剛換層）的視窗：動畫直接跳到最後，量到的位置才準（例如拖曳排序）
+    { let top=t; while(top.parentElement && top.parentElement!==document.body) top=top.parentElement; if(FX.kindOf(top)) FX.settle(top); }
+    if(e.touches.length!==1 || t.closest(IGNORE)) return;
     const ed=t.closest(EDITABLE);
     if(ed && ed===document.activeElement) return;
     let kind=null, panel=null, container=null;
     const sheet=t.closest('.sheet-inner');
-    if(sheet){ kind='sheet'; panel=sheet; container=sheet.parentElement; }
+    if(sheet && sheet.parentElement && FX.kindOf(sheet.parentElement)==='sheet'){ kind='sheet'; panel=sheet; container=sheet.parentElement; }
     else if(t.closest('.fullscreen-modal')){ kind='page'; panel=container=t.closest('.fullscreen-modal'); }
-    else if(t.closest('.drawer')){ kind='drawer'; panel=container=t.closest('.drawer'); }
-    else {
-      // 按在底部選單上方的半透明背景上往下拉也可以
-      const inner=[...(t.children||[])].find(c=>c.classList && c.classList.contains('sheet-inner'));
-      if(inner && getComputedStyle(t).position==='fixed'){ kind='sheet'; panel=inner; container=t; }
-    }
-    if(!kind || !container || container===document.body) return;
-    const p=e.touches[0];
-    g={kind, panel, container, target:t, x0:p.clientX, y0:p.clientY, t0:Date.now(), mode:null, dx:0, dy:0};
+    else if(FX.kindOf(t)==='sheet'){ kind='sheet'; panel=FX.panelOf(t, 'sheet'); container=t; } // 按在清單上面暗暗的地方往下拉也可以
+    if(!kind || !panel || !container || container===document.body || !container.isConnected || container.__fxBusy) return;
+    const p=e.touches[0], W=window.innerWidth||document.documentElement.clientWidth;
+    g={kind, panel, container, target:t, x0:p.clientX, y0:p.clientY, edge:p.clientX<=EDGE || p.clientX>=W-EDGE, mode:null, dx:0, dy:0, s:[[now(), p.clientX, p.clientY]]};
   }, {passive:true, capture:true});
-  document.addEventListener('touchmove', e=>{
-    if(!g) return;
-    const p=e.touches[0]; const dx=p.clientX-g.x0, dy=p.clientY-g.y0;
+  /* 手指移動只在視窗上面聽（不擋住後面主畫面的捲動）：視窗一打開就掛上 */
+  function onMove(e){
+    if(!g || g.container!==e.currentTarget) return;
+    if(e.touches.length!==1){ if(g.mode) springBack(g); g=null; return; }
+    const p=e.touches[0], dx=p.clientX-g.x0, dy=p.clientY-g.y0;
+    g.s.push([now(), p.clientX, p.clientY]); if(g.s.length>12) g.s.shift();
     if(!g.mode){
-      if(Math.abs(dx)<3 && Math.abs(dy)<3) return;
-      const down = dy>0 && dy>=Math.abs(dx)*1.2 && atTop(g.target, g.panel);
-      if(g.kind==='sheet' && down) g.mode='down';
-      else if(g.kind==='page' && down) g.mode='down';
-      else if(g.kind==='page' && dx>0 && dx>Math.abs(dy)*1.5 && !xScrollable(g.target, g.panel, 1)) g.mode='right';
-      else if(g.kind==='drawer' && dx<0 && -dx>Math.abs(dy)*1.2 && !xScrollable(g.target, g.panel, -1)) g.mode='left';
+      const ax=Math.abs(dx), ay=Math.abs(dy);
+      // 設定的下一層：往下拉不關（回上一層用左右滑）
+      const sub=g.kind==='page' && g.container.__navStack && g.container.__navStack.length;
+      // 往下拉要早一點接手（不然 iPhone 自己先開始彈性捲動）；左右滑動到 8 點才算。
+      // 手指只動一點點就放開（點東西時手抖）照樣算點擊（見 end）
+      if(dy>=4 && ay>=ax*1.2 && !sub && atTop(g.target, g.panel)) g.mode='down';
+      else if(ax>=8 && ax>ay*1.5 && (g.edge || !inXScroller(g.target, g.panel))) g.mode='h'; // 要明顯是橫的（斜斜往上捲不算）
+      else if(ax<8 && ay<8) return; // 還看不出方向
       else { g=null; return; }
       if(!e.cancelable){ g=null; return; }
-      g.panel.style.transition='none';
-      g.panel.style.willChange='transform';
+      begin(g);
     }
     if(e.cancelable) e.preventDefault();
     g.dx=dx; g.dy=dy;
-    g.panel.style.transform = g.mode==='down'? `translateY(${Math.max(0,dy)}px)` : g.mode==='right'? `translateX(${Math.max(0,dx)}px)` : `translateX(${Math.min(0,dx)}px)`;
-    if(g.kind==='drawer'){ const bd=document.querySelector('.drawer-backdrop'); if(bd) bd.style.opacity=String(Math.max(0.2, 1+Math.min(0,dx)/g.panel.offsetWidth)); }
-  }, {passive:false, capture:true});
+    move(g);
+  }
+  // iPhone 只對「可以點」的元素發 click：暗處掛一個空的 click，點暗處關閉才收得到
+  const noop=()=>{};
+  function hook(n){ if(n.__fxTouch) return; n.__fxTouch=true; n.addEventListener('touchmove', onMove, {passive:false, capture:true}); n.addEventListener('click', noop); }
+  if(document.body) [...document.body.children].forEach(n=>{ const k=FX.kindOf(n); if(k==='sheet' || k==='page') hook(n); });
+  if(typeof MutationObserver==='function' && document.body) new MutationObserver(muts=>{
+    muts.forEach(m=>m.addedNodes.forEach(n=>{ const k=FX.kindOf(n); if(k==='sheet' || k==='page') hook(n); }));
+  }).observe(document.body, {childList:true});
+  function begin(G){
+    const {panel, container, kind}=G;
+    G.w=panel.offsetWidth||1; G.h=panel.offsetHeight||1;
+    panel.style.transition='none'; panel.style.willChange='transform';
+    G.bg=null;
+    if(kind==='sheet' && container!==panel){
+      const bg=getComputedStyle(container).backgroundColor;
+      if(/rgba?\(/.test(bg||'')){ G.bg=bg; container.style.transition='none'; }
+    }
+    if(kind==='page'){
+      G.shadow0=panel.style.boxShadow;
+      const st=container.__navStack;
+      if(G.mode==='h' && st && st.length) G.under=FX.under(container, st[st.length-1]);
+    }
+  }
+  function move(G){
+    const {panel, container, mode, dx, dy}=G;
+    let prog;
+    if(mode==='down'){ const y=Math.max(0, dy); panel.style.transform=`translateY(${y}px)`; prog=y/G.h; }
+    else { panel.style.transform=`translateX(${dx}px)`; prog=Math.abs(dx)/G.w; }
+    prog=Math.min(1, prog);
+    if(G.bg) container.style.backgroundColor=withAlpha(G.bg, 1-prog);
+    if(G.kind==='page' && mode==='h') panel.style.boxShadow=dx>=0? '-10px 0 30px rgba(0,0,0,.16)' : '10px 0 30px rgba(0,0,0,.16)';
+    if(G.under){ G.under.node.style.transform=`translateX(${(dx>=0? -30 : 30)*(1-prog)}%)`; G.under.dim.style.opacity=String(.08*(1-prog)); }
+  }
+  function cleanup(G){
+    const {panel, container}=G;
+    panel.style.transition=''; panel.style.willChange='';
+    if(G.kind==='page') panel.style.boxShadow=G.shadow0||'';
+    if(G.bg){ container.style.transition=''; container.style.backgroundColor=''; }
+    if(G.under){ G.under.host.remove(); G.under=null; }
+  }
+  // 放開但不夠遠／不夠快：彈回原位
+  function springBack(G){
+    const {panel, container}=G;
+    panel.style.transition=`transform .34s ${FX.EASE}`;
+    panel.style.transform='';
+    if(G.bg){ container.style.transition='background-color .3s ease-out'; container.style.backgroundColor=''; }
+    if(G.under){ const u=G.under; u.node.style.transition=`transform .34s ${FX.EASE}`; u.dim.style.transition='opacity .34s'; u.node.style.transform=`translateX(${G.dx>=0? -30 : 30}%)`; u.dim.style.opacity='.08'; }
+    container.__fxBusy=true;
+    setTimeout(()=>{ container.__fxBusy=false; cleanup(G); }, 360);
+  }
+  // 放開時夠遠或夠快：順著方向滑出去，滑完再按「關閉／← 返回」（按下去要做的事——重畫、存檔——等滑出去了才做，畫面不會卡在半路）
+  function finishClose(G, dir, v){
+    const {panel, container, mode}=G;
+    const size=mode==='down'? G.h : G.w, done=mode==='down'? Math.max(0, G.dy) : Math.abs(G.dx);
+    const dur=Math.round(Math.max(150, Math.min(300, Math.max(0, size-done)/Math.max(v, 1.2))));
+    const curve='cubic-bezier(.2,.7,.3,1)';
+    panel.style.transition=`transform ${dur}ms ${curve}`;
+    panel.style.transform=mode==='down'? 'translateY(105%)' : `translateX(${dir*105}%)`;
+    if(G.bg){ container.style.transition=`background-color ${dur}ms ease-out`; container.style.backgroundColor=withAlpha(G.bg, 0); }
+    if(G.under){ const u=G.under; u.node.style.transition=`transform ${dur}ms ${curve}`; u.dim.style.transition=`opacity ${dur}ms`; u.node.style.transform='translateX(0)'; u.dim.style.opacity='0'; }
+    container.__fxBusy=true; container.__fxClosing=true; // 正在滑出去：這段時間點到它都不算（不會關兩次，也不會點到後面的東西）
+    setTimeout(()=>{
+      container.__fxBusy=false; container.__fxClosing=false;
+      if(!container.isConnected){ cleanup(G); return; } // 這段時間已經被別的方式關掉了
+      const first=panel.firstElementChild;
+      container.__fxSwipe={done:true};
+      if(G.under) container.__fxSwipeNav=true;
+      try{ doClose(container, panel); }catch(e){ console.error(e); }
+      container.__fxSwipeNav=false;
+      if(!container.isConnected){ cleanup(G); panel.style.transform=''; return; } // 關掉了（影子不用再播：已經在畫面外）
+      container.__fxSwipe=null;
+      if(panel.firstElementChild!==first){
+        // 同一個畫面換成上一層：直接放回原位（墊在下面的上一層跟它一樣，看起來接得上）
+        panel.style.transition='none'; panel.style.transform='';
+        cleanup(G);
+      } else springBack(G); // 沒有關掉（例如問「還有沒存的修改」）：彈回原位
+    }, dur);
+  }
   const end=()=>{
     if(!g || !g.mode){ g=null; return; }
-    const {panel, container, mode, kind}=g;
-    const dist = mode==='down'? g.dy : mode==='right'? g.dx : -g.dx;
-    const size = mode==='down'? panel.offsetHeight : panel.offsetWidth;
-    const v = dist/Math.max(1, Date.now()-g.t0);
-    const shouldClose = dist > Math.min(150, size*0.3) || (v>0.5 && dist>50);
-    g=null;
-    const bd = kind==='drawer'? document.querySelector('.drawer-backdrop') : null;
-    const settle=()=>setTimeout(()=>{ panel.style.transition=''; panel.style.willChange=''; if(bd) bd.style.transition=''; }, 220);
-    panel.style.transition='transform .18s ease-out';
-    if(bd) bd.style.transition='opacity .18s ease-out';
-    if(!shouldClose){ panel.style.transform=''; if(bd) bd.style.opacity=''; settle(); return; }
-    panel.style.transform = mode==='down'? 'translateY(110%)' : mode==='right'? 'translateX(110%)' : 'translateX(-110%)';
-    setTimeout(()=>{
-      const btn=closeButtonOf(panel);
-      // 沒有關閉鈕的：拿掉之前，自動儲存的畫面先把還沒存的存好
-      if(btn) btn.click(); else { try{ if(container.__live && container.__live.flush) container.__live.flush(); }catch(e){ console.error(e); } container.remove(); }
-      // 沒有真的關掉（例如跳出「還有沒存的修改」確認）→ 彈回原位
-      if(container.isConnected){ panel.style.transform=''; if(bd) bd.style.opacity=''; }
-      settle();
-    }, 170);
+    const G=g; g=null;
+    if(Math.max(Math.abs(G.dx), Math.abs(G.dy))>=10) blockClickUntil=now()+400;
+    const s=G.s, last=s[s.length-1]; let i=s.length-1;
+    while(i>0 && last[0]-s[i-1][0]<=100) i--;
+    const dt=Math.max(1, last[0]-s[i][0]), vx=(last[1]-s[i][1])/dt, vy=(last[2]-s[i][2])/dt;
+    if(G.mode==='down'){
+      const d=G.dy, ok=(d>Math.min(140, G.h*0.28) && vy>-0.2) || (vy>0.45 && d>24);
+      if(ok) finishClose(G, 1, vy); else springBack(G);
+    } else {
+      const dir=G.dx>=0? 1 : -1, d=Math.abs(G.dx), v=vx*dir;
+      const ok=(d>Math.min(140, G.w*0.32) && v>-0.2) || (v>0.45 && d>24);
+      if(ok) finishClose(G, dir, Math.abs(vx)); else springBack(G);
+    }
   };
   document.addEventListener('touchend', end, {capture:true});
-  document.addEventListener('touchcancel', ()=>{ if(g && g.mode){ g.panel.style.transform=''; g.panel.style.transition=''; } g=null; }, {capture:true});
+  document.addEventListener('touchcancel', ()=>{ if(g && g.mode) springBack(g); g=null; }, {capture:true});
+  // 點清單上面暗暗的地方＝關閉（跟按「關閉」一樣）；剛打開的一瞬間不算（連點兩下時第二下會點到這裡）
+  document.addEventListener('click', e=>{
+    // 只擋手指補出來的 click（isTrusted）；程式自己按的（例如滑完代按「關閉」）照常
+    if(e.isTrusted && blockClickUntil && now()<blockClickUntil){ blockClickUntil=0; e.preventDefault(); e.stopPropagation(); return; }
+    if(e.isTrusted && e.target instanceof Element){ let top=e.target; while(top.parentElement && top.parentElement!==document.body) top=top.parentElement; if(top.__fxClosing){ e.preventDefault(); e.stopPropagation(); return; } }
+    const c=e.target;
+    if(!(c instanceof Element) || FX.kindOf(c)!=='sheet') return;
+    e.stopPropagation();
+    if(c.__fxOpenedAt && now()-c.__fxOpenedAt<450) return;
+    const p=FX.panelOf(c, 'sheet'); if(!p) return;
+    doClose(c, p);
+  }, true);
 })();
 
 /* ---------------- rendering ---------------- */
 const app=document.getElementById('app');
+/* v193 下面的分頁列跟 iPhone 一樣：每個分頁記得自己捲到哪裡（切回來停在原本的位置）；
+   再點一次目前的分頁＝回到最上面 */
+const TAB_SCROLL={};
 document.querySelectorAll('.tabs button').forEach(btn=>{
-  btn.addEventListener('click',()=>{ currentTab=btn.dataset.tab; window.scrollTo(0,0); render(); });
+  btn.addEventListener('click',()=>{
+    const t=btn.dataset.tab;
+    if(t===currentTab){
+      if(window.scrollY>0){ try{ window.scrollTo({top:0, behavior:'smooth'}); }catch(e){ window.scrollTo(0,0); } }
+      return;
+    }
+    TAB_SCROLL[currentTab]=window.scrollY;
+    currentTab=t; window.scrollTo(0,0); render();
+    if(TAB_SCROLL[t]) window.scrollTo(0, TAB_SCROLL[t]);
+  });
 });
 document.getElementById('unitRulesBtn').addEventListener('click', ()=>openUnitRulesModal());
 // 頂端紅色「儲存空間已滿」提示：放在.unit-banner裡（跟⚙️同一層、永遠在最上
@@ -8294,7 +8609,7 @@ function openUnitRulesModal(opts){
     wireAdd('weekday','Wd');
     { const b=document.getElementById('srPickBtn'); if(b) b.onclick=()=>openStandbySubRolePicker(()=>drawScheduleCategories(), {zIndex:170}); }
   };
-  const draw=()=>{
+  const drawRaw=()=>{
     if(modal.__parked){ modal.__staleWhileParked=true; return; } // 收起來的時候不畫（放回去時再畫）
     autoSave=null; clearTimeout(autoTimer); typedPending=false;
     if(editingDutyKey){ drawDutyDefEditor(editingDutyKey); return; }
@@ -8310,6 +8625,25 @@ function openUnitRulesModal(opts){
     else if(section==='customFields') drawCustomFields();
     else if(section==='lists') drawLists();
     else drawMain();
+  };
+  /* v193：點進下一層／回上一層跟 iPhone 一樣滑（下一層從右邊進來；回上一層時這一層往右滑走、
+     上一層從左邊回來），下一層從最上面開始看，回到上一層停在原本捲到的位置。
+     modal.__navStack：每往下一層記一份上一層的樣子（往右滑返回時墊在下面）。
+     draw() 裡面又呼叫 draw()（例如崗位被刪掉了直接回清單）只算最外面那一次的變化。 */
+  const navDepth=()=>editingDutyKey? 2 : section? 1 : 0;
+  modal.__navStack=[];
+  let drawing=0;
+  const draw=()=>{
+    if(modal.__parked || drawing){ drawRaw(); return; }
+    const from=modal.__navDepth, want=navDepth(), top=modal.scrollTop;
+    const old=(modal.isConnected && from!==undefined && want!==from)? FX.snapshot(modal) : null;
+    drawing++; try{ drawRaw(); }finally{ drawing--; }
+    const to=navDepth(); modal.__navDepth=to;
+    if(from===undefined || to===from) return;
+    const st=modal.__navStack;
+    if(to>from){ if(old) st.push({snap:old, top}); modal.scrollTop=0; }
+    else { let back=null; while(st.length>to) back=st.pop(); modal.scrollTop=back? back.top : 0; }
+    if(old && !modal.__fxSwipeNav) FX.nav(modal, to>from? 1 : -1, old);
   };
   const drawRuleLevels=()=>{
     if(modal.__parked){ modal.__staleWhileParked=true; return; } // 收起來的時候不畫（放回去時再畫）
@@ -10024,7 +10358,7 @@ function openStandbyPeoplePicker(plan, onDone){
   const skillIssuesOf = ()=>[];
   modal.innerHTML=`
     <div class="sheet-inner">
-      <div class="section-title"><h2 style="margin:0">選擇留守人員</h2><button class="ghost small" id="spClose">關閉</button></div>
+      <div class="section-title"><h2 style="margin:0">選擇留守人員</h2><button class="ghost small" id="spClose" data-back>完成</button></div>
       <div class="row wrap" style="margin-bottom:6px">
         <div class="grow"><label>搜尋姓名</label><input type="text" id="spSearch" placeholder="輸入姓名關鍵字"></div>
       </div>
@@ -10050,7 +10384,12 @@ function openStandbyPeoplePicker(plan, onDone){
       <button class="primary" id="spSave" style="width:100%">確定</button>
     </div>`;
   document.body.appendChild(modal);
-  document.getElementById('spClose').onclick=()=>modal.remove();
+  // v193：返回（完成、往左右滑、點外面）＝保留勾的人（跟按「確定」一樣）；沒改就直接關
+  document.getElementById('spClose').onclick=()=>{
+    const ids=[...modal.querySelectorAll('.sp-person:checked')].map(cb=>cb.value);
+    const same=ids.length===plan.personIds.length && ids.every(id=>plan.personIds.includes(id));
+    if(same) modal.remove(); else document.getElementById('spSave').click();
+  };
   const searchEl=document.getElementById('spSearch');
   searchEl.oninput=()=>{
     const term=searchEl.value.trim();
@@ -10449,7 +10788,7 @@ function openLongTermPauseSheet(groups, opts, next){
         <input type="checkbox" data-ltp="${i}" style="width:auto;margin-top:3px" ${g.checked?'checked':''}>
         <span class="grow"><b>${esc(personName(g.pid))}</b>（${esc(p? ltDesc(p) : '長期事故')}）<br><span class="hint">暫停 ${esc(pauseDatesLabel(g.dates))}</span></span></label>`; }).join('')}
       <button class="primary" id="ltpOk" style="width:100%;margin-top:8px">暫停勾選的人</button>
-      <button class="ghost" id="ltpSkip" style="width:100%;margin-top:6px">不用，照排</button>
+      <button class="ghost" id="ltpSkip" data-back style="width:100%;margin-top:6px">不用，照排</button>
       ${opts.reopen? `<button class="ghost" id="ltpBack" style="width:100%;margin-top:6px">回去改</button>` : ''}
     </div>`;
   document.body.appendChild(modal);
@@ -17907,7 +18246,7 @@ function openPersonPickSheet(opts){
   const modal=document.createElement('div');
   modal.className='sheet-modal'; modal.style.zIndex=String(overlayZAbove(150));
   modal.innerHTML=`<div class="sheet-inner pick-sheet">
-    <div class="section-title"><h2 style="margin:0">${esc(opts.title)}${opts.sub? ` <span class="pick-sub">${esc(opts.sub)}</span>` : ''}</h2><button class="ghost small" data-pick-close>關閉</button></div>
+    <div class="section-title"><h2 style="margin:0">${esc(opts.title)}${opts.sub? ` <span class="pick-sub">${esc(opts.sub)}</span>` : ''}</h2><button class="ghost small" data-pick-close${multi? ' data-back' : ''}>${multi? '完成' : '關閉'}</button></div>
     ${cur? `<div class="pick-current"><span class="grow">目前：<b>${esc(personName(cur))}</b></span>${opts.onClear? '<button class="ghost small" data-pick-clear>清空這一格</button>' : ''}</div>` : ''}
     <input type="text" class="pick-search" data-person-search="1" placeholder="🔍 搜尋姓名" autocomplete="off">
     ${groups.length>1? `<div class="pick-groups">${['__all__', ...groups].map(g=>`<button type="button" class="chip${g==='__all__'?' on':''}" data-pick-group="${esc(g)}">${g==='__all__'? '全部' : esc(g||'未分組')}</button>`).join('')}</div>` : ''}
@@ -17920,8 +18259,12 @@ function openPersonPickSheet(opts){
   const draw=()=>{ listEl.innerHTML=listHTML(); doneText(); };
   draw();
   const close=()=>modal.remove();
-  modal.querySelector('[data-pick-close]').onclick=close;
-  modal.addEventListener('click', e=>{ if(e.target===modal) close(); });
+  // v193：多選的時候，返回（關閉、往左右滑、點外面）＝保留剛剛勾的人（跟按「確定」一樣），不會白勾
+  const initial=new Set(picked);
+  const changed=()=>picked.size!==initial.size || [...picked].some(id=>!initial.has(id));
+  const back=()=>{ if(multi && changed()){ close(); opts.onDone([...picked]); } else close(); };
+  modal.querySelector('[data-pick-close]').onclick=back;
+  modal.addEventListener('click', e=>{ if(e.target===modal) back(); });
   const clr=modal.querySelector('[data-pick-clear]');
   if(clr) clr.onclick=()=>{ close(); opts.onClear(); };
   if(doneBtn) doneBtn.onclick=()=>{ close(); opts.onDone([...picked]); };
