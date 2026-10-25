@@ -11,12 +11,12 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&display=swap" media="print" onload="this.media='all'">
 <style>
-/* 任務SOP系統 v1 —— 色票：營舍灰綠底、草綠(OD)主色、警示琥珀、關鍵紅 */
+/* 任務SOP系統 v2 —— 色票：營舍灰綠底、草綠(OD)主色、警示琥珀、關鍵紅 */
 :root{
   --field:#E5E9E2;--paper:#FFFFFF;--ink:#1E2A21;--muted:#56625A;--rule:#C9D1C6;--rule2:#E0E5DD;
   --od:#4A5A2E;--od-ink:#FFFFFF;--od-soft:#E2E9D4;
   --amber:#875800;--amber-bg:#FCEFCD;--amber-line:#E2AE38;
-  --red:#B3261E;--lock:#939C93;
+  --red:#B3261E;--red-bg:#FBE4E1;--lock:#939C93;
   --num:"Barlow Condensed","Arial Narrow",system-ui,sans-serif;
   --sans:-apple-system,BlinkMacSystemFont,"PingFang TC","Noto Sans TC","Microsoft JhengHei","Heiti TC",system-ui,sans-serif;
   color-scheme:light;
@@ -25,7 +25,7 @@
   :root{--field:#101410;--paper:#1A201A;--ink:#E3E9DF;--muted:#9DA89D;--rule:#343D34;--rule2:#262D26;
     --od:#88A45A;--od-ink:#0E120B;--od-soft:#26321F;
     --amber:#F1C451;--amber-bg:#352B12;--amber-line:#9C7720;
-    --red:#FF8A80;--lock:#5F6A5F;color-scheme:dark}
+    --red:#FF8A80;--red-bg:#3A1C1A;--lock:#5F6A5F;color-scheme:dark}
 }
 *{box-sizing:border-box}
 [hidden]{display:none!important}
@@ -57,9 +57,6 @@ input:focus,textarea:focus{outline:2px solid var(--od);outline-offset:-1px;borde
 .ib:disabled{opacity:.25}
 .tb{flex:none;border:0;background:none;padding:8px 12px;border-radius:6px;font-size:16px;color:var(--muted)}
 .tb.pri{color:var(--od);font-weight:700}
-.abar{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:5px 16px;background:var(--amber-bg);color:var(--amber);border-top:1px solid var(--amber-line);font-size:14px;font-weight:600}
-.abar span{display:flex;align-items:center;gap:6px}
-.abar button{border:1px solid var(--amber-line);background:var(--paper);color:var(--amber);border-radius:4px;padding:2px 12px;font-size:13px;font-weight:600}
 
 /* 底部分頁 */
 .tabs{position:fixed;left:0;right:0;bottom:0;z-index:30;display:flex;background:var(--paper);border-top:1px solid var(--rule);padding-bottom:env(safe-area-inset-bottom)}
@@ -212,22 +209,38 @@ input:focus,textarea:focus{outline:2px solid var(--od);outline-offset:-1px;borde
 .ss>.btn{margin-top:8px}
 .about{border:0;background:none}
 
-/* 編輯 */
+/* 編輯：逐行輸入 */
 .fl{display:block;margin-bottom:12px;font-size:14px;font-weight:700;color:var(--muted)}
 .fl input,.fl textarea{margin-top:4px;font-weight:400}
-.edh{margin:12px 0 4px;font-size:14px;font-weight:700;color:var(--muted)}
-.ednote{display:flex;align-items:flex-start;gap:6px;margin-bottom:6px}
-.edtool{margin:4px 0 6px}
-.eo{margin-top:14px;padding:10px;border:1px solid var(--rule);border-top:3px solid var(--ink);border-radius:6px;background:var(--paper)}
-.eoh,.eih{display:flex;align-items:center;gap:4px}
-.eoh input{font-weight:700}
-.cnl{flex:none;min-width:30px;font-weight:700}
-.mv{display:flex;flex:none}
-.ei{margin:10px 0 0 4px;padding-left:10px;border-left:2px solid var(--rule)}
-.es{display:flex;align-items:center;gap:8px;width:100%;padding:10px 4px;border:0;border-bottom:1px solid var(--rule2);background:none;text-align:left}
-.esn{min-width:22px;font-family:var(--num);font-size:18px;font-weight:700;color:var(--od)}
-.est{flex:1;min-width:0}
-.est em{font-style:normal;color:var(--red)}
+.edhint{margin:2px 0 12px;padding:10px 12px;border:1px solid var(--rule);border-radius:6px;background:var(--paper);font-size:13.5px;line-height:1.75;color:var(--muted)}
+.edhint summary{display:block;cursor:pointer;list-style:none;font-size:14px;font-weight:700;color:var(--ink)}
+.edhint summary::-webkit-details-marker{display:none}
+.edhint summary::after{content:"　點這裡看怎麼打";font-size:13px;font-weight:400;color:var(--od)}
+.edhint[open] summary::after{content:""}
+#lines{padding:4px 8px 10px;border:1px solid var(--rule);border-radius:6px;background:var(--paper)}
+.ln{display:flex;align-items:flex-start}
+.ln .lb{flex:none;min-width:50px;min-height:42px;margin:0;padding:10px 6px 0 0;border:0;background:none;color:var(--od);font-size:15px;font-weight:700;line-height:1.4;text-align:right;white-space:nowrap}
+.ln .lt{flex:1;min-width:0;min-height:42px;padding:9px 6px;border:0;border-bottom:1px solid var(--rule2);border-radius:0;background:transparent;resize:none;overflow:hidden;line-height:1.5}
+.ln.t-o{margin-top:16px}
+.ln.t-o:first-child{margin-top:4px}
+.ln.t-o .lb{padding-top:9px;font-size:17px;color:var(--ink)}
+.ln.t-o .lt{font-size:17px;font-weight:700;border-bottom:2px solid var(--ink)}
+.ln.t-i{margin-top:6px;padding-left:10px}
+.ln.t-i .lb{color:var(--ink)}
+.ln.t-i .lt{font-weight:700}
+.ln.t-s{padding-left:22px}
+.ln.t-s .lb{padding-top:8px;font-family:var(--num);font-size:20px}
+.ln.t-d,.ln.t-n,.ln.t-f{padding-left:22px}
+.ln.t-d .lb,.ln.t-n .lb,.ln.t-f .lb{padding-top:13px;font-size:12px;font-weight:600;color:var(--muted)}
+.ln.t-d .lt{font-size:15px;color:var(--muted)}
+.ln.t-n .lb{color:var(--amber)}
+.ln.t-n .lt{background:var(--amber-bg)}
+.ln.t-f .lb{color:var(--od)}
+.ln.zone{padding-left:0}
+.ln.bad .lb{color:var(--red)}
+.ln.bad .lt{background:var(--red-bg)}
+.ln .lt:focus{outline:none;border-bottom-color:var(--od);background:var(--od-soft)}
+.tgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:4px 0 6px}
 
 /* 對話框 */
 #modal .layer{position:fixed;inset:0;z-index:100}
@@ -244,9 +257,7 @@ input:focus,textarea:focus{outline:2px solid var(--od);outline-offset:-1px;borde
 .menu button{display:flex;align-items:center;gap:10px;padding:14px 18px;border:0;border-top:1px solid var(--rule2);background:none;text-align:left;font-size:16px}
 .ck{display:flex;align-items:flex-start;gap:10px;padding:8px 0;font-size:15px}
 .ck input{flex:none;width:22px;height:22px;margin:1px 0 0;accent-color:var(--od)}
-.hide{display:none}
-.smv{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}
-.fmt{padding:10px 12px;border-radius:4px;background:var(--field);color:var(--ink);font-size:14px;line-height:1.8}
+.smv{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
 .lockmsg{display:flex;align-items:center;gap:6px;font-size:14px;color:var(--muted)}
 #toast{position:fixed;left:50%;bottom:calc(86px + env(safe-area-inset-bottom));z-index:200;max-width:90vw;padding:10px 16px;border-radius:6px;background:var(--ink);color:var(--paper);font-size:15px;opacity:0;pointer-events:none;transform:translateX(-50%);transition:opacity .2s}
 #toast.on{opacity:1}
@@ -262,13 +273,13 @@ input:focus,textarea:focus{outline:2px solid var(--od);outline-offset:-1px;borde
 <script>
 'use strict';
 /* ============================================================
-   任務SOP系統 v1
+   任務SOP系統 v2
    結構：任務 → 大綱（一、）→ 項目（（一））→ 項次（1.）＋說明
    資料存在本機 localStorage（key: hhcSop_v1，不會碰到同網域的其他系統）
+   v2：拿掉管理密碼；編輯改成整頁逐行打字
    ============================================================ */
-const APP_VER = 'v1';
+const APP_VER = 'v2';
 const LS_KEY = 'hhcSop_v1';
-const SALT = 'hhc-sop';
 const FAST_MS = 5000;   // 與上一項間隔少於這個毫秒數，回報裡會標出來
 
 /* ---------- 小工具 ---------- */
@@ -296,14 +307,6 @@ function fmtDur(ms) { const s = Math.max(0, Math.round(ms / 1000)); if (s < 60) 
 function fmtGap(ms) { const s = Math.max(0, Math.round(ms / 1000)); if (s < 60) return s + '秒'; const m = Math.floor(s / 60); if (m < 60) return m + '分' + (s % 60 ? (s % 60) + '秒' : ''); return Math.floor(m / 60) + '時' + (m % 60) + '分'; }
 function fmtClock(ms) { const s = Math.max(0, Math.floor(ms / 1000)), h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), x = s % 60; return h ? `${h}:${p2(m)}:${p2(x)}` : `${p2(m)}:${p2(x)}`; }
 function stamp() { const d = new Date(); return `${d.getFullYear()}${p2(d.getMonth()+1)}${p2(d.getDate())}_${p2(d.getHours())}${p2(d.getMinutes())}`; }
-function cyrb53(str, seed = 0) {
-  let h1 = 0xdeadbeef ^ seed, h2 = 0x41c6ce57 ^ seed;
-  for (let i = 0, ch; i < str.length; i++) { ch = str.charCodeAt(i); h1 = Math.imul(h1 ^ ch, 2654435761); h2 = Math.imul(h2 ^ ch, 1597334677); }
-  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507); h1 ^= Math.imul(h2 ^ (h2 >>> 13), 3266489909);
-  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507); h2 ^= Math.imul(h1 ^ (h1 >>> 13), 3266489909);
-  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
-}
-const pinHash = pin => cyrb53(SALT + ':' + pin);
 function b64e(str) { const b = new TextEncoder().encode(str); let s = ''; for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000)); return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); }
 function b64d(s) { s = s.replace(/[^A-Za-z0-9_-]/g, '').replace(/-/g, '+').replace(/_/g, '/'); while (s.length % 4) s += '='; const bin = atob(s), b = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) b[i] = bin.charCodeAt(i); return new TextDecoder().decode(b); }
 
@@ -320,7 +323,6 @@ const IC = {
   na: sv('<circle cx="12" cy="12" r="8"/><path d="M6.5 17.5l11-11"/>'),
   warn: sv('<path d="M12 4 21 19.5H3z"/><path d="M12 10v4.2M12 16.9v.1"/>', 'sm'),
   lock: sv('<rect x="5.5" y="10.5" width="13" height="9" rx="1.5"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5"/>', 'sm'),
-  unlock: sv('<rect x="5.5" y="10.5" width="13" height="9" rx="1.5"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 6.6-1.6"/>', 'sm'),
   play: sv('<path d="M8 5.5v13l10.5-6.5z" fill="currentColor"/>'),
   plus: sv('<path d="M12 5v14M5 12h14"/>', 'sm'),
   up: sv('<path d="M6 14.5l6-6 6 6"/>', 'sm'),
@@ -331,13 +333,11 @@ const IC = {
   copy: sv('<rect x="8.5" y="8.5" width="11" height="11" rx="1.5"/><path d="M15.5 8.5V5A1.5 1.5 0 0 0 14 3.5H5A1.5 1.5 0 0 0 3.5 5v9A1.5 1.5 0 0 0 5 15.5h3.5"/>', 'sm'),
   download: sv('<path d="M12 3.5V15M7.5 10.5 12 15l4.5-4.5"/><path d="M5 19.5h14"/>', 'sm'),
   upload: sv('<path d="M12 15.5V4M7.5 8.5 12 4l4.5 4.5"/><path d="M5 19.5h14"/>', 'sm'),
-  paste: sv('<rect x="5.5" y="4.5" width="13" height="16" rx="1.5"/><path d="M9 4.5V3h6v1.5M8.5 10h7M8.5 13.5h7M8.5 17h4"/>', 'sm'),
-  chev: sv('<path d="M9.5 6l6 6-6 6"/>', 'sm'),
 };
 const GEAR = `<a class="ib" href="#/set" aria-label="設定">${IC.gear}</a>`;
 
 /* ---------- 資料 ---------- */
-function freshDB() { return { schema: 1, unit: '', pinHash: '', myName: '', tasks: [], runs: [], pending: [], packInfo: null, lastExport: 0, lastBackup: 0, packDirty: false }; }
+function freshDB() { return { schema: 1, role: '', unit: '', myName: '', tasks: [], runs: [], pending: [], packInfo: null, lastExport: 0, lastBackup: 0, packDirty: false }; }
 const normNote = n => ({ id: String(n && n.id || uid()), text: String(n && n.text || ''), by: String(n && n.by || ''), at: +(n && n.at) || 0 });
 function normTask(t) {
   return {
@@ -348,18 +348,21 @@ function normTask(t) {
         steps: (i.steps || []).map(s => ({ id: String(s.id || uid()), title: String(s.title || ''), desc: String(s.desc || ''), input: String(s.input || ''), key: !!s.key, notes: (s.notes || []).map(normNote) })) })) }))
   };
 }
-function loadDB() {
-  try { const s = localStorage.getItem(LS_KEY); if (s) { const d = Object.assign(freshDB(), JSON.parse(s)); d.tasks = (d.tasks || []).map(normTask); return d; } } catch (e) {}
-  return freshDB();
+// 舊版（有密碼的 v1）資料：沒有 role 欄位時，用有沒有匯出過／有沒有自己建的任務判斷身分
+function fromRaw(raw) {
+  const d = Object.assign(freshDB(), raw);
+  d.tasks = (d.tasks || []).map(normTask);
+  if (!raw || !('role' in raw)) d.role = (d.lastExport > 0 || d.tasks.some(t => !t.rev || t.dirty)) ? 'admin' : (d.tasks.length ? 'member' : '');
+  delete d.pinHash;
+  return d;
 }
+function loadDB() { try { const s = localStorage.getItem(LS_KEY); if (s) return fromRaw(JSON.parse(s)); } catch (e) {} return freshDB(); }
 let DB = loadDB();
 function save() {
   try { localStorage.setItem(LS_KEY, JSON.stringify(DB)); return true; }
   catch (e) { alertDlg('存檔失敗', '手機給這個網站的儲存空間可能滿了。請到「設定」下載完整備份，再刪掉一些舊的執行紀錄。'); return false; }
 }
-let ADMIN = false;
-try { ADMIN = sessionStorage.getItem('hhcSopAdmin') === '1' && !!DB.pinHash; } catch (e) {}
-function setAdmin(v) { ADMIN = !!v; try { v ? sessionStorage.setItem('hhcSopAdmin', '1') : sessionStorage.removeItem('hhcSopAdmin'); } catch (e) {} }
+const isAdmin = () => DB.role === 'admin';
 
 const getTask = id => DB.tasks.find(t => t.id === id);
 const getRun = id => DB.runs.find(r => r.id === id);
@@ -381,6 +384,8 @@ function runState(run) {
 }
 function runCounts(run) { let ok = 0, na = 0; run.log.forEach(l => l.na ? na++ : ok++); return { ok, na, rep: run.reps.length }; }
 function fastCount(run) { let prev = run.startAt, k = 0; [...run.log].sort((a, b) => a.at - b.at).forEach(l => { if (!l.na && l.at - prev < FAST_MS) k++; prev = l.at; }); return k; }
+// 執行時這支手機上的SOP跟發佈版不一樣（有人改過）→ 回報會標出來
+function markMod(run) { const t = getTask(run.taskId); if (t && t.dirty && t.rev) run.mod = true; }
 const ST_TXT = { done: '完成', abort: '中止', doing: '進行中' };
 
 /* ---------- 回報（文字＋代碼） ---------- */
@@ -388,6 +393,7 @@ function runToCode(run) {
   const s = Math.round(run.startAt / 1000);
   const o = { v: 1, i: run.id, t: run.taskId, n: run.taskName, r: run.rev, b: run.by, s, e: run.endAt ? Math.round(run.endAt / 1000) : 0, st: run.status === 'done' ? 1 : run.status === 'abort' ? 2 : 0 };
   if (run.abortReason) o.a = run.abortReason;
+  if (run.mod) o.m = 1;
   o.l = run.log.map(x => { const a = [x.sid, Math.round(x.at / 1000) - s]; if (x.val || x.na) { a.push(x.val || ''); if (x.na) a.push(x.na); } return a; });
   o.p = run.reps.map(x => [x.sid, x.what, x.how || '', Math.round(x.at / 1000) - s]);
   return b64e(JSON.stringify(o));
@@ -397,7 +403,7 @@ function reportText(run) {
   L.push(`【SOP執行回報】${run.taskName}`);
   L.push(`執行人：${run.by}`);
   L.push(`時間：${fmtDT(run.startAt)} 至 ${run.endAt ? fmtT(run.endAt) : '（進行中）'}，共${fmtDur((run.endAt || now()) - run.startAt)}`);
-  L.push(`SOP版本：${run.rev ? `第${run.rev}版` : '未發佈版'}`);
+  L.push(`SOP版本：${run.rev ? `第${run.rev}版` : '未發佈版'}${run.mod ? '（⚠ 這支手機上的SOP有改過，跟發佈的版本不同）' : ''}`);
   if (run.status === 'done') L.push(`結果：✅ 全部完成（完成 ${c.ok} 項${c.na ? `、不適用 ${c.na} 項` : ''}）`);
   else if (run.status === 'abort') { L.push(`結果：⛔ 中止（已處理 ${c.ok + c.na}/${total} 項）`); L.push(`中止原因：${run.abortReason}`); }
   else L.push(`結果：⏳ 進行中（已處理 ${c.ok + c.na}/${total} 項）`);
@@ -418,7 +424,7 @@ function importReports(text) {
     try { o = JSON.parse(b64d(m[1])); if (o.v !== 1 || !o.i || !o.t) throw 0; } catch (e) { R.bad++; continue; }
     const st = o.s * 1000;
     const inc = { id: String(o.i), taskId: String(o.t), taskName: String(o.n || ''), rev: +o.r || 0, by: String(o.b || ''), startAt: st, endAt: o.e ? o.e * 1000 : 0,
-      status: o.st === 1 ? 'done' : o.st === 2 ? 'abort' : 'doing', abortReason: String(o.a || ''),
+      status: o.st === 1 ? 'done' : o.st === 2 ? 'abort' : 'doing', abortReason: String(o.a || ''), mod: !!o.m,
       log: (o.l || []).map(a => { const e = { sid: String(a[0]), at: st + a[1] * 1000 }; if (a[2]) e.val = String(a[2]); if (a[3]) e.na = String(a[3]); return e; }),
       reps: (o.p || []).map(a => ({ id: uid(), sid: String(a[0] || ''), what: String(a[1] || ''), how: String(a[2] || ''), at: st + (a[3] || 0) * 1000 })),
       src: 'import', sent: true };
@@ -429,7 +435,7 @@ function importReports(text) {
       const more = inc.log.length > ex.log.length || inc.status !== ex.status || inc.reps.length > ex.reps.length;
       if (!more) { R.dup++; continue; }
       fresh = inc.reps.filter(r => !ex.reps.some(q => q.sid === r.sid && q.at === r.at && q.what === r.what));
-      Object.assign(ex, { taskName: inc.taskName, rev: inc.rev, by: inc.by, endAt: inc.endAt, status: inc.status, abortReason: inc.abortReason, log: inc.log });
+      Object.assign(ex, { taskName: inc.taskName, rev: inc.rev, by: inc.by, endAt: inc.endAt, status: inc.status, abortReason: inc.abortReason, mod: inc.mod, log: inc.log });
       ex.reps = ex.reps.concat(fresh); R.updated++;
     } else { DB.runs.push(inc); R.added++; }
     fresh.forEach(r => { DB.pending.push({ id: uid(), taskId: inc.taskId, sid: r.sid, what: r.what, how: r.how, by: inc.by, at: r.at, runId: inc.id }); R.reps++; });
@@ -438,7 +444,9 @@ function importReports(text) {
   return R;
 }
 
-/* ---------- SOP文字（複製／貼上） ---------- */
+/* ---------- SOP ⇄ 逐行（編輯器、複製文字、貼上） ----------
+   行的類型：o 大綱、i 項目、s 項次、d 說明、n 注意、f 要填
+   第一個大綱／項目／項次之前的「說明」＝任務說明，「注意」＝執行前注意 */
 function taskToText(t) {
   const L = [`【${t.name}】`];
   if (t.purpose) t.purpose.split('\n').forEach(x => L.push(`說明：${x}`));
@@ -457,38 +465,86 @@ function taskToText(t) {
   });
   return L.join('\n');
 }
-function parseOutline(text) {
-  const R = { outlines: [], items: 0, steps: 0, notes: 0, skipped: 0, name: '', purpose: '', tnotes: [] };
-  let O = null, I = null, S = null;
-  const newO = t => { O = { id: uid(), title: t, items: [] }; R.outlines.push(O); I = null; S = null; };
-  const newI = t => { if (!O) newO(''); I = { id: uid(), title: t, steps: [] }; O.items.push(I); R.items++; S = null; };
-  const newS = t => {
-    if (!I) newI('');
-    t = t.trim(); let key = false;
-    if (/^[★☆＊*]/.test(t)) { key = true; t = t.replace(/^[★☆＊*]\s*/, ''); }
-    S = { id: uid(), title: t, desc: '', input: '', key, notes: [] }; I.steps.push(S); R.steps++;
-  };
-  const addPurpose = t => { R.purpose = R.purpose ? R.purpose + '\n' + t : t; };
-  for (const raw of text.replace(/\r/g, '').split('\n')) {
-    const line = raw.trim(); if (!line) continue;
-    let m;
-    if ((m = line.match(/^【(.+)】$/))) { if (!R.name) R.name = m[1].trim(); continue; }
-    if ((m = line.match(/^[一二三四五六七八九十]{1,3}\s*[、.．]\s*(.*)$/))) { newO(m[1].trim()); continue; }
-    if ((m = line.match(/^[（(]\s*[一二三四五六七八九十]{1,3}\s*[)）]\s*[、.．]?\s*(.*)$/))) { newI(m[1].trim()); continue; }
-    if ((m = line.match(/^(\d{1,3})\s*[.．、](?!\d)\s*(.*)$/))) { newS(m[2]); continue; }
-    if ((m = line.match(/^說明\s*[:：]\s*(.*)$/))) { if (S) S.desc = S.desc ? S.desc + '\n' + m[1] : m[1]; else if (!O) addPurpose(m[1]); else R.skipped++; continue; }
-    if ((m = line.match(/^填寫\s*[:：]\s*(.*)$/))) { if (S) S.input = m[1].trim() || '結果'; else R.skipped++; continue; }
-    if ((m = line.match(/^(?:※|⚠️?|注意\s*[:：])\s*(.*)$/))) {
-      const tx = m[1].trim(); if (!tx) continue;
-      const note = { id: uid(), text: tx, by: '', at: 0 };
-      if (S) { S.notes.push(note); R.notes++; } else if (!O) { R.tnotes.push(note); R.notes++; } else R.skipped++;
-      continue;
+function taskToLines(t) {
+  const L = [], note = n => ({ id: n.id, type: 'n', text: n.text.replace(/\n/g, '／'), by: n.by, at: n.at });
+  if (t.purpose) t.purpose.split('\n').forEach(x => L.push({ id: uid(), type: 'd', text: x }));
+  t.notes.forEach(n => L.push(note(n)));
+  t.outlines.forEach(o => {
+    L.push({ id: o.id, type: 'o', text: o.title });
+    o.items.forEach(it => {
+      L.push({ id: it.id, type: 'i', text: it.title });
+      it.steps.forEach(s => {
+        L.push({ id: s.id, type: 's', text: s.title, key: s.key });
+        if (s.desc) s.desc.split('\n').forEach(d => L.push({ id: uid(), type: 'd', text: d }));
+        if (s.input) L.push({ id: uid(), type: 'f', text: s.input });
+        s.notes.forEach(n => L.push(note(n)));
+      });
+    });
+  });
+  if (!L.length) L.push({ id: uid(), type: 'o', text: '' });
+  return L;
+}
+const isStruct = ty => ty === 'o' || ty === 'i' || ty === 's';
+function linesToTask(lines) {
+  const L = lines.map(l => ({ ...l, text: String(l.text || '').trim() }));
+  const kids = (k, stop) => { for (let j = k + 1; j < L.length; j++) { const ty = L[j].type; if (stop.includes(ty)) return false; if (isStruct(ty) || L[j].text) return true; } return false; };
+  const purpose = [], notes = [], outlines = [];
+  let O = null, I = null, S = null, started = false;
+  const ensureO = () => { if (!O) { O = { id: uid(), title: '', items: [] }; outlines.push(O); } };
+  const ensureI = () => { ensureO(); if (!I) { I = { id: uid(), title: '', steps: [] }; O.items.push(I); } };
+  for (let k = 0; k < L.length; k++) {
+    const l = L[k];
+    if (l.type === 'o') {
+      if (!l.text && !kids(k, ['o'])) continue;
+      O = { id: l.id, title: l.text, items: [] }; outlines.push(O); I = null; S = null; started = true;
+    } else if (l.type === 'i') {
+      if (!l.text && !kids(k, ['o', 'i'])) continue;
+      ensureO(); I = { id: l.id, title: l.text, steps: [] }; O.items.push(I); S = null; started = true;
+    } else if (l.type === 's') {
+      if (!l.text) {
+        if (kids(k, ['o', 'i', 's'])) return { err: { id: l.id, msg: '這個項次沒有名稱，但下面還有說明或注意。請補上項次名稱，或點左邊的編號刪掉這一行。' } };
+        S = null; continue;
+      }
+      ensureI(); S = { id: l.id, title: l.text, desc: '', input: '', key: !!l.key, notes: [] }; I.steps.push(S); started = true;
+    } else if (l.text) {
+      if (l.type === 'd') {
+        if (S) S.desc = S.desc ? S.desc + '\n' + l.text : l.text;
+        else if (!started) purpose.push(l.text);
+        else return { err: { id: l.id, msg: '這行「說明」上面沒有項次。說明要寫在項次下面；如果它本身是一個要做的動作，請點左邊改成「項次」。' } };
+      } else if (l.type === 'n') {
+        const n = { id: l.id, text: l.text, by: l.by || '', at: l.at || 0 };
+        if (S) S.notes.push(n); else if (!started) notes.push(n);
+        else return { err: { id: l.id, msg: '這行「注意」上面沒有項次。請把它移到項次下面，或移到最上面當「執行前注意」。' } };
+      } else if (l.type === 'f') {
+        if (S) S.input = l.text;
+        else return { err: { id: l.id, msg: '「要填」要放在項次下面。' } };
+      }
     }
-    if (S) S.desc = S.desc ? S.desc + '\n' + line : line;
-    else if (!O) addPurpose(line);
-    else R.skipped++;
   }
-  return R;
+  return { purpose: purpose.join('\n'), notes, outlines };
+}
+// 把一段文字切成好幾行，認得「一、」「（一）」「1.」「說明：」「填寫：」「※」「★」的寫法
+function parseLines(text, curType) {
+  const det = s => {
+    let m;
+    if ((m = s.match(/^【(.+)】$/))) return { type: 'name', text: m[1].trim() };
+    if ((m = s.match(/^[一二三四五六七八九十]{1,3}\s*[、.．]\s*(.*)$/))) return { type: 'o', text: m[1], st: 1 };
+    if ((m = s.match(/^[（(]\s*[一二三四五六七八九十]{1,3}\s*[)）]\s*[、.．]?\s*(.*)$/))) return { type: 'i', text: m[1], st: 1 };
+    if ((m = s.match(/^(\d{1,3})\s*[.．、](?!\d)\s*(.*)$/))) { let t = m[2].trim(), key = false; if (/^[★☆＊*]/.test(t)) { key = true; t = t.replace(/^[★☆＊*]\s*/, ''); } return { type: 's', text: t, key, st: 1 }; }
+    if ((m = s.match(/^說明\s*[:：]\s*(.*)$/))) return { type: 'd', text: m[1] };
+    if ((m = s.match(/^(?:填寫|要填)\s*[:：]\s*(.*)$/))) return { type: 'f', text: m[1] };
+    if ((m = s.match(/^(?:※|⚠️?|注意\s*[:：])\s*(.*)$/))) return { type: 'n', text: m[1] };
+    return null;
+  };
+  const raw = text.replace(/\r/g, '').split('\n').map(s => s.trim()).filter(Boolean);
+  const dets = raw.map(det), structured = dets.some(d => d && d.st), out = [];
+  raw.forEach((s, k) => {
+    const d = dets[k];
+    if (d && d.type === 'name') { if (EDIT && !EDIT.name) { EDIT.name = d.text; const f = $('[data-f="name"]'); if (f) f.value = d.text; } return; }
+    if (d) out.push({ type: d.type, text: d.text, key: !!d.key });
+    else out.push({ type: structured ? 'd' : curType, text: s, key: false });   // 沒有編號的整段：照目前這一行的類型
+  });
+  return out;
 }
 
 /* ---------- 對話框 ---------- */
@@ -579,11 +635,11 @@ async function shareFile(content, name, dlOnly) {
 function topBar(o) {
   const left = o.back ? `<a class="ib" href="${o.back}" aria-label="返回">${IC.back}</a>` : (o.left || '');
   const sub = o.subHtml ? `<div class="ts">${o.subHtml}</div>` : o.sub ? `<div class="ts">${esc(o.sub)}</div>` : '';
-  return `<header class="top"><div class="bar">${left}<div class="tt${left ? '' : ' pad'}"><h1>${esc(o.title)}</h1>${sub}</div>${o.right || ''}</div>${o.extra || ''}${ADMIN && !o.noAdmin ? `<div class="abar"><span>${IC.unlock} 管理模式：可以修改SOP</span><button data-act="lock">鎖定</button></div>` : ''}</header>`;
+  return `<header class="top"><div class="bar">${left}<div class="tt${left ? '' : ' pad'}"><h1>${esc(o.title)}</h1>${sub}</div>${o.right || ''}</div>${o.extra || ''}</header>`;
 }
 function tabs(cur) {
   const n = DB.pending.length;
-  return `<nav class="tabs"><a href="#/" class="${cur === 'home' ? 'on' : ''}">${IC.list}<span>任務</span></a><a href="#/recs" class="${cur === 'recs' ? 'on' : ''}">${IC.clock}<span>紀錄</span></a>${ADMIN ? `<a href="#/review" class="${cur === 'review' ? 'on' : ''}">${IC.inbox}<span>待審${n ? `<em class="bdg">${n}</em>` : ''}</span></a>` : ''}</nav>`;
+  return `<nav class="tabs"><a href="#/" class="${cur === 'home' ? 'on' : ''}">${IC.list}<span>任務</span></a><a href="#/recs" class="${cur === 'recs' ? 'on' : ''}">${IC.clock}<span>紀錄</span></a>${isAdmin() ? `<a href="#/review" class="${cur === 'review' ? 'on' : ''}">${IC.inbox}<span>待審${n ? `<em class="bdg">${n}</em>` : ''}</span></a>` : ''}</nav>`;
 }
 function notFound(title, msg) { return topBar({ title: '找不到', back: '#/' }) + `<main class="wrap"><div class="empty"><h2>${esc(title)}</h2>${msg ? `<p>${esc(msg)}</p>` : ''}<div class="btns"><a class="btn" href="#/">回首頁</a></div></div></main>`; }
 function tagsOf(s) { return (s.key ? '<span class="tag key">關鍵</span>' : '') + (s.input ? `<span class="tag inp">要填：${esc(s.input)}</span>` : ''); }
@@ -594,16 +650,17 @@ function notesBox(notes, head) {
 
 /* ---------- 首頁：任務清單 ---------- */
 function vHome() {
+  const admin = isAdmin();
   let h = topBar({ title: '任務SOP', sub: DB.unit, right: GEAR }) + '<main class="wrap">';
   DB.runs.filter(r => r.status === 'doing' && r.src === 'local').forEach(r => {
     const st = runState(r);
     h += `<a class="doing" href="#/run/${r.id}">${IC.play}<span class="dg"><b>繼續執行：${esc(r.taskName)}</b><span>${esc(r.by)}，已處理 ${st.doneN}/${st.total} 項</span></span></a>`;
   });
-  if (ADMIN && DB.tasks.length && unpublished()) h += `<div class="pub"><div><b>有修改還沒發給大家</b><span>匯出SOP檔傳出去，大家重新匯入後才會是新版。</span></div><button class="btn pri sm" data-act="exportPack">匯出</button></div>`;
+  if (admin && DB.tasks.length && unpublished()) h += `<div class="pub"><div><b>有修改還沒發給大家</b><span>匯出SOP檔傳出去，大家重新匯入後才會是新版。</span></div><button class="btn pri sm" data-act="exportPack">匯出</button></div>`;
   if (!DB.tasks.length) {
-    h += ADMIN
-      ? `<div class="empty"><h2>還沒有任務</h2><p>按「新增任務」建立第一份SOP。已經有Word或紙本的SOP，可以在任務裡用「貼上文字」整份貼進來。</p><div class="btns"><button class="btn pri" data-act="newTask">${IC.plus} 新增任務</button></div></div>`
-      : `<div class="empty"><h2>這支手機還沒有SOP</h2><p><b>執行的人：</b>向管理者拿「SOP檔」，存到手機後按「匯入SOP檔」。</p><p><b>管理者：</b>先設定管理密碼，再開始建立任務。</p><div class="btns"><button class="btn pri" data-act="importFile">${IC.upload} 匯入SOP檔</button><button class="btn" data-act="adminEnter">我是管理者</button></div></div>`;
+    h += admin
+      ? `<div class="empty"><h2>還沒有任務</h2><p>按「新增任務」，直接一行一行打就好。已經有Word或LINE上的SOP文字，可以整份貼進去，會自動分層。</p><div class="btns"><button class="btn pri" data-act="newTask">${IC.plus} 新增任務</button></div></div>`
+      : `<div class="empty"><h2>這支手機還沒有SOP</h2><p><b>執行的人：</b>向管理者拿「SOP檔」，存到手機後按「匯入SOP檔」。</p><p><b>管理者：</b>按「我是管理者」就能開始建立任務。</p><div class="btns"><button class="btn pri" data-act="importFile">${IC.upload} 匯入SOP檔</button><button class="btn" data-act="iAmAdmin">我是管理者</button></div></div>`;
   } else {
     if (DB.tasks.length > 5) h += `<input id="q" class="search" type="search" placeholder="搜尋任務" autocomplete="off">`;
     const groups = new Map();
@@ -614,11 +671,11 @@ function vHome() {
       h += `<section data-grp>${showHdr ? `<h2 class="gh">${esc(k || '未分類')}</h2>` : ''}<div class="list">`;
       groups.get(k).forEach(t => {
         const n = flat(t).length, runs = DB.runs.filter(r => r.taskId === t.id && r.status === 'done').length, nc = noteCount(t);
-        h += `<a class="trow" href="#/t/${t.id}" data-s="${esc((t.name + ' ' + t.cat).toLowerCase())}"><span class="tn">${esc(t.name)}</span><span class="tm"><span>${revLabel(t)}${ADMIN && t.dirty && t.rev ? '（已修改）' : ''}</span><span>${n} 項次</span><span>執行 ${runs} 次</span>${nc ? `<span class="wn">${IC.warn} 注意 ${nc}</span>` : ''}</span></a>`;
+        h += `<a class="trow" href="#/t/${t.id}" data-s="${esc((t.name + ' ' + t.cat).toLowerCase())}"><span class="tn">${esc(t.name)}</span><span class="tm"><span>${revLabel(t)}${admin && t.dirty && t.rev ? '（已修改）' : ''}</span><span>${n} 項次</span><span>執行 ${runs} 次</span>${nc ? `<span class="wn">${IC.warn} 注意 ${nc}</span>` : ''}</span></a>`;
       });
       h += '</div></section>';
     });
-    if (ADMIN) h += `<button class="add" data-act="newTask">${IC.plus} 新增任務</button>`;
+    if (admin) h += `<button class="add" data-act="newTask">${IC.plus} 新增任務</button>`;
   }
   return h + '</main>' + tabs('home');
 }
@@ -631,17 +688,17 @@ function filterTasks(q) {
 /* ---------- SOP全文 ---------- */
 function vTask(id) {
   const t = getTask(id); if (!t) return notFound('找不到這個任務', '可能已被刪除，或SOP已更新。');
-  const f = flat(t), nRec = DB.runs.filter(r => r.taskId === t.id).length;
-  const sub = [t.cat, revLabel(t) + (ADMIN && t.dirty && t.rev ? '（有修改未發佈）' : ''), f.length + ' 項次'].filter(Boolean).join('　');
-  let h = topBar({ title: t.name, sub, back: '#/', right: ADMIN ? `<a class="ib" href="#/edit/${t.id}" aria-label="編輯">${IC.pencil}</a>` : '' });
+  const admin = isAdmin(), f = flat(t), nRec = DB.runs.filter(r => r.taskId === t.id).length;
+  const sub = [t.cat, revLabel(t) + (admin && t.dirty && t.rev ? '（有修改未發佈）' : ''), f.length + ' 項次'].filter(Boolean).join('　');
+  let h = topBar({ title: t.name, sub, back: '#/', right: admin ? `<a class="ib" href="#/edit/${t.id}" aria-label="編輯">${IC.pencil}</a>` : '' });
   h += '<main class="wrap">';
   if (t.purpose) h += `<p class="purpose">${nl2br(t.purpose)}</p>`;
   h += notesBox(t.notes, '執行前注意');
-  if (!f.length) h += `<div class="empty"><p>這個任務還沒有項次。${ADMIN ? '按右上角的筆來新增。' : ''}</p></div>`;
+  if (!f.length) h += `<div class="empty"><p>這個任務還沒有項次。${admin ? '按右上角的筆來新增。' : ''}</p></div>`;
   t.outlines.forEach((o, oi) => {
     h += `<h2 class="vh1">${cn(oi+1)}、${esc(o.title || '（未命名大綱）')}</h2>`;
     o.items.forEach((it, ii) => {
-      h += `<h3 class="vh2">（${cn(ii+1)}）${esc(it.title || '（未命名項目）')}</h3>`;
+      if (it.title) h += `<h3 class="vh2">（${cn(ii+1)}）${esc(it.title)}</h3>`;
       it.steps.forEach((s, si) => {
         h += `<div class="vst"><div class="n">${si+1}</div><div><div class="t">${esc(s.title)}${tagsOf(s)}</div>${s.desc ? `<div class="d">${nl2br(s.desc)}</div>` : ''}${notesBox(s.notes)}</div></div>`;
       });
@@ -660,7 +717,7 @@ function pbar(st) {
 function curCard(run, x, k, total) {
   const s = x.s, reps = run.reps.filter(r => r.sid === s.id);
   return `<div class="cur" id="cur">
-    <div class="cpath">${cn(x.oi+1)}、${esc(x.o.title)}　（${cn(x.ii+1)}）${esc(x.it.title)}</div>
+    <div class="cpath">${cn(x.oi+1)}、${esc(x.o.title)}${x.it.title ? `　（${cn(x.ii+1)}）${esc(x.it.title)}` : ''}</div>
     <div class="chead"><span class="cnum">${x.si+1}</span><h2 class="ctit">${esc(s.title)}</h2></div>
     ${s.key || s.input ? `<div class="ctags">${tagsOf(s)}</div>` : ''}
     ${s.desc ? `<div class="cdesc">${nl2br(s.desc)}</div>` : ''}
@@ -678,15 +735,15 @@ function vRun(id) {
   if (run.status !== 'doing') { setTimeout(() => location.replace('#/rec/' + id)); return ''; }
   const st = runState(run), t = st.task;
   const prog = `<div class="prog"><div class="pc"><b>${st.doneN}</b> / ${st.total}</div>${pbar(st)}</div>`;
-  let h = topBar({ title: run.taskName, subHtml: `${esc(run.by)}　已進行 <span id="elapsed">${fmtClock(now() - run.startAt)}</span>`, back: '#/', right: `<button class="ib" data-act="runMenu" data-id="${run.id}" aria-label="更多選項">${IC.more}</button>`, extra: prog, noAdmin: true });
+  let h = topBar({ title: run.taskName, subHtml: `${esc(run.by)}　已進行 <span id="elapsed">${fmtClock(now() - run.startAt)}</span>`, back: '#/', right: `<button class="ib" data-act="runMenu" data-id="${run.id}" aria-label="更多選項">${IC.more}</button>`, extra: prog });
   h += '<main class="wrap">';
   if (!t) return h + `<div class="empty"><h2>這個任務已不在目前的SOP裡</h2><p>可能管理者更新了SOP。這筆執行可以中止。</p><div class="btns"><button class="btn" data-act="abortRun" data-id="${run.id}">中止這筆執行</button></div></div></main>`;
   h += notesBox(t.notes, '執行前注意');
   const last = run.log.length ? run.log[run.log.length - 1] : null;
   let co = -1, ci = -1;
   st.f.forEach((x, k) => {
-    if (x.oi !== co) { co = x.oi; ci = -1; h += `<div class="rh1">${cn(x.oi+1)}、${esc(x.o.title)}</div>`; }
-    if (x.ii !== ci) { ci = x.ii; h += `<div class="rh2">（${cn(x.ii+1)}）${esc(x.it.title)}</div>`; }
+    if (x.oi !== co) { co = x.oi; ci = -1; h += `<div class="rh1">${cn(x.oi+1)}、${esc(x.o.title || '（未命名大綱）')}</div>`; }
+    if (x.ii !== ci) { ci = x.ii; if (x.it.title) h += `<div class="rh2">（${cn(x.ii+1)}）${esc(x.it.title)}</div>`; }
     const l = st.lm.get(x.s.id);
     if (l) {
       h += `<div class="row done${l.na ? ' na' : ''}"><span class="mk">${l.na ? IC.na : IC.check}</span><span class="rn">${x.si+1}.</span><span class="rt">${esc(x.s.title)}${l.val ? `<span class="rv">${esc(x.s.input || '結果')}：${esc(l.val)}</span>` : ''}${l.na ? `<span class="rv">不適用：${esc(l.na)}</span>` : ''}</span><span class="rtime">${fmtT(l.at)}</span>${last && last.sid === x.s.id ? `<button class="undo" data-act="undoStep" data-id="${run.id}">撤回</button>` : ''}</div>`;
@@ -716,19 +773,19 @@ function afterRun(id) {
 /* ---------- 單筆紀錄 ---------- */
 function vRec(id) {
   const run = getRun(id); if (!run) return notFound('找不到這筆紀錄');
-  const t = getTask(run.taskId), c = runCounts(run), fast = fastCount(run);
+  const admin = isAdmin(), t = getTask(run.taskId), c = runCounts(run), fast = fastCount(run);
   let h = topBar({ title: run.taskName, sub: `${run.by}　${fmtDT(run.startAt)}`, back: '#/recs' }) + '<main class="wrap">';
   const remain = t && run.status !== 'done' ? flat(t).length - runState(run).doneN : 0;
   h += `<div class="rsum"><span class="chip ${run.status}">${ST_TXT[run.status]}</span>${run.src === 'import' ? '<span class="chip imp">由回報匯入</span>' : ''}
     <dl class="kv"><dt>執行人</dt><dd>${esc(run.by)}</dd>
     <dt>時間</dt><dd>${fmtDT(run.startAt)} 至 ${run.endAt ? fmtT(run.endAt) : '—'}（${fmtDur((run.endAt || now()) - run.startAt)}）</dd>
-    <dt>SOP</dt><dd>${run.rev ? `第${run.rev}版` : '未發佈版'}${t && t.rev && t.rev !== run.rev ? `（目前是第${t.rev}版）` : ''}</dd>
+    <dt>SOP</dt><dd>${run.rev ? `第${run.rev}版` : '未發佈版'}${t && t.rev && t.rev !== run.rev ? `（目前是第${t.rev}版）` : ''}${run.mod ? '<br><span class="wn">執行的手機上，SOP有改過，跟發佈的版本不同</span>' : ''}</dd>
     <dt>結果</dt><dd>完成 ${c.ok} 項${c.na ? `，不適用 ${c.na} 項` : ''}${remain > 0 ? `，未處理 ${remain} 項` : ''}${c.rep ? `，狀況 ${c.rep} 則` : ''}</dd>
     ${fast ? `<dt>快速連按</dt><dd>${fast} 項與上一項間隔不到 ${FAST_MS / 1000} 秒</dd>` : ''}
     ${run.abortReason ? `<dt>中止原因</dt><dd>${nl2br(run.abortReason)}</dd>` : ''}</dl></div>`;
   if (run.status === 'doing' && run.src === 'local') h += `<div class="btns"><a class="btn pri big" href="#/run/${run.id}">${IC.play} 繼續執行</a></div>`;
   if (run.src === 'local') {
-    const need = !run.sent && !ADMIN && run.status !== 'doing';
+    const need = !run.sent && !admin && run.status !== 'doing';
     h += `<div class="sendbox${need ? ' need' : ''}">${need ? '<b>還沒回報給管理者</b><p class="hint">按「分享回報」選LINE傳出去；或按「複製回報」再貼到LINE。</p>' : ''}<div class="btns2"><button class="btn pri" data-act="shareRep" data-id="${run.id}">${IC.share} 分享回報</button><button class="btn" data-act="copyRep" data-id="${run.id}">${IC.copy} 複製回報</button></div></div>`;
   }
   h += '<h2 class="sh">逐項紀錄</h2>';
@@ -747,22 +804,22 @@ function vRec(id) {
     run.reps.forEach(r => { h += `<div class="repi"><div class="tlt">${esc(stepLabel(t, r.sid))}</div><div>狀況：${nl2br(r.what)}</div>${r.how ? `<div>處置：${nl2br(r.how)}</div>` : ''}<span class="nby">${fmtTS(r.at)}</span></div>`; });
     h += '</div>';
   }
-  if (ADMIN) h += `<div class="btns"><button class="lnk dangert" data-act="delRun" data-id="${run.id}">刪除這筆紀錄</button></div>`;
+  if (admin) h += `<div class="btns"><button class="lnk dangert" data-act="delRun" data-id="${run.id}">刪除這筆紀錄</button></div>`;
   return h + '</main>' + tabs('recs');
 }
 
 /* ---------- 紀錄清單 ---------- */
 function vRecs(tid) {
-  const t = tid ? getTask(tid) : null;
+  const admin = isAdmin(), t = tid ? getTask(tid) : null;
   let runs = [...DB.runs].sort((a, b) => b.startAt - a.startAt);
   if (tid) runs = runs.filter(r => r.taskId === tid);
-  let h = topBar({ title: tid ? '執行紀錄' : '執行紀錄', sub: tid ? (t ? t.name : '') : '', back: tid ? '#/t/' + tid : '', right: tid ? '' : GEAR }) + '<main class="wrap">';
-  if (!runs.length) h += `<div class="empty"><p>還沒有執行紀錄。${ADMIN ? '大家傳來的回報，到「待審」貼上匯入後，也會出現在這裡。' : '開始執行任務後，紀錄會留在這裡。'}</p></div>`;
+  let h = topBar({ title: '執行紀錄', sub: tid ? (t ? t.name : '') : '', back: tid ? '#/t/' + tid : '', right: tid ? '' : GEAR }) + '<main class="wrap">';
+  if (!runs.length) h += `<div class="empty"><p>還沒有執行紀錄。${admin ? '大家傳來的回報，到「待審」貼上匯入後，也會出現在這裡。' : '開始執行任務後，紀錄會留在這裡。'}</p></div>`;
   else {
     h += '<div class="list">';
     runs.forEach(r => {
-      const c = runCounts(r), unsent = r.src === 'local' && !r.sent && r.status !== 'doing' && !ADMIN;
-      const extra = [c.na ? `<span>不適用 ${c.na}</span>` : '', c.rep ? `<span class="wn">狀況 ${c.rep}</span>` : '', fastCount(r) ? `<span>快速連按 ${fastCount(r)}</span>` : '', r.src === 'import' ? '<span>匯入</span>' : '', unsent ? '<span class="alert">未回報</span>' : ''].join('');
+      const c = runCounts(r), fc = fastCount(r), unsent = r.src === 'local' && !r.sent && r.status !== 'doing' && !admin;
+      const extra = [c.na ? `<span>不適用 ${c.na}</span>` : '', c.rep ? `<span class="wn">狀況 ${c.rep}</span>` : '', fc ? `<span>快速連按 ${fc}</span>` : '', r.mod ? '<span class="wn">SOP有改過</span>' : '', r.src === 'import' ? '<span>匯入</span>' : '', unsent ? '<span class="alert">未回報</span>' : ''].join('');
       h += `<a class="rrow" href="#/rec/${r.id}"><span class="r1"><b>${esc(r.taskName)}</b><span class="chip ${r.status}">${ST_TXT[r.status]}</span></span><span class="r2">${esc(r.by)}　${fmtDT(r.startAt)}${r.endAt ? '　' + fmtDur(r.endAt - r.startAt) : ''}</span>${extra ? `<span class="r3">${extra}</span>` : ''}</a>`;
     });
     h += '</div>';
@@ -789,118 +846,145 @@ function vReview() {
   return h + '</main>' + tabs('review');
 }
 
-/* ---------- 編輯任務（管理者） ---------- */
-let EDIT = null;
-function mvBtns(kind, p, i, len) {
-  return `<span class="mv"><button class="ib sm" data-act="mv" data-k="${kind}" data-p="${p}" data-d="-1" ${i === 0 ? 'disabled' : ''} aria-label="上移">${IC.up}</button><button class="ib sm" data-act="mv" data-k="${kind}" data-p="${p}" data-d="1" ${i === len - 1 ? 'disabled' : ''} aria-label="下移">${IC.down}</button><button class="ib sm" data-act="rm" data-k="${kind}" data-p="${p}" aria-label="刪除">${IC.x}</button></span>`;
+/* ---------- 編輯任務：逐行打字 ----------
+   換行 → 接下一行（大綱→項目→項次→說明→項次…）
+   空白行按換行 → 往上一層（說明→項次→項目→大綱）
+   點左邊編號 → 改類型、設關鍵、上下移、刪除 */
+let EDIT = null, COMP_END = 0;
+const LT = { o: '大綱', i: '項目', s: '項次', d: '說明', n: '注意', f: '要填' };
+const LT_NEXT = { o: 'i', i: 's', s: 'd', d: 's', n: 's', f: 's' };
+const LT_UP = { o: 'o', i: 'o', s: 'i', d: 's', n: 's', f: 's' };
+const LT_PH = { o: '大綱（階段），例：通報', i: '項目（分組），例：發現者', s: '項次：要做的動作', d: '說明：怎麼做、做到什麼程度', n: '注意事項', f: '完成時要填什麼，例：數量、車號' };
+const lnIdx = id => EDIT.lines.findIndex(l => l.id === id);
+const lineEl = id => document.querySelector(`.ln[data-id="${id}"]`);
+const taOf = id => document.querySelector(`.lt[data-lid="${id}"]`);
+function inZone(idx) { for (let k = 0; k < idx; k++) if (isStruct(EDIT.lines[k].type)) return false; return true; }
+function nextType(idx) { const ty = EDIT.lines[idx].type; return !isStruct(ty) && inZone(idx) ? 'o' : LT_NEXT[ty]; }
+function upType(idx) { const ty = EDIT.lines[idx].type; return !isStruct(ty) && inZone(idx) ? 'o' : LT_UP[ty]; }
+const lineHtml = l => `<div class="ln" data-id="${l.id}"><button type="button" class="lb" data-act="lnMenu" data-id="${l.id}" aria-label="改這一行的類型"></button><textarea class="lt" rows="1" data-lid="${l.id}" autocomplete="off" spellcheck="false">${esc(l.text)}</textarea></div>`;
+function grow(ta) { if (!ta) return; ta.style.height = 'auto'; ta.style.height = ta.scrollHeight + 'px'; }
+function renumber() {
+  let oN = 0, iN = 0, sN = 0, zone = true;
+  EDIT.lines.forEach(l => {
+    const el = lineEl(l.id); if (!el) return;
+    let lb, ph = LT_PH[l.type];
+    if (l.type === 'o') { oN++; iN = 0; sN = 0; zone = false; lb = cn(oN) + '、'; }
+    else if (l.type === 'i') { zone = false; iN++; sN = 0; lb = `（${cn(iN)}）`; }
+    else if (l.type === 's') { zone = false; sN++; lb = (l.key ? '★' : '') + sN + '.'; }
+    else if (l.type === 'd') { lb = zone ? '任務說明' : '說明'; if (zone) ph = '任務目的或整體說明（可空白）'; }
+    else if (l.type === 'n') { lb = zone ? '執行前注意' : '注意'; if (zone) ph = '執行前要先注意的事'; }
+    else lb = '要填';
+    el.className = `ln t-${l.type}${zone && !isStruct(l.type) ? ' zone' : ''}${EDIT.bad === l.id ? ' bad' : ''}`;
+    el.firstElementChild.textContent = lb;
+    el.lastElementChild.placeholder = ph;
+  });
+}
+function redrawLines() { $('#lines').innerHTML = EDIT.lines.map(lineHtml).join(''); renumber(); document.querySelectorAll('.lt').forEach(grow); }
+function afterEdit() { if (!EDIT || !$('#lines')) return; renumber(); document.querySelectorAll('.lt').forEach(grow); }
+function focusLine(id, pos) { const ta = taOf(id); if (!ta) return; ta.focus(); const p = pos === 'end' ? ta.value.length : pos; try { ta.setSelectionRange(p, p); } catch (e) {} }
+function insertLine(afterIdx, nl, focus) {
+  EDIT.lines.splice(afterIdx + 1, 0, nl); EDIT.dirty = true;
+  const prev = afterIdx >= 0 ? lineEl(EDIT.lines[afterIdx].id) : null;
+  if (prev) prev.insertAdjacentHTML('afterend', lineHtml(nl)); else $('#lines').insertAdjacentHTML('afterbegin', lineHtml(nl));
+  renumber(); grow(taOf(nl.id));
+  if (focus) focusLine(nl.id, 0);
+}
+function removeLine(idx, focusPrev) {
+  const l = EDIT.lines[idx]; if (!l) return;
+  if (EDIT.lines.length === 1) { l.text = ''; const ta = taOf(l.id); if (ta) ta.value = ''; return; }
+  EDIT.lines.splice(idx, 1); const el = lineEl(l.id); if (el) el.remove();
+  EDIT.dirty = true; if (EDIT.bad === l.id) EDIT.bad = null; renumber();
+  if (focusPrev) focusLine(EDIT.lines[Math.max(0, idx - 1)].id, 'end');
+}
+// 在游標位置換行
+function splitAt(ta, s, e) {
+  const idx = lnIdx(ta.dataset.lid); if (idx < 0) return;
+  const l = EDIT.lines[idx], v = ta.value, before = v.slice(0, s), after = v.slice(e);
+  if (!before.trim() && !after.trim()) {            // 空白行按換行：往上一層
+    const nt = upType(idx);
+    if (nt !== l.type) { l.type = nt; l.key = false; l.text = ''; ta.value = ''; EDIT.dirty = true; renumber(); }
+    return;
+  }
+  if (!before.trim()) { insertLine(idx - 1, { id: uid(), type: l.type, text: '' }, false); return; }   // 游標在行首：上面插一行
+  l.text = before; ta.value = before; grow(ta);
+  insertLine(idx, { id: uid(), type: nextType(idx), text: after }, true);
+}
+function pasteLines(ta, pasted) {
+  const idx = lnIdx(ta.dataset.lid); if (idx < 0) return;
+  const cur = EDIT.lines[idx], items = parseLines(pasted, cur.type);
+  if (!items.length) return;
+  if (!ta.value.trim()) { const f = items.shift(); cur.type = f.type; cur.text = f.text; cur.key = f.key; }
+  const rest = items.map(it => ({ id: uid(), type: it.type, text: it.text, key: it.key }));
+  EDIT.lines.splice(idx + 1, 0, ...rest); EDIT.dirty = true; EDIT.bad = null;
+  redrawLines();
+  focusLine((rest.length ? rest[rest.length - 1] : cur).id, 'end');
+  toast(`已貼上 ${rest.length + 1} 行，系統自動分好層了，檢查一下`);
+}
+function onLineInput(ta) {
+  const idx = lnIdx(ta.dataset.lid); if (idx < 0) return;
+  const v = ta.value;
+  if (v.includes('\n')) {                            // 有些輸入法不送 Enter 鍵，換行字元直接進來
+    if (v.split('\n').length === 2) { const p = v.indexOf('\n'); ta.value = v.slice(0, p) + v.slice(p + 1); splitAt(ta, p, p); }
+    else { ta.value = ''; EDIT.lines[idx].text = ''; pasteLines(ta, v); }
+    return;
+  }
+  EDIT.lines[idx].text = v; EDIT.dirty = true;
+  if (EDIT.bad === EDIT.lines[idx].id) { EDIT.bad = null; renumber(); }
+  grow(ta);
+}
+function onLineKey(e) {
+  const ta = e.target;
+  if (e.key === 'Enter') {
+    if (e.isComposing || e.keyCode === 229 || now() - COMP_END < 80) return;   // 中文選字中按的換行不算
+    e.preventDefault(); splitAt(ta, ta.selectionStart, ta.selectionEnd); return;
+  }
+  if (e.key === 'Backspace' && !e.isComposing && ta.value === '') {
+    const idx = lnIdx(ta.dataset.lid); if (idx > 0) { e.preventDefault(); removeLine(idx, true); }
+  }
+}
+function onLinePaste(e) {
+  const cd = e.clipboardData || window.clipboardData, txt = cd ? cd.getData('text') : '';
+  if (!txt || !txt.trim().includes('\n')) return;     // 只有一行就照一般貼上
+  e.preventDefault(); pasteLines(e.target, txt);
 }
 function vEdit(id) {
   if (!EDIT || EDIT.id !== id) {
     const t = id === 'new' ? null : getTask(id);
     if (id !== 'new' && !t) return notFound('找不到這個任務');
-    EDIT = { id, isNew: !t, dirty: false, draft: t ? clone(t) : { id: uid(), name: '', cat: '', purpose: '', notes: [], outlines: [], rev: 0, dirty: true, updatedAt: 0 } };
+    EDIT = { id, isNew: !t, dirty: false, bad: null, name: t ? t.name : '', cat: t ? t.cat : '', lines: t ? taskToLines(t) : [{ id: uid(), type: 'o', text: '' }] };
   }
-  const d = EDIT.draft;
-  let h = topBar({ title: EDIT.isNew ? '新增任務' : '編輯任務', left: '<button class="tb" data-act="editCancel">取消</button>', right: '<button class="tb pri" data-act="editSave">儲存</button>', noAdmin: true });
+  let h = topBar({ title: EDIT.isNew ? '新增任務' : '編輯任務', left: '<button class="tb" data-act="editCancel">取消</button>', right: '<button class="tb pri" data-act="editSave">儲存</button>' });
   h += '<main class="wrap">';
-  h += `<label class="fl">任務名稱<input data-f="name" value="${esc(d.name)}" placeholder="例：營區火災應變" autocomplete="off"></label>`;
-  h += `<label class="fl">分類（可空白）<input data-f="cat" value="${esc(d.cat)}" list="catlist" placeholder="例：勤務、行政、戰備" autocomplete="off"></label><datalist id="catlist">${[...new Set(DB.tasks.map(t => t.cat).filter(Boolean))].map(c => `<option value="${esc(c)}">`).join('')}</datalist>`;
-  h += `<label class="fl">任務目的或說明（可空白）<textarea data-f="purpose" rows="2">${esc(d.purpose)}</textarea></label>`;
-  h += `<div class="edh">執行前注意（整個任務）</div>${d.notes.map((n, i) => `<div class="ednote"><textarea data-f="tn.${i}" rows="2">${esc(n.text)}</textarea><button class="ib sm" data-act="delTNote" data-i="${i}" aria-label="刪除">${IC.x}</button></div>`).join('')}<button class="add" data-act="addTNote">${IC.plus} 新增執行前注意</button>`;
-  h += `<div class="edh">大綱、項目、項次</div><div class="edtool"><button class="btn sm" data-act="pasteText">${IC.paste} 貼上文字建立</button></div>`;
-  d.outlines.forEach((o, oi) => {
-    h += `<section class="eo"><div class="eoh"><span class="cnl">${cn(oi+1)}、</span><input data-f="o.${oi}" value="${esc(o.title)}" placeholder="大綱名稱" autocomplete="off">${mvBtns('o', oi, oi, d.outlines.length)}</div>`;
-    o.items.forEach((it, ii) => {
-      h += `<div class="ei"><div class="eih"><span class="cnl">（${cn(ii+1)}）</span><input data-f="i.${oi}.${ii}" value="${esc(it.title)}" placeholder="項目名稱" autocomplete="off">${mvBtns('i', `${oi}.${ii}`, ii, o.items.length)}</div>`;
-      it.steps.forEach((s, si) => {
-        h += `<button class="es" data-act="editStep" data-p="${oi}.${ii}.${si}"><span class="esn">${si+1}.</span><span class="est">${s.title ? esc(s.title) : '<em>（還沒填名稱）</em>'}${tagsOf(s)}${s.notes.length ? `<span class="tag wn">注意 ${s.notes.length}</span>` : ''}</span>${IC.chev}</button>`;
-      });
-      h += `<button class="add" data-act="addStep" data-p="${oi}.${ii}">${IC.plus} 新增項次</button></div>`;
-    });
-    h += `<button class="add" data-act="addItem" data-p="${oi}">${IC.plus} 新增項目</button></section>`;
-  });
-  h += `<button class="btn wide" data-act="addOutline">${IC.plus} 新增大綱</button>`;
+  h += `<label class="fl">任務名稱<input data-f="name" value="${esc(EDIT.name)}" placeholder="例：營區火災應變" autocomplete="off"></label>`;
+  h += `<label class="fl">分類（可空白）<input data-f="cat" value="${esc(EDIT.cat)}" list="catlist" placeholder="例：勤務、行政、戰備" autocomplete="off"></label><datalist id="catlist">${[...new Set(DB.tasks.map(t => t.cat).filter(Boolean))].map(c => `<option value="${esc(c)}">`).join('')}</datalist>`;
+  h += `<details class="edhint"${EDIT.isNew ? ' open' : ''}><summary>直接一行一行打</summary>按「換行」接下一行，會自動排成：項次 → 說明 → 項次 …<br>空白行再按一次「換行」＝往上一層：說明 → 項次 → 項目 → 大綱<br>點左邊的編號：改類型、設關鍵步驟、上下移、刪除<br>Word 或 LINE 的文字可以整份貼上，會自動分層</details>`;
+  h += `<div id="lines">${EDIT.lines.map(lineHtml).join('')}</div>`;
+  h += `<button class="add" data-act="addLine">${IC.plus} 加一行</button>`;
   if (!EDIT.isNew) h += `<div class="btns"><button class="lnk dangert" data-act="delTask">刪除這個任務</button></div>`;
   return h + '</main>';
-}
-function editInput(el) {
-  if (!EDIT) return;
-  const d = EDIT.draft, p = el.dataset.f.split('.'), v = el.value;
-  if (p[0] === 'name') d.name = v;
-  else if (p[0] === 'cat') d.cat = v;
-  else if (p[0] === 'purpose') d.purpose = v;
-  else if (p[0] === 'tn') d.notes[+p[1]].text = v;
-  else if (p[0] === 'o') d.outlines[+p[1]].title = v;
-  else if (p[0] === 'i') d.outlines[+p[1]].items[+p[2]].title = v;
-  EDIT.dirty = true;
-}
-function reEdit(focusSel) {
-  const y = window.scrollY; render(); window.scrollTo(0, y);
-  if (focusSel) { const el = $(focusSel); if (el) { el.focus(); el.scrollIntoView({ block: 'center' }); } }
-}
-function openStepEditor(p, isNew) {
-  const [oi, ii, si] = p.split('.').map(Number), d = EDIT.draft, o = d.outlines[oi], it = o.items[ii];
-  const tmp = clone(it.steps[si]); tmp.inOn = !!tmp.input;
-  let L;
-  const body = () => `<div class="cpath">${cn(oi+1)}、${esc(o.title)}　（${cn(ii+1)}）${esc(it.title)}</div><h3>第 ${si+1} 項次</h3>
-    <label class="fl">項次名稱<input id="s_t" value="${esc(tmp.title)}" placeholder="要做的動作，例：大喊「失火了」" autocomplete="off"></label>
-    <label class="fl">說明<textarea id="s_d" rows="4" placeholder="怎麼做、做到什麼程度、找誰">${esc(tmp.desc)}</textarea></label>
-    <label class="ck"><input type="checkbox" id="s_k" ${tmp.key ? 'checked' : ''}><span><b>關鍵步驟</b>：執行時不能標「不適用」</span></label>
-    <label class="ck"><input type="checkbox" id="s_ion" ${tmp.inOn ? 'checked' : ''}><span><b>完成時要填寫結果</b>：沒填就不能按完成</span></label>
-    <input id="s_i" class="${tmp.inOn ? '' : 'hide'}" value="${esc(tmp.input)}" placeholder="要填什麼？例：滅火器數量、車號" autocomplete="off">
-    <div class="edh">注意事項</div>
-    ${tmp.notes.map((n, i) => `<div class="ednote"><textarea data-ni="${i}" rows="2">${esc(n.text)}</textarea><button class="ib sm" data-x="delN" data-i="${i}" aria-label="刪除">${IC.x}</button></div>`).join('')}
-    <button class="add" data-x="addN">${IC.plus} 新增注意事項</button>
-    <div class="smv"><button class="btn sm" data-x="up" ${si === 0 ? 'disabled' : ''}>${IC.up} 上移</button><button class="btn sm" data-x="down" ${si === it.steps.length - 1 ? 'disabled' : ''}>${IC.down} 下移</button><button class="btn sm dangert" data-x="del">刪除項次</button></div>
-    <div class="err" hidden></div>
-    <div class="sbtns"><button class="btn" data-x="cancel">取消</button><button class="btn pri" data-x="ok">完成</button></div>`;
-  const q = s => L.el.querySelector(s);
-  const collect = () => {
-    tmp.title = q('#s_t').value; tmp.desc = q('#s_d').value; tmp.key = q('#s_k').checked; tmp.inOn = q('#s_ion').checked; tmp.input = q('#s_i').value;
-    L.el.querySelectorAll('[data-ni]').forEach(ta => { tmp.notes[+ta.dataset.ni].text = ta.value; });
-  };
-  const redraw = () => { q('.sheet').innerHTML = body(); };
-  const valid = () => { if (tmp.title.trim()) return true; const e = q('.err'); e.textContent = '請填項次名稱'; e.hidden = false; q('#s_t').focus(); return false; };
-  const commit = () => {
-    it.steps[si] = { id: tmp.id, title: tmp.title.trim(), desc: tmp.desc.replace(/\s+$/, ''), key: !!tmp.key, input: tmp.inOn ? (tmp.input.trim() || '結果') : '',
-      notes: tmp.notes.filter(n => n.text.trim()).map(n => ({ ...n, text: n.text.trim() })) };
-    EDIT.dirty = true;
-  };
-  const move = dir => { collect(); if (!valid()) return; commit(); const j = si + dir; if (j >= 0 && j < it.steps.length) [it.steps[si], it.steps[j]] = [it.steps[j], it.steps[si]]; popLayer(L); reEdit(); };
-  L = pushLayer(body(), {
-    cancel() { if (isNew) it.steps.splice(si, 1); popLayer(L); reEdit(); },
-    ok() { collect(); if (!valid()) return; commit(); popLayer(L); reEdit(); },
-    addN() { collect(); tmp.notes.push({ id: uid(), text: '', by: '', at: 0 }); redraw(); const all = L.el.querySelectorAll('[data-ni]'); if (all.length) all[all.length - 1].focus(); },
-    delN(b) { collect(); tmp.notes.splice(+b.dataset.i, 1); redraw(); },
-    up() { move(-1); }, down() { move(1); },
-    async del() { const ok = await dlg({ title: '刪除這個項次？', msg: tmp.title || '（還沒填名稱）', ok: '刪除', danger: true }); if (!ok) return; it.steps.splice(si, 1); EDIT.dirty = true; popLayer(L); reEdit(); }
-  });
-  L.el.addEventListener('change', e => { if (e.target.id === 's_ion') { q('#s_i').classList.toggle('hide', !e.target.checked); if (e.target.checked) q('#s_i').focus(); } });
-  if (isNew) setTimeout(() => { const el = q('#s_t'); if (el) el.focus(); }, 60);
 }
 
 /* ---------- 設定 ---------- */
 function vSet() {
+  const admin = isAdmin();
   let h = topBar({ title: '設定', back: '#/' }) + '<main class="wrap">';
   h += `<section class="ss"><h2>我的名字</h2><p class="hint">開始執行任務時會自動帶入。</p><input data-set="myName" value="${esc(DB.myName)}" placeholder="例：下士 王小明" autocomplete="off"></section>`;
   h += '<section class="ss"><h2>SOP檔</h2>';
-  if (ADMIN) {
+  if (admin) {
     h += `<p class="hint">${DB.lastExport ? `上次匯出：${fmtDT(DB.lastExport)}。` : '還沒匯出過。'}${unpublished() ? '<b class="wn">有修改還沒發出去。</b>' : ''}</p>
       <div class="btns2"><button class="btn pri" data-act="exportPack">${IC.share} 分享SOP檔</button><button class="btn" data-act="exportPack" data-dl="1">${IC.download} 下載SOP檔</button></div>
       <p class="hint">把檔案傳給大家，請他們在這一頁按「匯入SOP檔」。</p>`;
   } else {
     h += `<p class="hint">${DB.packInfo ? `目前的SOP是 ${fmtDT(DB.packInfo.exportedAt)} 匯出的版本。` : '還沒匯入過SOP檔。'}管理者更新SOP後，重新匯入新的檔案就好，執行紀錄會保留。</p>`;
   }
-  h += `<button class="btn${ADMIN ? '' : ' pri'}" data-act="importFile">${IC.upload} 匯入SOP檔或備份檔</button></section>`;
-  h += `<section class="ss"><h2>單位名稱</h2>${ADMIN ? `<input data-set="unit" value="${esc(DB.unit)}" placeholder="例：本部連" autocomplete="off">` : `<p class="hint">${esc(DB.unit || '（未設定）')}</p>`}</section>`;
-  h += '<section class="ss"><h2>管理者</h2>';
-  if (!DB.pinHash) h += `<p class="hint">設定管理密碼後，這支手機就能建立和修改SOP。匯出的SOP檔會帶著這組密碼，其他手機沒有密碼就不能改SOP。</p><button class="btn" data-act="adminEnter">設定管理密碼</button>`;
-  else if (!ADMIN) h += `<p class="hint">輸入管理密碼才能修改SOP。</p><button class="btn" data-act="adminEnter">${IC.lock} 解鎖管理模式</button><div><button class="lnk" data-act="forgotPin">忘記密碼？</button></div>`;
-  else h += `<div class="btns2"><button class="btn" data-act="lock">${IC.lock} 鎖定</button><button class="btn" data-act="changePin">變更管理密碼</button></div>`;
-  h += '</section>';
+  h += `<button class="btn${admin ? '' : ' pri'}" data-act="importFile">${IC.upload} 匯入SOP檔或備份檔</button></section>`;
+  h += `<section class="ss"><h2>這支手機的身分</h2>${admin
+    ? `<p class="hint">目前是<b>管理者</b>：可以建立和修改SOP、匯出SOP檔、審核大家回報的狀況。</p><button class="btn" data-act="setRole" data-r="member">改成執行者</button>`
+    : `<p class="hint">目前是<b>執行者</b>：看SOP、執行任務、回報。要建立或修改SOP，改成管理者。</p><button class="btn" data-act="setRole" data-r="admin">改成管理者</button>`}</section>`;
+  h += `<section class="ss"><h2>單位名稱</h2>${admin ? `<input data-set="unit" value="${esc(DB.unit)}" placeholder="例：本部連" autocomplete="off">` : `<p class="hint">${esc(DB.unit || '（未設定）')}</p>`}</section>`;
   h += `<section class="ss"><h2>備份</h2><p class="hint">資料只存在這支手機的瀏覽器裡。${DB.lastBackup ? `上次備份：${fmtDT(DB.lastBackup)}。` : '還沒備份過。'}換手機或清除瀏覽器資料前，先下載完整備份。</p><button class="btn" data-act="backup">${IC.download} 下載完整備份</button></section>`;
   const kb = Math.max(1, Math.round(JSON.stringify(DB).length * 2 / 1024));
-  h += `<section class="ss about"><p>任務SOP系統 ${APP_VER}</p><p class="hint">任務 ${DB.tasks.length} 個，執行紀錄 ${DB.runs.length} 筆，資料約 ${kb} KB。</p>${ADMIN ? `<button class="lnk dangert" data-act="wipe">清除這支手機的所有資料</button>` : ''}</section>`;
+  h += `<section class="ss about"><p>任務SOP系統 ${APP_VER}</p><p class="hint">任務 ${DB.tasks.length} 個，執行紀錄 ${DB.runs.length} 筆，資料約 ${kb} KB。</p><button class="lnk dangert" data-act="wipe">清除這支手機的所有資料</button></section>`;
   return h + '</main>' + tabs('');
 }
 let SETT;
@@ -908,38 +992,21 @@ function settingsInput(el) { const k = el.dataset.set; DB[k] = el.value.trim(); 
 
 /* ---------- 動作 ---------- */
 const ACT = {
-  lock() { setAdmin(false); const r = route(); EDIT = null; if (r.name === 'edit' || r.name === 'review') location.hash = '#/'; render(); toast('已鎖定管理模式'); },
   newTask() { location.hash = '#/edit/new'; },
-
-  async adminEnter() {
-    if (!DB.pinHash) {
-      const v = await dlg({ title: '設定管理密碼', msg: '4～8 位數字。之後修改SOP都要輸入這組密碼，請記好；忘記了沒辦法找回。',
-        fields: [{ key: 'a', label: '管理密碼', type: 'password', mode: 'numeric', req: true }, { key: 'b', label: '再輸入一次', type: 'password', mode: 'numeric', req: true }],
-        validate: v => !/^\d{4,8}$/.test(v.a) ? '請輸入 4～8 位數字' : v.a !== v.b ? '兩次輸入的密碼不一樣' : '', ok: '設定並進入' });
-      if (!v) return;
-      DB.pinHash = pinHash(v.a); save(); setAdmin(true); render(); toast('已進入管理模式'); return;
+  iAmAdmin() { DB.role = 'admin'; save(); render(); toast('這支手機現在是管理者'); },
+  async setRole(a) {
+    const r = a.dataset.r;
+    if (r === 'admin' && DB.packInfo) {
+      const ok = await dlg({ title: '改成管理者？', msg: '改成管理者後，這支手機就能修改SOP。\n改的內容只在這支手機上；用改過的SOP執行，回報上會標出「SOP有改過」。', ok: '改成管理者' });
+      if (!ok) return;
     }
-    const v = await dlg({ title: '解鎖管理模式', fields: [{ key: 'a', label: '管理密碼', type: 'password', mode: 'numeric', req: true }], validate: v => pinHash(v.a) !== DB.pinHash ? '密碼不對' : '', ok: '解鎖' });
-    if (!v) return;
-    setAdmin(true); render(); toast('已進入管理模式');
-  },
-  async changePin() {
-    const v = await dlg({ title: '變更管理密碼', fields: [{ key: 'a', label: '新密碼（4～8 位數字）', type: 'password', mode: 'numeric', req: true }, { key: 'b', label: '再輸入一次', type: 'password', mode: 'numeric', req: true }],
-      validate: v => !/^\d{4,8}$/.test(v.a) ? '請輸入 4～8 位數字' : v.a !== v.b ? '兩次輸入的密碼不一樣' : '', ok: '變更' });
-    if (!v) return;
-    DB.pinHash = pinHash(v.a); DB.packDirty = true; save(); render(); toast('已變更，下次匯出的SOP檔會用新密碼');
-  },
-  async forgotPin() {
-    const v = await dlg({ title: '忘記管理密碼', msg: '密碼沒辦法找回，只能清除這支手機的所有資料後重新設定。\n清除前，可以先到每個任務按「複製成文字」把內容存起來，重設後在新任務裡用「貼上文字建立」貼回去。\n確定要清除，請輸入「清除」。',
-      fields: [{ key: 'c', label: '輸入「清除」', req: true }], validate: v => v.c !== '清除' ? '請輸入「清除」兩個字' : '', ok: '清除所有資料', danger: true });
-    if (!v) return;
-    DB = freshDB(); save(); setAdmin(false); location.hash = '#/'; render(); toast('已清除');
+    DB.role = r; save(); render(); toast(r === 'admin' ? '這支手機現在是管理者' : '這支手機現在是執行者');
   },
   async wipe() {
     const v = await dlg({ title: '清除所有資料？', msg: '這支手機上的SOP、執行紀錄、待審都會刪除，不能復原。建議先下載完整備份。\n確定要清除，請輸入「清除」。',
       fields: [{ key: 'c', label: '輸入「清除」', req: true }], validate: v => v.c !== '清除' ? '請輸入「清除」兩個字' : '', ok: '清除所有資料', danger: true });
     if (!v) return;
-    DB = freshDB(); save(); setAdmin(false); location.hash = '#/'; render(); toast('已清除');
+    DB = freshDB(); save(); location.hash = '#/'; render(); toast('已清除');
   },
 
   /* SOP檔、備份 */
@@ -947,7 +1014,7 @@ const ACT = {
     if (!DB.tasks.length) return alertDlg('還沒有任務', '先建立任務再匯出。');
     const tasks = clone(DB.tasks).map(t => { if (t.dirty || !t.rev) { t.rev = (t.rev || 0) + 1; t.dirty = false; } return t; });
     const at = now();
-    const pack = { type: 'sop-pack', schema: 1, app: APP_VER, unit: DB.unit, exportedAt: at, pinHash: DB.pinHash, tasks };
+    const pack = { type: 'sop-pack', schema: 1, app: APP_VER, unit: DB.unit, exportedAt: at, tasks };
     const r = await shareFile(JSON.stringify(pack), `SOP_${stamp()}.json`, !!(a && a.dataset.dl));
     if (r === 'cancel') return;
     DB.tasks = tasks.map(normTask); DB.lastExport = at; DB.packDirty = false; save(); render();
@@ -974,7 +1041,7 @@ const ACT = {
     const v = await dlg({ title: '開始執行', msg: `${t.name}（${revLabel(t)}，共 ${flat(t).length} 項）\n一次只開放一個項次，做完才能往下，每一步都會記錄時間。`,
       fields: [{ key: 'by', label: '執行人', value: DB.myName, req: true, ph: '例：下士 王小明' }], ok: '開始' });
     if (!v) return;
-    const run = { id: uid(), taskId: t.id, taskName: t.name, rev: t.rev, by: v.by, startAt: now(), endAt: 0, status: 'doing', abortReason: '', log: [], reps: [], src: 'local', sent: false };
+    const run = { id: uid(), taskId: t.id, taskName: t.name, rev: t.rev, by: v.by, startAt: now(), endAt: 0, status: 'doing', abortReason: '', mod: !!(t.dirty && t.rev), log: [], reps: [], src: 'local', sent: false };
     DB.runs.unshift(run); DB.myName = v.by; save();
     location.hash = '#/run/' + run.id;
   },
@@ -988,7 +1055,7 @@ const ACT = {
       if (!val) { const e = $('#cerr'); e.textContent = `請先填寫「${s.input}」`; e.hidden = false; inp.focus(); return; }
     }
     run.log.push(val ? { sid: s.id, at: now(), val } : { sid: s.id, at: now() });
-    save(); SMOOTH = true; render();
+    markMod(run); save(); SMOOTH = true; render();
   },
   async stepNA(a) {
     const run = getRun(a.dataset.id); const st = runState(run);
@@ -997,7 +1064,7 @@ const ACT = {
       validate: v => v.r.length < 2 ? '原因請寫清楚一點' : '', ok: '標成不適用' });
     if (!v) return;
     const st2 = runState(run); if (!st2.cur || st2.cur.s.id !== a.dataset.sid) return render();
-    run.log.push({ sid: a.dataset.sid, at: now(), na: v.r }); save(); SMOOTH = true; render();
+    run.log.push({ sid: a.dataset.sid, at: now(), na: v.r }); markMod(run); save(); SMOOTH = true; render();
   },
   stepReport(a) { reportFlow(getRun(a.dataset.id), a.dataset.sid || ''); },
   async undoStep(a) {
@@ -1008,7 +1075,7 @@ const ACT = {
   },
   peek(a) {
     const run = getRun(a.dataset.id), t = getTask(run.taskId), x = stepInfo(t, a.dataset.sid); if (!x) return;
-    let L; L = pushLayer(`<div class="cpath">${cn(x.oi+1)}、${esc(x.o.title)}　（${cn(x.ii+1)}）${esc(x.it.title)}</div><h3>${x.si+1}. ${esc(x.s.title)}${tagsOf(x.s)}</h3>${x.s.desc ? `<div class="cdesc">${nl2br(x.s.desc)}</div>` : ''}${notesBox(x.s.notes, '注意')}<p class="lockmsg">${IC.lock} 還沒輪到這一步，前面的項次完成後才能執行。</p><div class="sbtns"><button class="btn" data-x="cancel">關閉</button></div>`, { cancel: () => popLayer(L) });
+    let L; L = pushLayer(`<div class="cpath">${cn(x.oi+1)}、${esc(x.o.title)}${x.it.title ? `　（${cn(x.ii+1)}）${esc(x.it.title)}` : ''}</div><h3>${x.si+1}. ${esc(x.s.title)}${tagsOf(x.s)}</h3>${x.s.desc ? `<div class="cdesc">${nl2br(x.s.desc)}</div>` : ''}${notesBox(x.s.notes, '注意')}<p class="lockmsg">${IC.lock} 還沒輪到這一步，前面的項次完成後才能執行。</p><div class="sbtns"><button class="btn" data-x="cancel">關閉</button></div>`, { cancel: () => popLayer(L) });
   },
   runMenu(a) {
     const run = getRun(a.dataset.id); let L;
@@ -1022,7 +1089,7 @@ const ACT = {
   },
   finishRun(a) {
     const run = getRun(a.dataset.id); if (!run || runState(run).cur) return render();
-    run.status = 'done'; run.endAt = now(); save(); location.hash = '#/rec/' + run.id;
+    markMod(run); run.status = 'done'; run.endAt = now(); save(); location.hash = '#/rec/' + run.id;
   },
   abortRun(a) { abortFlow(getRun(a.dataset.id)); },
 
@@ -1064,7 +1131,7 @@ const ACT = {
     const t = getTask(p.taskId); if (!t) return;
     const x = stepInfo(t, p.sid);
     const v = await dlg({ title: '加入注意事項', msg: `加到：${x ? `${x.path} ${x.s.title}` : '整個任務的「執行前注意」'}\n可以先修改文字，讓下一個人一看就懂。`,
-      fields: [{ key: 'txt', label: '注意事項', multi: true, rows: 4, req: true, value: p.what + (p.how ? `\n處置：${p.how}` : '') }], ok: '加入' });
+      fields: [{ key: 'txt', label: '注意事項', multi: true, rows: 3, req: true, value: p.what + (p.how ? `（處置：${p.how}）` : '') }], ok: '加入' });
     if (!v) return;
     const note = { id: uid(), text: v.txt, by: p.by, at: p.at };
     if (x) x.s.notes.push(note); else t.notes.push(note);
@@ -1084,73 +1151,52 @@ const ACT = {
   },
   editSave() {
     if (!EDIT) return;
-    const d = EDIT.draft; d.name = d.name.trim(); d.cat = d.cat.trim();
-    if (!d.name) return alertDlg('請填任務名稱', '');
-    for (const x of flat(d)) if (!x.s.title.trim()) return alertDlg('有項次沒有名稱', `${x.path} 還沒填名稱。`);
-    d.outlines.forEach(o => { o.title = o.title.trim(); o.items.forEach(i => { i.title = i.title.trim(); }); });
-    d.notes = d.notes.filter(n => n.text.trim()).map(n => ({ ...n, text: n.text.trim() }));
-    if (EDIT.isNew) { d.rev = 0; d.dirty = true; d.updatedAt = now(); DB.tasks.push(normTask(d)); }
-    else {
-      const i = DB.tasks.findIndex(t => t.id === d.id), old = DB.tasks[i];
-      const sig = t => JSON.stringify([t.name, t.cat, t.purpose, t.notes, t.outlines]);
-      if (sig(old) !== sig(d)) { d.dirty = true; d.updatedAt = now(); }
-      DB.tasks[i] = normTask(d);
+    const name = EDIT.name.trim();
+    if (!name) { alertDlg('請填任務名稱', ''); return; }
+    const r = linesToTask(EDIT.lines);
+    if (r.err) {
+      EDIT.bad = r.err.id; renumber();
+      const el = lineEl(r.err.id); if (el) el.scrollIntoView({ block: 'center' });
+      alertDlg('有一行放錯位置', r.err.msg); return;
     }
-    save(); const id = d.id; EDIT = null; location.hash = '#/t/' + id; toast('已儲存');
+    const base = EDIT.isNew ? null : getTask(EDIT.id);
+    const t = normTask({ id: base ? base.id : uid(), name, cat: EDIT.cat.trim(), purpose: r.purpose, notes: r.notes, outlines: r.outlines,
+      rev: base ? base.rev : 0, dirty: base ? base.dirty : true, updatedAt: base ? base.updatedAt : now() });
+    if (base) {
+      const sig = x => JSON.stringify([x.name, x.cat, x.purpose, x.notes, x.outlines]);
+      if (sig(base) !== sig(t)) { t.dirty = true; t.updatedAt = now(); }
+      DB.tasks[DB.tasks.indexOf(base)] = t;
+    } else DB.tasks.push(t);
+    save(); EDIT = null; location.hash = '#/t/' + t.id; toast('已儲存');
   },
   async delTask() {
-    const d = EDIT.draft;
-    const ok = await dlg({ title: '刪除這個任務？', msg: `「${d.name || '（未命名）'}」會從SOP移除，執行紀錄會保留。\n刪除後要重新匯出SOP檔，大家匯入後才會消失。`, ok: '刪除', danger: true });
+    const t = getTask(EDIT.id);
+    const ok = await dlg({ title: '刪除這個任務？', msg: `「${t ? t.name : EDIT.name}」會從SOP移除，執行紀錄會保留。\n刪除後要重新匯出SOP檔，大家匯入後才會消失。`, ok: '刪除', danger: true });
     if (!ok) return;
-    DB.tasks = DB.tasks.filter(t => t.id !== d.id); DB.packDirty = true; save(); EDIT = null; location.hash = '#/'; toast('已刪除');
+    DB.tasks = DB.tasks.filter(x => x.id !== EDIT.id); DB.packDirty = true; save(); EDIT = null; location.hash = '#/'; toast('已刪除');
   },
-  addTNote() { EDIT.draft.notes.push({ id: uid(), text: '', by: '', at: 0 }); EDIT.dirty = true; reEdit(`[data-f="tn.${EDIT.draft.notes.length - 1}"]`); },
-  delTNote(a) { EDIT.draft.notes.splice(+a.dataset.i, 1); EDIT.dirty = true; reEdit(); },
-  addOutline() { const d = EDIT.draft; d.outlines.push({ id: uid(), title: '', items: [{ id: uid(), title: '', steps: [] }] }); EDIT.dirty = true; reEdit(`[data-f="o.${d.outlines.length - 1}"]`); },
-  addItem(a) { const oi = +a.dataset.p, o = EDIT.draft.outlines[oi]; o.items.push({ id: uid(), title: '', steps: [] }); EDIT.dirty = true; reEdit(`[data-f="i.${oi}.${o.items.length - 1}"]`); },
-  addStep(a) {
-    const [oi, ii] = a.dataset.p.split('.').map(Number), it = EDIT.draft.outlines[oi].items[ii];
-    it.steps.push({ id: uid(), title: '', desc: '', input: '', key: false, notes: [] }); EDIT.dirty = true; reEdit();
-    openStepEditor(`${oi}.${ii}.${it.steps.length - 1}`, true);
+  addLine() {
+    const last = EDIT.lines.length - 1;
+    insertLine(last, { id: uid(), type: last >= 0 ? nextType(last) : 'o', text: '' }, true);
   },
-  editStep(a) { openStepEditor(a.dataset.p, false); },
-  mv(a) {
-    const d = EDIT.draft, dir = +a.dataset.d; let arr, i;
-    if (a.dataset.k === 'o') { arr = d.outlines; i = +a.dataset.p; } else { const [oi, ii] = a.dataset.p.split('.').map(Number); arr = d.outlines[oi].items; i = ii; }
-    const j = i + dir; if (j < 0 || j >= arr.length) return;
-    [arr[i], arr[j]] = [arr[j], arr[i]]; EDIT.dirty = true; reEdit();
-  },
-  async rm(a) {
-    const d = EDIT.draft;
-    if (a.dataset.k === 'o') {
-      const oi = +a.dataset.p, o = d.outlines[oi], n = o.items.reduce((s, i) => s + i.steps.length, 0);
-      if (o.title || n) { const ok = await dlg({ title: '刪除大綱？', msg: `「${cn(oi+1)}、${o.title || '（未命名）'}」${n ? `和底下 ${n} 個項次` : ''}都會刪除。`, ok: '刪除', danger: true }); if (!ok) return; }
-      d.outlines.splice(oi, 1);
-    } else {
-      const [oi, ii] = a.dataset.p.split('.').map(Number), it = d.outlines[oi].items[ii];
-      if (it.title || it.steps.length) { const ok = await dlg({ title: '刪除項目？', msg: `「（${cn(ii+1)}）${it.title || '（未命名）'}」${it.steps.length ? `和底下 ${it.steps.length} 個項次` : ''}都會刪除。`, ok: '刪除', danger: true }); if (!ok) return; }
-      d.outlines[oi].items.splice(ii, 1);
-    }
-    EDIT.dirty = true; reEdit();
-  },
-  async pasteText() {
-    const v = await dlg({ title: '貼上文字建立', html: true,
-      msg: `每一行開頭用下面的寫法，系統會自動分層：<div class="fmt">一、大綱名稱<br>（一）項目名稱<br>1. 項次名稱<br>說明：怎麼做（很多行就每行都用「說明：」開頭）<br>填寫：完成時要填的結果，例：數量<br>※ 注意事項<br>★ 放在項次名稱前面＝關鍵步驟</div>`,
-      fields: [{ key: 't', label: '貼上內容', multi: true, rows: 9, req: true }], ok: '解析' });
-    if (!v) return;
-    const r = parseOutline(v.t);
-    if (!r.steps) return alertDlg('沒有讀到任何項次', '請確認項次是用「1.」「2.」這樣的數字開頭。');
-    const d = EDIT.draft, has = d.outlines.length > 0;
-    const sum = `讀到 大綱 ${r.outlines.length} 個、項目 ${r.items} 個、項次 ${r.steps} 個${r.notes ? `、注意事項 ${r.notes} 則` : ''}。${r.skipped ? `\n有 ${r.skipped} 行不知道要放哪裡，已略過。` : ''}`;
-    const c = await choose('解析結果', sum + (has ? '\n\n要接在目前的大綱後面，還是整個取代？' : ''), has
-      ? [{ k: 'append', label: '接在後面', cls: 'pri' }, { k: 'replace', label: '取代目前的大綱', cls: 'dangert' }]
-      : [{ k: 'append', label: '套用', cls: 'pri' }]);
-    if (!c) return;
-    if (c === 'replace') d.outlines = r.outlines; else d.outlines.push(...r.outlines);
-    if (!d.name && r.name) d.name = r.name;
-    if (!d.purpose && r.purpose) d.purpose = r.purpose;
-    d.notes.push(...r.tnotes);
-    EDIT.dirty = true; reEdit(); toast('已套用，檢查一下再儲存');
+  lnMenu(a) {
+    const idx = lnIdx(a.dataset.id); if (idx < 0) return;
+    const l = EDIT.lines[idx], n = EDIT.lines.length; let L;
+    const close = () => popLayer(L);
+    const move = d => { const j = idx + d; if (j < 0 || j >= n) return; [EDIT.lines[idx], EDIT.lines[j]] = [EDIT.lines[j], EDIT.lines[idx]]; EDIT.dirty = true; close(); redrawLines(); };
+    const hs = {
+      cancel: close, up: () => move(-1), down: () => move(1),
+      ins: () => { close(); insertLine(idx, { id: uid(), type: nextType(idx), text: '' }, true); },
+      del: () => { close(); removeLine(idx, false); },
+    };
+    Object.keys(LT).forEach(k => { hs['t_' + k] = () => { l.type = k; if (k !== 's') l.key = false; EDIT.dirty = true; EDIT.bad = null; close(); renumber(); grow(taOf(l.id)); }; });
+    L = pushLayer(`<h3>這一行是…</h3><div class="msg">${esc(l.text || '（空白）')}</div>
+      <div class="tgrid">${Object.keys(LT).map(k => `<button class="btn${l.type === k ? ' pri' : ''}" data-x="t_${k}">${LT[k]}</button>`).join('')}</div>
+      <p class="hint">大綱＝階段，項目＝分組，項次＝要做的動作；說明＝項次怎麼做，注意＝要小心的地方，要填＝完成時要填的結果。</p>
+      ${l.type === 's' ? `<label class="ck"><input type="checkbox" id="lkey" ${l.key ? 'checked' : ''}><span><b>關鍵步驟</b>：執行時不能標「不適用」</span></label>` : ''}
+      <div class="smv"><button class="btn sm" data-x="up" ${idx === 0 ? 'disabled' : ''}>${IC.up} 上移</button><button class="btn sm" data-x="down" ${idx === n - 1 ? 'disabled' : ''}>${IC.down} 下移</button><button class="btn sm" data-x="ins">${IC.plus} 下面加一行</button><button class="btn sm dangert" data-x="del">${IC.x} 刪除這一行</button></div>
+      <div class="sbtns"><button class="btn" data-x="cancel">關閉</button></div>`, hs);
+    L.el.addEventListener('change', e => { if (e.target.id === 'lkey') { l.key = e.target.checked; EDIT.dirty = true; renumber(); } });
   },
 };
 async function reportFlow(run, sid) {
@@ -1167,20 +1213,20 @@ async function abortFlow(run) {
   if (!run) return;
   const v = await dlg({ title: '中止任務？', msg: '中止後這筆執行就結束了，不能再繼續。中止和原因都會寫進回報。', fields: [{ key: 'r', label: '中止原因', multi: true, rows: 2, req: true }], ok: '中止任務', danger: true });
   if (!v) return;
-  run.status = 'abort'; run.abortReason = v.r; run.endAt = now(); save(); location.hash = '#/rec/' + run.id;
+  markMod(run); run.status = 'abort'; run.abortReason = v.r; run.endAt = now(); save(); location.hash = '#/rec/' + run.id;
 }
 
 /* ---------- 匯入檔案 ---------- */
 async function handleFile(text) {
   let o;
-  try { o = JSON.parse(String(text).replace(/^﻿/, '')); } catch (e) { return alertDlg('看不懂這個檔案', '請選管理者傳來的「SOP_日期.json」，或之前下載的備份檔。'); }
+  try { o = JSON.parse(String(text).replace(/^﻿/, '')); } catch (e) { return alertDlg('看不懂這個檔案', '請選管理者傳來的「SOP_日期」檔，或之前下載的備份檔。'); }
   if (o && o.type === 'sop-pack' && Array.isArray(o.tasks)) {
-    const pending = ADMIN && unpublished() && DB.tasks.length;
-    const ok = await dlg({ title: '匯入SOP檔', msg: `${o.unit ? o.unit + '，' : ''}${fmtDT(o.exportedAt)} 匯出，共 ${o.tasks.length} 個任務。\n這支手機上的SOP會換成這份，執行紀錄會保留。${pending ? '\n\n注意：你有還沒匯出的修改，匯入後會被蓋掉。' : ''}`, ok: '匯入' });
+    const warn = isAdmin() && DB.tasks.length && unpublished();
+    const ok = await dlg({ title: '匯入SOP檔', msg: `${o.unit ? o.unit + '，' : ''}${fmtDT(o.exportedAt)} 匯出，共 ${o.tasks.length} 個任務。\n這支手機上的SOP會換成這份，執行紀錄會保留。${warn ? '\n\n注意：你有還沒匯出的修改，匯入後會被蓋掉。' : ''}`, ok: '匯入' });
     if (!ok) return;
-    DB.tasks = o.tasks.map(normTask);
+    DB.tasks = o.tasks.map(t => normTask({ ...t, dirty: false }));
     if (o.unit) DB.unit = String(o.unit);
-    if (o.pinHash && o.pinHash !== DB.pinHash) { DB.pinHash = String(o.pinHash); setAdmin(false); }
+    if (!DB.role) DB.role = 'member';
     DB.packInfo = { exportedAt: +o.exportedAt || now(), importedAt: now() }; DB.packDirty = false;
     save(); EDIT = null; location.hash = '#/'; render(); toast(`已匯入 ${o.tasks.length} 個任務`);
     return;
@@ -1188,8 +1234,7 @@ async function handleFile(text) {
   if (o && o.type === 'sop-backup' && o.data) {
     const ok = await dlg({ title: '還原備份？', msg: `${fmtDT(o.exportedAt)} 的備份。\n這支手機目前的所有資料（SOP、執行紀錄、待審）都會換成備份裡的內容。`, ok: '還原', danger: true });
     if (!ok) return;
-    DB = Object.assign(freshDB(), o.data); DB.tasks = (DB.tasks || []).map(normTask);
-    setAdmin(false); save(); EDIT = null; location.hash = '#/'; render(); toast('已還原備份');
+    DB = fromRaw(o.data); save(); EDIT = null; location.hash = '#/'; render(); toast('已還原備份');
     return;
   }
   alertDlg('看不懂這個檔案', '這不是SOP檔，也不是備份檔。');
@@ -1205,8 +1250,8 @@ function render() {
     case 'run': h = vRun(r.id); after = () => afterRun(r.id); break;
     case 'rec': h = vRec(r.id); break;
     case 'recs': h = vRecs(r.id); break;
-    case 'review': h = ADMIN ? vReview() : vHome(); break;
-    case 'edit': h = ADMIN ? vEdit(r.id) : vHome(); break;
+    case 'review': h = isAdmin() ? vReview() : vHome(); break;
+    case 'edit': if (isAdmin()) { h = vEdit(r.id); after = afterEdit; } else h = vHome(); break;
     case 'set': h = vSet(); break;
     default: h = vHome();
   }
@@ -1225,9 +1270,21 @@ function onHash() {
 /* ---------- 啟動 ---------- */
 const APP = $('#app');
 APP.addEventListener('click', e => { const a = e.target.closest('[data-act]'); if (!a || a.disabled) return; const f = ACT[a.dataset.act]; if (!f) return; e.preventDefault(); f(a, e); });
-APP.addEventListener('input', e => { const t = e.target; if (t.dataset.f !== undefined) editInput(t); else if (t.id === 'q') filterTasks(t.value); else if (t.dataset.set) settingsInput(t); });
-APP.addEventListener('keydown', e => { if (e.key === 'Enter' && e.target.id === 'cval') { e.preventDefault(); e.target.blur(); } });
+APP.addEventListener('input', e => {
+  const t = e.target;
+  if (t.classList.contains('lt')) onLineInput(t);
+  else if (t.dataset.f === 'name' || t.dataset.f === 'cat') { if (EDIT) { EDIT[t.dataset.f] = t.value; EDIT.dirty = true; } }
+  else if (t.id === 'q') filterTasks(t.value);
+  else if (t.dataset.set) settingsInput(t);
+});
+APP.addEventListener('keydown', e => {
+  if (e.target.classList && e.target.classList.contains('lt')) onLineKey(e);
+  else if (e.key === 'Enter' && e.target.id === 'cval') { e.preventDefault(); e.target.blur(); }
+});
+APP.addEventListener('paste', e => { if (e.target.classList && e.target.classList.contains('lt')) onLinePaste(e); });
+APP.addEventListener('compositionend', () => { COMP_END = now(); });
 document.addEventListener('keydown', e => { if (e.key === 'Escape' && LAYERS.length) { const L = LAYERS[LAYERS.length - 1]; if (L.handlers.cancel) L.handlers.cancel(); } });
+let RZ; window.addEventListener('resize', () => { clearTimeout(RZ); RZ = setTimeout(() => { if (EDIT) document.querySelectorAll('.lt').forEach(grow); }, 150); });
 $('#filein').addEventListener('change', e => {
   const f = e.target.files && e.target.files[0]; if (!f) return;
   const rd = new FileReader();
