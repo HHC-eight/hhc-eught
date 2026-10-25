@@ -67,6 +67,8 @@ html[data-theme="night"]{
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
 html,body{margin:0;padding:0;background:var(--bg);color:var(--text);
   font-family:-apple-system,BlinkMacSystemFont,"PingFang TC","Noto Sans TC","Microsoft JhengHei",sans-serif;}
+/* v194：左右滑換分頁時，滑到旁邊的那一頁不要撐出可以左右捲的空間 */
+body{overflow-x:clip;}
 body{padding-top:var(--banner-h);padding-bottom:calc(var(--tabbar-h) + 28px + env(safe-area-inset-bottom));
   font-size:15px;line-height:1.5;-webkit-font-smoothing:antialiased;font-variant-numeric:tabular-nums;}
 h1,h2,h3{margin:0 0 10px;}
@@ -586,7 +588,7 @@ button.small.card-more{min-width:44px;min-height:40px;font-size:20px;line-height
       <span class="unit-banner-badge"><i data-ico="star"></i></span>
       <span class="unit-banner-titles">
         <span class="unit-banner-text">陸軍第八軍團 本部連</span>
-        <h1 id="pageTitle">衛哨排班系統 <span class="muted">v193</span></h1>
+        <h1 id="pageTitle">衛哨排班系統 <span class="muted">v194</span></h1>
       </span>
     </span>
     <span class="banner-side right">
@@ -7027,6 +7029,14 @@ const app=document.getElementById('app');
 /* v193 下面的分頁列跟 iPhone 一樣：每個分頁記得自己捲到哪裡（切回來停在原本的位置）；
    再點一次目前的分頁＝回到最上面 */
 const TAB_SCROLL={};
+const TAB_ORDER=['people','preplan','schedule','stats'];
+// 換分頁（分頁列點、左右滑共用）：記住現在這頁捲到哪，換過去後回到那一頁上次的位置
+function switchTab(t){
+  if(t===currentTab) return;
+  TAB_SCROLL[currentTab]=window.scrollY;
+  currentTab=t; window.scrollTo(0,0); render();
+  if(TAB_SCROLL[t]) window.scrollTo(0, TAB_SCROLL[t]);
+}
 document.querySelectorAll('.tabs button').forEach(btn=>{
   btn.addEventListener('click',()=>{
     const t=btn.dataset.tab;
@@ -7034,11 +7044,112 @@ document.querySelectorAll('.tabs button').forEach(btn=>{
       if(window.scrollY>0){ try{ window.scrollTo({top:0, behavior:'smooth'}); }catch(e){ window.scrollTo(0,0); } }
       return;
     }
-    TAB_SCROLL[currentTab]=window.scrollY;
-    currentTab=t; window.scrollTo(0,0); render();
-    if(TAB_SCROLL[t]) window.scrollTo(0, TAB_SCROLL[t]);
+    switchTab(t);
   });
 });
+/* v194 主畫面左右滑換分頁（人員｜預排｜排班｜統計）：手指往左滑＝換到右邊那一頁（排班 → 統計），
+   往右滑＝換到左邊那一頁（排班 → 預排）。畫面跟著手指走；放開時滑得夠遠或夠快才換，不然彈回原位；
+   已經在最左（人員）或最右（統計）再往外滑會有阻力、不換。
+   - 只在主畫面上（有開著的清單、整頁、確認框時不算），上下捲照常
+   - 可以左右捲的地方上左右滑是捲它；從螢幕最左／最右邊開始滑一定是換頁
+   - 拖曳排序的把手、正在打字的欄位不算；其他勤務正在就地編輯時不換（避免打到一半的不見）
+   換頁時舊的那一頁拍一份影子往旁邊滑走（不用等新的一頁畫好），新的一頁從另一邊滑進來。 */
+(function(){
+  const appEl=document.getElementById('app');
+  if(!appEl) return;
+  const AREAS=[appEl, document.querySelector('.topbar'), document.querySelector('.subbar')].filter(Boolean);
+  const IGNORE='[data-pp-handle],[data-drag-handle],[data-no-swipe],input[type=range]';
+  const EDITABLE='textarea,select,[contenteditable],input:not([type=checkbox]):not([type=radio]):not([type=button]):not([type=submit])';
+  const now=()=>(typeof performance!=='undefined' && performance.now)? performance.now() : Date.now();
+  const scrollsX=el=>{ const o=getComputedStyle(el).overflowX; return (o==='auto'||o==='scroll') && el.scrollWidth>el.clientWidth+1; };
+  const inXScroller=t=>{ for(let el=t; el && el!==document.body; el=el.parentElement){ if(scrollsX(el)) return true; } return false; };
+  let tg=null, busy=false, blockUntil=0, running=[], timer=null;
+  // 上一次換頁／彈回的動畫還在跑時手指又放下來：動畫直接跳到最後，接著處理這一次
+  function settleNow(){
+    const l=running; running=[];
+    l.forEach(a=>{ try{ a.finish(); }catch(e){} });
+    if(timer){ clearTimeout(timer); timer=null; }
+    appEl.style.transition=''; appEl.style.transform=''; appEl.style.willChange='';
+    busy=false;
+  }
+  document.addEventListener('touchstart', e=>{
+    tg=null; blockUntil=0;
+    if(busy) settleNow();
+    if(e.touches.length!==1) return;
+    const t=e.target;
+    if(!(t instanceof Element) || !AREAS.some(a=>a.contains(t)) || t.closest(IGNORE)) return;
+    const ed=t.closest(EDITABLE); if(ed && ed===document.activeElement) return;
+    if([...document.body.children].some(c=>FX.kindOf(c))) return; // 有開著的視窗
+    if(typeof miscInlineEditId!=='undefined' && miscInlineEditId) return;
+    const i=TAB_ORDER.indexOf(currentTab); if(i<0) return;
+    const p=e.touches[0], W=window.innerWidth||document.documentElement.clientWidth;
+    tg={x0:p.clientX, y0:p.clientY, target:t, edge:p.clientX<=24 || p.clientX>=W-24, mode:null, dx:0, i, W, s:[[now(), p.clientX]]};
+  }, {passive:true, capture:true});
+  function onMove(e){
+    if(!tg) return;
+    if(e.touches.length!==1){ if(tg.mode) springBack(); tg=null; return; }
+    const p=e.touches[0], dx=p.clientX-tg.x0, dy=p.clientY-tg.y0;
+    tg.s.push([now(), p.clientX]); if(tg.s.length>12) tg.s.shift();
+    if(!tg.mode){
+      const ax=Math.abs(dx), ay=Math.abs(dy);
+      if(ax<10 && ay<10) return; // 還看不出方向
+      if(ax>ay*1.5 && (tg.edge || !inXScroller(tg.target)) && e.cancelable){ tg.mode='h'; appEl.style.transition='none'; appEl.style.willChange='transform'; }
+      else { tg=null; return; } // 上下捲：照常
+    }
+    e.preventDefault(); // 左右滑的時候畫面不要跟著上下捲
+    tg.dx=dx;
+    const j=tg.i+(dx<0? 1 : -1);
+    const shown=(j<0 || j>=TAB_ORDER.length)? dx*0.25 : dx; // 最左／最右：有阻力
+    appEl.style.transform=`translateX(${shown}px)`;
+  }
+  AREAS.forEach(a=>a.addEventListener('touchmove', onMove, {passive:false}));
+  function springBack(){
+    appEl.style.transition=`transform .32s ${FX.EASE}`;
+    appEl.style.transform='';
+    busy=true;
+    timer=setTimeout(()=>{ timer=null; busy=false; appEl.style.transition=''; appEl.style.willChange=''; }, 340);
+  }
+  function go(next, dir, W){
+    busy=true;
+    const motion=FX.motionOK();
+    // 舊的一頁：拍影子，從現在的位置往旁邊滑走
+    if(motion && appEl.getElementsByTagName('*').length-appEl.getElementsByTagName('option').length<8000){
+      const gh=FX.ghost(10);
+      if(gh){
+        const r=appEl.getBoundingClientRect(), snap=FX.snapshot(appEl), node=snap.node;
+        node.style.position='absolute'; node.style.left=r.left+'px'; node.style.top=r.top+'px'; node.style.width=r.width+'px';
+        node.style.margin='0'; node.style.transform='none'; node.style.transition='none'; node.style.willChange='';
+        gh.host.style.overflow='hidden';
+        gh.root.appendChild(node); document.body.appendChild(gh.host); FX.restore(snap, node);
+        const a=FX.play(node, [{transform:'translateX(0)'},{transform:`translateX(${-dir*W}px)`}], {duration:280, easing:'cubic-bezier(.2,.7,.3,1)', fill:'forwards'});
+        if(a) running.push(a);
+        FX.whenDone([a], 280, ()=>gh.host.remove());
+      }
+    }
+    // 新的一頁：先放到另一邊（看不到），畫好再滑進來
+    appEl.style.transition='none';
+    appEl.style.transform=motion? `translateX(${dir*W}px)` : '';
+    try{ switchTab(TAB_ORDER[next]); }catch(err){ console.error(err); }
+    if(!motion){ appEl.style.willChange=''; busy=false; return; }
+    appEl.style.transform='';
+    const b=FX.play(appEl, [{transform:`translateX(${dir*W}px)`},{transform:'translateX(0)'}], {duration:340, easing:FX.EASE});
+    if(b) running.push(b);
+    FX.whenDone([b], 340, ()=>{ if(!running.includes(b) && running.length) return; running=running.filter(x=>x!==b); busy=false; appEl.style.transition=''; appEl.style.willChange=''; });
+  }
+  document.addEventListener('touchend', ()=>{
+    if(!tg || !tg.mode){ tg=null; return; }
+    const G=tg; tg=null;
+    if(Math.abs(G.dx)>=10) blockUntil=now()+400; // 拖過之後 iPhone 補的那一下 click 不算
+    const s=G.s, last=s[s.length-1]; let k=s.length-1;
+    while(k>0 && last[0]-s[k-1][0]<=100) k--;
+    const v=(last[1]-s[k][1])/Math.max(1, last[0]-s[k][0]);
+    const dir=G.dx<0? 1 : -1, next=G.i+dir, d=Math.abs(G.dx), vd=-v*dir; // vd>0：朝換頁的方向在動
+    const ok=next>=0 && next<TAB_ORDER.length && ((d>G.W*0.3 && vd>-0.2) || (vd>0.45 && d>30));
+    if(ok) go(next, dir, G.W); else springBack();
+  }, {capture:true});
+  document.addEventListener('touchcancel', ()=>{ if(tg && tg.mode) springBack(); tg=null; }, {capture:true});
+  document.addEventListener('click', e=>{ if(e.isTrusted && blockUntil && now()<blockUntil){ blockUntil=0; e.preventDefault(); e.stopPropagation(); } }, true);
+})();
 document.getElementById('unitRulesBtn').addEventListener('click', ()=>openUnitRulesModal());
 // 頂端紅色「儲存空間已滿」提示：放在.unit-banner裡（跟⚙️同一層、永遠在最上
 // 面），不管開著哪個彈窗都看得到、按得到。按下去先試著重存一次（可能已經清
