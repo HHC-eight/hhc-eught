@@ -588,7 +588,7 @@ button.small.card-more{min-width:44px;min-height:40px;font-size:20px;line-height
       <span class="unit-banner-badge"><i data-ico="star"></i></span>
       <span class="unit-banner-titles">
         <span class="unit-banner-text">陸軍第八軍團 本部連</span>
-        <h1 id="pageTitle">衛哨排班系統 <span class="muted">v194</span></h1>
+        <h1 id="pageTitle">衛哨排班系統 <span class="muted">v195</span></h1>
       </span>
     </span>
     <span class="banner-side right">
@@ -768,9 +768,326 @@ function openCheckpointModal(scope, title, currentDataFn, applyDataFn){
   document.body.appendChild(modal);
   draw();
 }
+/* ===== v195：存進手機前先壓縮（標準 deflate，RFC 1951） =====
+   壓縮：LZ77（32KB 視窗、雜湊鏈、延遲比對）＋每塊動態霍夫曼碼。解壓：查表解碼。
+   bytesToStr15：壓縮後的位元組每 15 個位元變成一個字（0x20～0x801F，不會碰到代理字元），存進 localStorage。 */
+const ZCODEC=(()=>{
+  const LEN_BASE=[3,4,5,6,7,8,9,10,11,13,15,17,19,23,27,31,35,43,51,59,67,83,99,115,131,163,195,227,258];
+  const LEN_EXTRA=[0,0,0,0,0,0,0,0,1,1,1,1,2,2,2,2,3,3,3,3,4,4,4,4,5,5,5,5,0];
+  const DIST_BASE=[1,2,3,4,5,7,9,13,17,25,33,49,65,97,129,193,257,385,513,769,1025,1537,2049,3073,4097,6145,8193,12289,16385,24577];
+  const DIST_EXTRA=[0,0,0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7,8,8,9,9,10,10,11,11,12,12,13,13];
+  const CL_ORDER=[16,17,18,0,8,7,9,6,10,5,11,4,12,3,13,2,14,1,15];
+  // 長度 3..258 → 長度碼 0..28；距離 1..32768 → 距離碼 0..29
+  const LCODE=new Uint8Array(259);
+  for(let c=0;c<29;c++){ const n=1<<LEN_EXTRA[c]; for(let k=0;k<n && LEN_BASE[c]+k<=258;k++) LCODE[LEN_BASE[c]+k]=c; }
+  LCODE[258]=28;
+  const DCODE_LO=new Uint8Array(257), DCODE_HI=new Uint8Array(256); // d<=256 直接查；d>256 用 (d-1)>>7
+  for(let c=0;c<30;c++){ const n=1<<DIST_EXTRA[c]; for(let k=0;k<n;k++){ const d=DIST_BASE[c]+k; if(d<=256) DCODE_LO[d]=c; else DCODE_HI[(d-1)>>7]=c; } }
+  const dcode=d=>d<=256? DCODE_LO[d] : DCODE_HI[(d-1)>>7];
+  // 位元反轉（霍夫曼碼從最高位開始寫）
+  const rev=(code,len)=>{ let r=0; for(let i=0;i<len;i++){ r=(r<<1)|(code&1); code>>>=1; } return r; };
+
+  /* ---- 霍夫曼：依頻率算碼長（最長 limit），不夠的話把頻率減半重算 ---- */
+  function codeLengths(freq, limit){
+    const n=freq.length, lens=new Uint8Array(n);
+    let f=Array.from(freq);
+    for(;;){
+      const syms=[]; for(let i=0;i<n;i++) if(f[i]>0) syms.push(i);
+      if(syms.length===0) return lens;
+      if(syms.length===1){ lens[syms[0]]=1; return lens; }
+      // 兩個佇列的建樹法（已排序的葉子＋依序產生的內部節點）
+      syms.sort((a,b)=>f[a]-f[b] || a-b);
+      const m=syms.length, W=new Float64Array(2*m), P=new Int32Array(2*m).fill(-1);
+      for(let i=0;i<m;i++) W[i]=f[syms[i]];
+      let li=0, ni=m, nEnd=m;
+      const take=()=>{ if(li<m && (ni>=nEnd || W[li]<=W[ni])) return li++; return ni++; };
+      for(let k=0;k<m-1;k++){ const a=take(), b=take(); W[nEnd]=W[a]+W[b]; P[a]=nEnd; P[b]=nEnd; nEnd++; }
+      const depth=new Int32Array(nEnd); let maxd=0;
+      for(let i=nEnd-2;i>=0;i--){ depth[i]=depth[P[i]]+1; }
+      for(let i=0;i<m;i++){ lens[syms[i]]=depth[i]; if(depth[i]>maxd) maxd=depth[i]; }
+      if(maxd<=limit) return lens;
+      lens.fill(0);
+      f=f.map(x=>x>0? Math.max(1, x>>1) : 0);
+    }
+  }
+  function canonCodes(lens){ // 回傳已反轉的碼
+    const maxL=15, cnt=new Uint16Array(maxL+1), next=new Uint16Array(maxL+2), codes=new Uint16Array(lens.length);
+    for(let i=0;i<lens.length;i++) cnt[lens[i]]++;
+    cnt[0]=0; let code=0;
+    for(let b=1;b<=maxL;b++){ code=(code+cnt[b-1])<<1; next[b]=code; }
+    for(let i=0;i<lens.length;i++){ const L=lens[i]; if(L){ codes[i]=rev(next[L], L); next[L]++; } }
+    return codes;
+  }
+
+  /* ---- 壓縮 ---- */
+  const WSIZE=32768, WMASK=WSIZE-1, HBITS=16, HSIZE=1<<HBITS, HMASK=HSIZE-1, BLK=1<<15;
+  let HEAD=null, PREV=null, SYML=null, SYMD=null, OUTBUF=null; // 重複使用，不要每次都配置
+  function deflateRaw(src, opt){
+    opt=opt||{};
+    const MAXCHAIN=opt.chain||4, NICE=opt.nice||24, LAZY=opt.lazy||8, MAXINS=opt.maxins||12;
+    const n=src.length;
+    if(!HEAD){ HEAD=new Int32Array(HSIZE); PREV=new Int32Array(WSIZE); SYML=new Uint16Array(BLK); SYMD=new Uint16Array(BLK); }
+    const head=HEAD, prev=PREV, symL=SYML, symD=SYMD;
+    head.fill(-1); prev.fill(-1);
+    const need0=Math.max(1024, (n>>2)+1024);
+    if(!OUTBUF || OUTBUF.length<need0) OUTBUF=new Uint8Array(need0);
+    let out=OUTBUF, op=0, bb=0, bc=0;
+    const put=(v,len)=>{ bb|=v<<bc; bc+=len; while(bc>=8){ if(op>=out.length){ const o=new Uint8Array(out.length*2); o.set(out); out=o; OUTBUF=o; } out[op++]=bb&255; bb>>>=8; bc-=8; } };
+    let ns=0;
+    // 找最長的比對：回傳 距離*512+長度（沒有回傳 0）；只找比 minLen 長的
+    const longest=(i, minLen)=>{
+      if(i+2>=n) return 0;
+      let best=minLen, bestD=0, chain=MAXCHAIN;
+      let c=head[((src[i]<<10) ^ (src[i+1]<<5) ^ src[i+2]) & HMASK];
+      const lim=n-i<258? n-i : 258;
+      const s0=src[i], s1=src[i+1];
+      while(c>=0 && i-c<=WSIZE && chain-->0){
+        if(src[c+best]===src[i+best] && src[c]===s0 && src[c+1]===s1){
+          let L=2; while(L<lim && src[c+L]===src[i+L]) L++;
+          if(L>best){ best=L; bestD=i-c; if(L>=NICE || L>=lim) break; }
+        }
+        const p=prev[c&WMASK]; if(p>=c) break; c=p;
+      }
+      return bestD? bestD*512+best : 0;
+    };
+    const flush=(last)=>{
+      const lf=new Uint32Array(286), df=new Uint32Array(30);
+      for(let k=0;k<ns;k++){ const d=symD[k]; if(d===0) lf[symL[k]]++; else { lf[257+LCODE[symL[k]]]++; df[dcode(d)]++; } }
+      lf[256]++;
+      // 字元／長度碼、距離碼都至少兩個（讓碼表完整，所有解壓程式都能接受）
+      let lUsed=0; for(let i=0;i<286;i++) if(lf[i]) lUsed++;
+      for(let k=0;lUsed<2;k++) if(!lf[k]){ lf[k]=1; lUsed++; }
+      let dUsed=0; for(let i=0;i<30;i++) if(df[i]) dUsed++;
+      for(let k=0;dUsed<2;k++) if(!df[k]){ df[k]=1; dUsed++; }
+      const ll=codeLengths(lf, 15), dl=codeLengths(df, 15);
+      let hlit=286; while(hlit>257 && ll[hlit-1]===0) hlit--;
+      let hdist=30; while(hdist>1 && dl[hdist-1]===0) hdist--;
+      // 碼長序列（行程編碼 16/17/18）
+      const all=new Uint8Array(hlit+hdist); all.set(ll.subarray(0,hlit),0); all.set(dl.subarray(0,hdist),hlit);
+      const rl=[], rx=[];
+      for(let i=0;i<all.length;){
+        const v=all[i]; let r=1; while(i+r<all.length && all[i+r]===v) r++;
+        if(v===0){
+          let left=r;
+          while(left>=11){ const k=Math.min(138,left); rl.push(18); rx.push(k-11); left-=k; }
+          if(left>=3){ rl.push(17); rx.push(left-3); left=0; }
+          while(left-->0){ rl.push(0); rx.push(0); }
+        } else {
+          rl.push(v); rx.push(0); let left=r-1;
+          while(left>=3){ const k=Math.min(6,left); rl.push(16); rx.push(k-3); left-=k; }
+          while(left-->0){ rl.push(v); rx.push(0); }
+        }
+        i+=r;
+      }
+      const cf=new Uint32Array(19); rl.forEach(s=>cf[s]++);
+      const cl=codeLengths(cf, 7);
+      let cUsed=0; for(let i=0;i<19;i++) if(cl[i]) cUsed++;
+      if(cUsed<2){ for(let i=0;i<19 && cUsed<2;i++) if(!cl[i]){ cl[i]=1; cUsed++; } for(let i=0;i<19;i++) if(cl[i]) cl[i]=1; }
+      let hclen=19; while(hclen>4 && cl[CL_ORDER[hclen-1]]===0) hclen--;
+      const lc=canonCodes(ll), dc=canonCodes(dl), cc=canonCodes(cl);
+      put(last?1:0,1); put(2,2); put(hlit-257,5); put(hdist-1,5); put(hclen-4,4);
+      for(let i=0;i<hclen;i++) put(cl[CL_ORDER[i]],3);
+      for(let k=0;k<rl.length;k++){ const s=rl[k]; put(cc[s], cl[s]); if(s===16) put(rx[k],2); else if(s===17) put(rx[k],3); else if(s===18) put(rx[k],7); }
+      for(let k=0;k<ns;k++){
+        const d=symD[k];
+        if(d===0){ const s=symL[k]; put(lc[s], ll[s]); }
+        else {
+          const L=symL[k], c=LCODE[L]; put(lc[257+c], ll[257+c]); if(LEN_EXTRA[c]) put(L-LEN_BASE[c], LEN_EXTRA[c]);
+          const dcc=dcode(d); put(dc[dcc], dl[dcc]); if(DIST_EXTRA[dcc]) put(d-DIST_BASE[dcc], DIST_EXTRA[dcc]);
+        }
+      }
+      put(lc[256], ll[256]);
+      ns=0;
+    };
+    const ins=k=>{ if(k+2<n){ const h=((src[k]<<10) ^ (src[k+1]<<5) ^ src[k+2]) & HMASK; prev[k&WMASK]=head[h]; head[h]=k; } };
+    let i=0, prevLen=0, prevDist=0, havePrev=false; // 延遲比對：上一個位置找到的比對先不寫
+    while(i<n){
+      const r=longest(i, havePrev? prevLen : 2), L=r&511, D=r>>>9;
+      if(havePrev){
+        if(r && L>prevLen){
+          // 這個位置比較長：上一個位置當字元寫出，等著看下一個
+          symL[ns]=src[i-1]; symD[ns]=0; ns++; if(ns>=BLK) flush(false);
+          prevLen=L; prevDist=D; ins(i); i++;
+          continue;
+        }
+        symL[ns]=prevLen; symD[ns]=prevDist; ns++; if(ns>=BLK) flush(false);
+        const end=i-1+prevLen; if(prevLen<=MAXINS) for(let k=i;k<end;k++) ins(k);
+        i=end; havePrev=false; prevLen=0;
+        continue;
+      }
+      if(r && L>=3){
+        if(L<LAZY && i+1<n){ prevLen=L; prevDist=D; havePrev=true; ins(i); i++; continue; }
+        symL[ns]=L; symD[ns]=D; ns++; if(ns>=BLK) flush(false);
+        const end=i+L; if(L<=MAXINS) for(let k=i;k<end;k++) ins(k); else ins(i);
+        i=end;
+      } else {
+        symL[ns]=src[i]; symD[ns]=0; ns++; if(ns>=BLK) flush(false);
+        ins(i); i++;
+      }
+    }
+    if(havePrev){ symL[ns]=prevLen; symD[ns]=prevDist; ns++; }
+    flush(true);
+    if(bc>0){ if(op>=out.length){ const o=new Uint8Array(out.length+16); o.set(out); out=o; OUTBUF=o; } out[op++]=bb&255; bb=0; bc=0; }
+    return out.slice(0, op); // 複製一份（緩衝區下次還要用）
+  }
+
+  /* ---- 解壓 ---- */
+  function fillTable(t, lens, n, bits){ // t：Int32Array(1<<bits)；值＝(符號<<4)|碼長；0＝沒有這個碼
+    t.fill(0);
+    const size=1<<bits, cnt=new Uint16Array(16), next=new Uint16Array(17);
+    for(let i=0;i<n;i++) cnt[lens[i]]++;
+    cnt[0]=0;
+    let left=1; for(let b=1;b<=15;b++){ left=(left<<1)-cnt[b]; if(left<0) throw new Error('bad huffman'); }
+    let code=0; for(let b=1;b<=15;b++){ code=(code+cnt[b-1])<<1; next[b]=code; }
+    for(let s=0;s<n;s++){
+      const L=lens[s]; if(!L) continue;
+      if(L>bits) throw new Error('code too long');
+      const r=rev(next[L]++, L), step=1<<L, v=(s<<4)|L;
+      for(let k=r;k<size;k+=step) t[k]=v;
+    }
+    return t;
+  }
+  let FIXED_L=null, FIXED_D=null, INFBUF=null;
+  // reuse：用重複使用的緩衝區（存檔前檢查用；回傳的內容下次呼叫就會被蓋掉）
+  function inflateRaw(src, sizeHint, reuse){
+    const want=Math.max(1024, sizeHint||src.length*4);
+    let out, op=0;
+    if(reuse){ if(!INFBUF || INFBUF.length<want) INFBUF=new Uint8Array(want); out=INFBUF; } else out=new Uint8Array(want);
+    const grow=k=>{ let m=out.length*2; while(op+k>m) m*=2; const o=new Uint8Array(m); o.set(out.subarray(0,op)); out=o; if(reuse) INFBUF=o; };
+    let ip=0, bb=0, bc=0;
+    const n=src.length;
+    const need=k=>{ while(bc<k){ if(ip<n) bb|=src[ip]<<bc; else if(ip>n+4) throw new Error('unexpected end'); ip++; bc+=8; } };
+    const bits=k=>{ need(k); const v=bb&((1<<k)-1); bb>>>=k; bc-=k; return v; };
+    const LTB=new Int32Array(1<<15), DTB=new Int32Array(1<<15), CTB=new Int32Array(1<<7);
+    let last=0;
+    do{
+      last=bits(1); const type=bits(2);
+      if(type===0){
+        bb>>>=(bc&7); bc-=(bc&7);
+        const len=bits(16), nlen=bits(16);
+        if((len^0xFFFF)!==nlen) throw new Error('bad stored');
+        if(op+len>out.length) grow(len);
+        for(let k=0;k<len;k++) out[op++]=bits(8);
+        continue;
+      }
+      let LT, DT, LB, DB;
+      if(type===1){
+        if(!FIXED_L){ const l=new Uint8Array(288); for(let i=0;i<144;i++) l[i]=8; for(let i=144;i<256;i++) l[i]=9; for(let i=256;i<280;i++) l[i]=7; for(let i=280;i<288;i++) l[i]=8; FIXED_L=fillTable(new Int32Array(1<<9), l,288,9); const d=new Uint8Array(30).fill(5); FIXED_D=fillTable(new Int32Array(1<<5), d,30,5); }
+        LT=FIXED_L; LB=9; DT=FIXED_D; DB=5;
+      } else if(type===2){
+        const hlit=bits(5)+257, hdist=bits(5)+1, hclen=bits(4)+4;
+        const cl=new Uint8Array(19); for(let i=0;i<hclen;i++) cl[CL_ORDER[i]]=bits(3);
+        fillTable(CTB, cl,19,7);
+        const all=new Uint8Array(hlit+hdist);
+        for(let i=0;i<hlit+hdist;){
+          need(7); const v=CTB[bb&127]; if(!v) throw new Error('bad code'); bb>>>=(v&15); bc-=(v&15); const s=v>>4;
+          if(s<16) all[i++]=s;
+          else if(s===16){ if(!i) throw new Error('bad repeat'); const pv=all[i-1]; let r=3+bits(2); if(i+r>all.length) throw new Error('bad repeat'); while(r--) all[i++]=pv; }
+          else if(s===17){ let r=3+bits(3); if(i+r>all.length) throw new Error('bad repeat'); while(r--) all[i++]=0; }
+          else { let r=11+bits(7); if(i+r>all.length) throw new Error('bad repeat'); while(r--) all[i++]=0; }
+        }
+        LT=fillTable(LTB, all.subarray(0,hlit),hlit,15); DT=fillTable(DTB, all.subarray(hlit),hdist,15); LB=15; DB=15;
+      } else throw new Error('bad block type');
+      const LM=(1<<LB)-1, DM=(1<<DB)-1;
+      for(;;){
+        if(bc<LB) need(LB);
+        const v=LT[bb&LM]; if(!v) throw new Error('bad code');
+        const lenBits=v&15; bb>>>=lenBits; bc-=lenBits; const s=v>>4;
+        if(s<256){ if(op>=out.length) grow(1); out[op++]=s; continue; }
+        if(s===256) break;
+        const c=s-257; if(c>28) throw new Error('bad length');
+        const L=LEN_BASE[c]+(LEN_EXTRA[c]? bits(LEN_EXTRA[c]) : 0);
+        if(bc<DB) need(DB);
+        const w=DT[bb&DM]; if(!w) throw new Error('bad code');
+        const dBits=w&15; bb>>>=dBits; bc-=dBits; const dc=w>>4;
+        if(dc>29) throw new Error('bad distance');
+        const D=DIST_BASE[dc]+(DIST_EXTRA[dc]? bits(DIST_EXTRA[dc]) : 0);
+        if(D>op) throw new Error('distance too far');
+        if(op+L>out.length) grow(L);
+        let from=op-D; for(let k=0;k<L;k++) out[op++]=out[from++];
+      }
+    } while(!last);
+    return out.subarray(0, op);
+  }
+
+  /* ---- 位元組 ⇄ 字串（每字 15 位元，0x20 起跳） ---- */
+  function bytesToStr15(b){
+    const n=b.length, m=Math.ceil(n*8/15), u=new Uint16Array(m);
+    let acc=0, ac=0, j=0;
+    for(let i=0;i<n;i++){ acc|=b[i]<<ac; ac+=8; if(ac>=15){ u[j++]=(acc&0x7FFF)+0x20; acc>>>=15; ac-=15; } }
+    if(ac>0) u[j++]=(acc&0x7FFF)+0x20;
+    let s=''; const CH=8192; for(let k=0;k<j;k+=CH) s+=String.fromCharCode.apply(null, u.subarray(k, Math.min(j,k+CH)));
+    return s;
+  }
+  function str15ToBytes(s, nBytes, from){
+    const out=new Uint8Array(nBytes); let acc=0, ac=0, o=0;
+    for(let i=from||0;i<s.length && o<nBytes;i++){
+      const v=s.charCodeAt(i)-0x20; if(v<0 || v>0x7FFF) throw new Error('bad char');
+      acc|=v<<ac; ac+=15;
+      while(ac>=8 && o<nBytes){ out[o++]=acc&255; acc>>>=8; ac-=8; }
+    }
+    if(o<nBytes) throw new Error('short data');
+    return out;
+  }
+  return {deflateRaw, inflateRaw, bytesToStr15, str15ToBytes};
+})();
+/* v195：存進手機的格式——整份資料先壓縮（約剩原本的 5～7%），存在 drs_data_z1；
+   舊的 drs_data_v1（沒壓縮的 JSON）第一次存成功後就拿掉。
+   - 每次存之前都先把壓縮好的內容解回來，跟原本一字不差才寫進去；寫完再讀出來比一次。
+     任何一步不對就不寫（手機裡上一次存好的還在），跟空間滿了一樣在頂端掛紅色提示。
+   - 開 App 時：有壓縮的就讀壓縮的；讀不出來才讀舊格式。兩個都讀不出來（手機裡明明有資料）：
+     先用空白資料開，但完全不存進手機（不然會把原本的資料蓋掉），跳出說明請使用者匯入備份。
+   格式：DRSZ1:原始位元組數:壓縮後位元組數:adler32:內容 */
+const LSZ_KEY='drs_data_z1';
+const STORE_Z_PREFIX='DRSZ1:';
+let storageReadFailed=false;   // 手機裡有資料但讀不出來：不寫（保護原本的資料）
+let zstoreDisabled=false;      // 這次開著的期間壓縮存檔出過錯：改回舊格式
+function adler32(u){ let a=1, b=0, i=0; const n=u.length; while(i<n){ const end=Math.min(n, i+3800); for(;i<end;i++){ a+=u[i]; b+=a; } a%=65521; b%=65521; } return ((b*65536)+a)>>>0; }
+function zEncodeBytes(u){ const z=ZCODEC.deflateRaw(u); return STORE_Z_PREFIX+u.length+':'+z.length+':'+adler32(u)+':'+ZCODEC.bytesToStr15(z); }
+// 字串 → UTF-8 位元組（重複使用同一塊緩衝區，比每次配置快一倍；回傳的內容下次呼叫就會被蓋掉）
+let __utf8Buf=null, __utf8Enc=null;
+function utf8Bytes(str){
+  if(!__utf8Enc) __utf8Enc=new TextEncoder();
+  if(typeof __utf8Enc.encodeInto!=='function') return __utf8Enc.encode(str);
+  const need=Math.ceil(str.length*1.25)+1024;
+  if(!__utf8Buf || __utf8Buf.length<need) __utf8Buf=new Uint8Array(need);
+  let r=__utf8Enc.encodeInto(str, __utf8Buf);
+  if(r.read<str.length){ __utf8Buf=new Uint8Array(str.length*3+16); r=__utf8Enc.encodeInto(str, __utf8Buf); }
+  return __utf8Buf.subarray(0, r.written);
+}
+function zEncodeState(snapshot){ return zEncodeBytes(new TextEncoder().encode(snapshot)); }
+// 存的格式拆開：回傳解壓後的位元組（檢查長度、檢查碼）
+function zDecodeBytes(str, reuse){
+  if(typeof str!=='string' || !str.startsWith(STORE_Z_PREFIX)) throw new Error('不是壓縮格式');
+  const p0=STORE_Z_PREFIX.length, p1=str.indexOf(':', p0), p2=str.indexOf(':', p1+1), p3=str.indexOf(':', p2+1);
+  if(p1<0 || p2<0 || p3<0) throw new Error('格式不對');
+  const nRaw=Number(str.slice(p0, p1)), nZ=Number(str.slice(p1+1, p2)), ad=Number(str.slice(p2+1, p3));
+  if(!Number.isInteger(nRaw) || !Number.isInteger(nZ) || !Number.isInteger(ad) || nRaw<0 || nZ<0) throw new Error('格式不對');
+  const z=ZCODEC.str15ToBytes(str, nZ, p3+1);
+  const u=ZCODEC.inflateRaw(z, nRaw, reuse);
+  if(u.length!==nRaw) throw new Error('長度不對');
+  if(adler32(u)!==ad) throw new Error('檢查碼不對');
+  return u;
+}
+function zDecodeState(str){ return new TextDecoder('utf-8', {fatal:true}).decode(zDecodeBytes(str)); }
+// 存檔前的檢查：這串字解回來，跟原本的位元組一模一樣嗎（JSON.stringify 出來的字串轉成位元組再轉回來不會變）
+function zSameAs(str, u){
+  const back=zDecodeBytes(str, true);
+  if(back.length!==u.length) return false;
+  for(let i=0;i<u.length;i++) if(back[i]!==u[i]) return false;
+  return true;
+}
+// 這支手機能不能用壓縮存（需要 TextEncoder／TextDecoder；順便自己試一次）
+const ZSTORE_OK=(()=>{ try{ if(typeof TextEncoder==='undefined' || typeof TextDecoder==='undefined') return false; const t='{"測試":["衛哨",1,2,3],"x":"'+'abc'.repeat(80)+'"}'; return zDecodeState(zEncodeState(t))===t; }catch(e){ return false; } })();
 function loadState(){
-  const raw=localStorage.getItem(LS_KEY);
-  if(raw){ try{ return JSON.parse(raw); }catch(e){} }
+  let zraw=null, raw=null;
+  try{ zraw=localStorage.getItem(LSZ_KEY); }catch(e){}
+  if(zraw){ try{ return JSON.parse(zDecodeState(zraw)); }catch(e){ console.error('壓縮的資料讀不出來', e); } }
+  try{ raw=localStorage.getItem(LS_KEY); }catch(e){}
+  if(raw){ try{ return JSON.parse(raw); }catch(e){ console.error('資料讀不出來', e); } }
+  // v195：手機裡明明有資料卻讀不出來——以前會直接用空白資料開、下一次存檔就把原本的蓋掉。
+  //   現在先用空白的開，但不存進手機（保護原本的資料），開好之後跳出說明（見最下面）
+  if(zraw || raw) storageReadFailed=true;
   return {
     personnel: [],
     categories: defaultCategories(),
@@ -1111,9 +1428,10 @@ function commitSave(prevSnapshot){
 }
 /* ---- 手機儲存空間滿了的保護 ----
    整份資料每次都整包存進localStorage，瀏覽器給每個網站的空間有上限（實測
-   Chromium約524萬字；iPhone Safari的上限一般是5MB，含中文的資料可能只到
-   一半左右）。事故/休假是「每人每天一筆」，以目前真實資料量大約每個月增加
-   45萬字，用久了一定會碰到上限。碰到的時候setItem會丟例外——原本沒有接住：
+   Chromium約524萬字；iPhone Safari約250萬字，因為每個字都算2個位元組）。
+   事故/休假是「每人每天一筆」，以目前真實資料量大約每個月增加40萬字，
+   照原本沒壓縮的存法，大約半年就會碰到上限（v195 起先壓縮再存，只剩約
+   5～7%，見上面 zEncodeState）。碰到的時候setItem會丟例外——原本沒有接住：
    畫面上看起來改好了（記憶體裡的資料有改），但其實沒存進手機，一重新整
    理就消失，而且例外會讓後面的render()之類整個中斷，只剩主控台一行錯誤，
    使用者完全不知道（真瀏覽器實測重現過）。
@@ -1121,23 +1439,70 @@ function commitSave(prevSnapshot){
    失敗跳出說明，之後頂端一直掛著紅色提示直到重新存成功為止。 */
 let storageSaveFailed=false;
 const STORAGE_FULL_MSG='⚠️ 這台手機給這個網頁的儲存空間已經滿了，剛剛的修改只在目前畫面上，沒有存進手機——關掉或重新整理就會不見。\n\n建議馬上：\n1. 按下面的「匯出備份」（或 ⚙️設定 → 匯出備份），把目前完整的資料（包含還沒存進去的修改）另外存一份。\n2. 到 ⚙️設定 →「清除排班資料」清掉一段時間的資料，把已經用不到的舊月份（例如幾個月前的事故/休假、排班）清掉，騰出空間。\n3. 也可以刪掉各預排/名冊裡用不到的舊「存檔點」。\n\n騰出空間後系統會自動重新存檔，頂端的紅色提示消失就代表存好了。';
+const STORAGE_VERIFY_MSG='⚠️ 剛剛存檔的時候，系統自己檢查發現要存進手機的資料不對（壓縮後解不回一模一樣的內容），為了安全，這次沒有存進手機——手機裡還是上一次存好的資料。\n\n請先按「匯出備份」（或 ⚙️設定 → 匯出備份）把目前的資料另外存一份。之後存檔成功的話，頂端的紅色提示會自己消失。';
 function writeStateToStorage(snapshot){
+  // v195：手機裡原本的資料讀不出來的時候完全不寫（不然會把它蓋掉）；匯入備份後才恢復
+  if(storageReadFailed) return false;
+  let verifyFailed=false;
   try{
-    localStorage.setItem(LS_KEY, snapshot);
+    if(ZSTORE_OK && !zstoreDisabled){
+      const u=utf8Bytes(snapshot);
+      const z=zEncodeBytes(u);
+      // 先解回來比對：壓縮有任何問題就不寫，手機裡上一次存好的還在
+      let same=false; try{ same=zSameAs(z, u); }catch(e){ same=false; }
+      if(!same){ verifyFailed=true; throw new Error('壓縮檢查不通過'); }
+      const plainOld=localStorage.getItem(LS_KEY);
+      try{ localStorage.setItem(LSZ_KEY, z); }
+      catch(e){
+        // 空間不夠：先拿掉舊格式的那一份（壓縮的小很多）再試；還是不行就把舊的放回去
+        if(plainOld===null) throw e;
+        localStorage.removeItem(LS_KEY);
+        try{ localStorage.setItem(LSZ_KEY, z); }
+        catch(e2){ try{ localStorage.setItem(LS_KEY, plainOld); }catch(e3){} throw e2; }
+      }
+      if(localStorage.getItem(LSZ_KEY)!==z){
+        // 寫進去的讀出來不一樣（理論上不會發生）：這次開著的期間改回舊格式存
+        zstoreDisabled=true;
+        localStorage.setItem(LS_KEY, snapshot);
+        try{ localStorage.removeItem(LSZ_KEY); }catch(e){}
+      } else if(plainOld!==null){
+        try{ localStorage.removeItem(LS_KEY); }catch(e){}
+      }
+    } else {
+      localStorage.setItem(LS_KEY, snapshot);
+      // 舊格式存成功：之前留下的壓縮檔（已經是舊的）拿掉，下次開才不會讀到它
+      if(localStorage.getItem(LSZ_KEY)!==null) localStorage.removeItem(LSZ_KEY);
+    }
     if(storageSaveFailed){ storageSaveFailed=false; refreshStorageWarning(); }
     return true;
   }catch(e){
     const firstFailure = !storageSaveFailed;
     storageSaveFailed=true;
     refreshStorageWarning();
-    if(firstFailure) showAlert(STORAGE_FULL_MSG);
+    if(firstFailure) showAlert(verifyFailed? STORAGE_VERIFY_MSG : STORAGE_FULL_MSG);
     return false;
   }
 }
+/* v195：匯入備份時，手機裡讀不出來的那份先另外留著（drs_data_unreadable，不大的話），之後還有機會救；然後恢復存檔 */
+function releaseUnreadableStorage(){
+  if(!storageReadFailed) return;
+  try{
+    if(localStorage.getItem('drs_data_unreadable')===null){
+      const z=localStorage.getItem(LSZ_KEY), p=localStorage.getItem(LS_KEY), keep=z!==null? z : p;
+      if(keep!==null && keep.length<600000) localStorage.setItem('drs_data_unreadable', keep);
+    }
+  }catch(e){}
+  storageReadFailed=false;
+  refreshStorageWarning();
+}
+const STORAGE_READ_FAIL_MSG='⚠️ 這支手機裡存的排班資料讀不出來，所以現在先用空白的資料開。\n\n為了不把原本的資料蓋掉，在你處理好之前，這裡做的任何修改都不會存進手機。\n\n請按「匯入備份」，選最近一次匯出的備份檔。匯入之後就會恢復正常存檔。';
 function refreshStorageWarning(){
   const bar=document.getElementById('storageWarnBar');
   if(!bar) return;
-  bar.style.display = storageSaveFailed? 'block' : 'none';
+  bar.style.display = (storageSaveFailed || storageReadFailed)? 'block' : 'none';
+  // v195：讀不出來跟存不進去是兩回事，提示文字分開
+  const txt = storageReadFailed? '⚠️ 手機裡的資料讀不出來，現在的修改不會存——點這裡匯入備份' : '⚠️ 儲存空間已滿，最近的修改沒有存進手機——點這裡看怎麼處理';
+  if(bar.textContent!==txt) bar.textContent=txt;
   if(typeof syncBannerHeight==='function') syncBannerHeight();
 }
 /* 提早預警：還沒滿之前就先提醒，不要等到真的存不進去才發現。門檻抓保守
@@ -1153,7 +1518,7 @@ function storageUsage(){
     for(let i=0;i<localStorage.length;i++){
       const k=localStorage.key(i); const n=k.length+(localStorage.getItem(k)||'').length;
       out.total+=n;
-      if(k===LS_KEY) out.main+=n; else if(k.startsWith('drs_checkpoint_')) out.checkpoints+=n;
+      if(k===LS_KEY || k===LSZ_KEY) out.main+=n; else if(k.startsWith('drs_checkpoint_')) out.checkpoints+=n;
     }
   }catch(e){}
   return out;
@@ -3013,7 +3378,8 @@ function withDerivedPass(fn){
    還在休假就不算最後一天） */
 function writeDerivedLeaveForPerson(plan, p, pushU){
   if((plan.personIds||[]).includes(p.id)) return;
-  const {view, derived, combined}=derivedInfoFor(p.id, {from:plan.startDate, to:plan.endDate});
+  // v195：前後各多看一天（緊接著的上一張／下一張留守表也算進來，交接那天才接得起來）
+  const {view, derived, combined}=derivedInfoFor(p.id, {from:prevDateStr(plan.startDate), to:nextDateStr(plan.endDate)});
   const days=dateRangeList(plan.startDate, plan.endDate).filter(d=>derived.has(d));
   if(!days.length) return;
   const buf=state.unitRules.leaveBuffer, sbt=standbyTimesOf(plan);
@@ -3026,14 +3392,21 @@ function writeDerivedLeaveForPerson(plan, p, pushU){
     const honorRun=!!(cr && cr.honorApplies);
     const extra=honorRun? {honor:true} : {};
     const startT = honorRun && cr.start===r.start? buf.honorStart : (r.start===plan.startDate? sbt.leaveStartTime : buf.normalStart);
-    pushU(prevDateStr(r.start), Object.assign({id:uid(),personId:p.id,allDay:false,start:startT,end:'24:00',reason:STANDBY_LEAVE_TAG}, extra));
+    // 前一天本來就在放（緊接著的上一張留守表他也是放假）：不用再寫「前一天晚上開始放」那一筆
+    if(!derived.has(prevDateStr(r.start))) pushU(prevDateStr(r.start), Object.assign({id:uid(),personId:p.id,allDay:false,start:startT,end:'24:00',reason:STANDBY_LEAVE_TAG}, extra));
     const list=dateRangeList(r.start, r.end);
     const continues=leaveNext(nextDateStr(r.end));
+    // v195：緊接著的下一張留守表（例如春節分前後兩段）他在名單上：他要在那張表的「留守開始」
+    //   （就是這段放假的最後一天，例如 13:30）回來接班——最後一天只放到那個時間，隔天早上也不再算放假。
+    //   以前照「隔天 07:30 收假」寫，交接那天晚上兩隊都在放假，沒有人可以排
+    const handover=continues? null : standbyPlanList().find(q=>q!==plan && q.startDate===nextDateStr(r.end) && (q.personIds||[]).includes(p.id));
     list.forEach((d,i)=>{
-      if(conscript && !continues && i===list.length-1) pushU(d, Object.assign({id:uid(),personId:p.id,allDay:false,start:'00:00',end:buf.conscriptBackEnd||'21:00',reason:STANDBY_LEAVE_TAG,conscriptLast:true}, extra));
+      if(handover && i===list.length-1) pushU(d, Object.assign({id:uid(),personId:p.id,allDay:false,start:'00:00',end:standbyTimesOf(handover).startTime,reason:STANDBY_LEAVE_TAG}, extra));
+      else if(conscript && !continues && i===list.length-1) pushU(d, Object.assign({id:uid(),personId:p.id,allDay:false,start:'00:00',end:buf.conscriptBackEnd||'21:00',reason:STANDBY_LEAVE_TAG,conscriptLast:true}, extra));
       else pushU(d, Object.assign({id:uid(),personId:p.id,allDay:true,start:'',end:'',reason:STANDBY_LEAVE_TAG}, extra));
     });
-    if(!conscript){
+    // 隔天還在放（緊接著的下一張留守表也放假，或大表隔天整天休假）：不是隔天早上收假，不寫收假那一筆
+    if(!conscript && !handover && !continues){
       const endT = r.end===plan.endDate? sbt.endTime : buf.backEnd;
       pushU(nextDateStr(r.end), {id:uid(),personId:p.id,allDay:false,start:'00:00',end:endT,reason:STANDBY_LEAVE_TAG});
     }
@@ -4106,7 +4479,7 @@ var RULE_CATALOG=[
   {key:'rankExcluded', no:10, name:'階級不可排（如訓練役）',              level:'serious'},
   {key:'rankAvoid',    no:11, name:'盡量避免某階級（如二兵）、打飯班避免軍官', level:'remind'},
   {key:'minNCO',       no:12, name:'需士官帶隊／最少士官人數',            level:'normal'},
-  {key:'outrank',      no:13, name:'安全士官階級要高於同時段衛哨（只跟衛哨比，打飯班不算）', level:'serious'},
+  {key:'outrank',      no:13, name:'安全士官階級不能低於同時段衛哨（同階可以；只跟衛哨比，打飯班不算）', level:'serious'},
   {key:'qualification',no:14, name:'資格（崗位定義的駕照、救護證照、專長、階級）', level:'serious'},
   {key:'chiefRank',    no:15, name:'車長需士官以上、不低於駕駛',          level:'serious'},
   {key:'chiefSame',    no:16, name:'車長和駕駛不能同一人',               level:'serious'},
@@ -4671,7 +5044,7 @@ function placementViolations(ctx, pid){
   const out=personalViolations(ctx, pid);
   if(ctx.kind==='cat'){
     const arr=((((state.assign[ctx.date]||{})[ctx.cat.id])||{})[ctx.shift.id]||[]).slice();
-    if(person && wouldBreakOutrankRule(person, ctx.cat, ctx.shift, ctx.date, arr, ctx.idx)) out.push({key:'outrank', level:ruleLevel('outrank'), msg:'會違反「安全士官階級要高於同時段衛哨」'});
+    if(person && wouldBreakOutrankRule(person, ctx.cat, ctx.shift, ctx.date, arr, ctx.idx)) out.push({key:'outrank', level:ruleLevel('outrank'), msg:'會違反「安全士官階級不能低於同時段衛哨」'});
     // 9 反方向：明天同一時段已經排了他（違規會記在明天那一格；v180：不同崗位也算）
     if(ctx.cat.enforceRest){ const t=sameSlotOnDay(pid, nextDateStr(ctx.date), ctx.shift); if(t) out.push({key:'yesterday', level:ruleLevel('yesterday'), msg: t.cat.id===ctx.cat.id? '明天也排了這個時段' : `明天也排了這個時段（${t.cat.name} ${t.sft.label||t.sft.start+'-'+t.sft.end}）`}); }
     if(ctx.shift.minNCO){
@@ -7155,6 +7528,8 @@ document.getElementById('unitRulesBtn').addEventListener('click', ()=>openUnitRu
 // 面），不管開著哪個彈窗都看得到、按得到。按下去先試著重存一次（可能已經清
 // 出空間了），還是存不進去才顯示處理方式，並可直接開匯出備份。
 document.getElementById('storageWarnBar').addEventListener('click', ()=>{
+  // v195：手機裡原本的資料讀不出來——不能重存（會蓋掉），只能匯入備份
+  if(storageReadFailed){ showConfirm(STORAGE_READ_FAIL_MSG, ()=>{ const f=document.getElementById('importFile'); if(f) f.click(); }, {confirmLabel:'📥 匯入備份', cancelLabel:'關閉'}); return; }
   if(typeof lastSavedSnapshot==='string' && writeStateToStorage(lastSavedSnapshot)){ showToast('已重新存進手機 ✓'); return; }
   showConfirm(STORAGE_FULL_MSG, ()=>openExportModal(), {confirmLabel:'📤 匯出備份', cancelLabel:'關閉'});
 });
@@ -8793,6 +9168,9 @@ function openHolidaySettingsModal(){
         <button class="ghost small" id="hsAddHolidayBtn" style="margin-bottom:8px">＋新增國定假日</button>
         <button class="ghost small" id="hsAddCommonHolidaysBtn" style="margin-bottom:8px">＋一鍵加入常見國定假日（固定日期）</button>
         <div class="hint">會加入元旦、228、勞動節、國慶日等固定日期假日；農曆假日（春節、清明、端午、中秋）日期每年不同，請自行用上面「新增國定假日」個別新增。</div>
+        ${Object.keys(OFFICIAL_DAYS_OFF).map(y=>{ const miss=OFFICIAL_DAYS_OFF[y].filter(h=>!(state.holidayDates||[]).includes(h.d)); return `
+        <button class="ghost small" data-hs-official="${y}" style="margin:8px 0 4px">＋加入 ${Number(y)-1911} 年行政院公告的放假日${miss.length? `（還少 ${miss.length} 天）` : '（都加過了）'}</button>
+        <div class="hint">照行政院人事行政總處公告的 ${Number(y)-1911} 年辦公日曆表：含春節、清明、端午、中秋、教師節，以及週末遇到國定假日的補假（平日放假的日子；週末本來就是假日）。軍人節等各機關自訂的不在裡面。</div>`; }).join('')}
       </div>`;
     modal.querySelector('#hsClose').onclick=()=>modal.remove();
     modal.querySelectorAll('.hs-weekday-cb').forEach(cb=>{
@@ -8826,6 +9204,20 @@ function openHolidaySettingsModal(){
       });
       settingsSave(res=>{ if(res==='saved'){ render(); showAlert(added? `已加入 ${added} 個固定日期假日（含前後一年）。`:'固定日期假日已經都加過了。'); } else if(res==='none') showAlert('固定日期假日已經都加過了。'); draw(); });
     };
+    // v195：照行政院公告的辦公日曆表，一次加入那一年平日放假的日子（先列出來確認）
+    modal.querySelectorAll('[data-hs-official]').forEach(b=>{
+      b.onclick=()=>{
+        const y=b.dataset.hsOfficial, roc=Number(y)-1911;
+        const miss=OFFICIAL_DAYS_OFF[y].filter(h=>!(state.holidayDates||[]).includes(h.d));
+        if(!miss.length){ showAlert(`${roc} 年行政院公告的放假日都已經在假日設定裡了。`); return; }
+        const wd=d=>'日一二三四五六'[new Date(d+'T00:00:00').getDay()];
+        showConfirm(`要加入這 ${miss.length} 天（${roc} 年行政院公告、平日放假的日子）：\n${miss.map(h=>`・${shortDateLabel(h.d)}（${wd(h.d)}）${h.name}`).join('\n')}`, ()=>{
+          if(!state.holidayDates) state.holidayDates=[];
+          miss.forEach(h=>{ if(!state.holidayDates.includes(h.d)) state.holidayDates.push(h.d); });
+          settingsSave(res=>{ if(res==='saved'){ render(); showToast(`已加入 ${miss.length} 天`); } draw(); });
+        }, {confirmLabel:'加入'});
+      };
+    });
   };
   document.body.appendChild(modal);
   registerLiveEditor(modal, { onReplaced:()=>draw() }); // 復原／重做：照新的資料重畫（勾選才不會是舊的）
@@ -12198,9 +12590,15 @@ function openLeaveTableEditor(date, onSaved, presetPid){
       <div class="divider"></div>
       ${(()=>{
         const seen=new Set(); const blocks=[];
+        // v195：每一段假的所有記錄在同一次掃描就分好（以前每一段都把全部記錄再掃一遍，
+        //   資料一多，大表每點一下都要等半秒以上）
+        const entriesByLeave=new Map();
         Object.keys(state.unavail).sort().forEach(d=>{
           (state.unavail[d]||[]).forEach(u=>{
-            if(u.leaveId && !seen.has(u.leaveId)){
+            if(!u.leaveId) return;
+            let list=entriesByLeave.get(u.leaveId); if(!list) entriesByLeave.set(u.leaveId, list=[]);
+            list.push({date:d, ...u});
+            if(!seen.has(u.leaveId)){
               seen.add(u.leaveId);
               blocks.push({leaveId:u.leaveId, personId:u.personId, reason:u.reason, start:u.leaveStart||d, end:u.leaveEnd||d});
             }
@@ -12211,10 +12609,7 @@ function openLeaveTableEditor(date, onSaved, presetPid){
         const shortDate = ds=>{ const [,m,d]=ds.split('-').map(Number); return `${m}/${d}`; };
         const blockText = (b)=>{
           // 找出這個leaveId所有相關entries，取得最早跟最晚的時間，判斷有沒有緩衝
-          const allEntries=[];
-          Object.entries(state.unavail).forEach(([d,arr])=>{
-            (arr||[]).forEach(u=>{ if(u.leaveId===b.leaveId) allEntries.push({date:d, ...u}); });
-          });
+          const allEntries=(entriesByLeave.get(b.leaveId)||[]).slice();
           allEntries.sort((x,y)=>x.date.localeCompare(y.date) || (x.start||'').localeCompare(y.start||''));
           const first=allEntries[0], last=allEntries[allEntries.length-1];
           const hasBuffer = first && last && (!first.allDay || !last.allDay);
@@ -14011,6 +14406,7 @@ function renderPeople(){
   const active = state.personnel.filter(p=>!isDeparted(p));
   const departed = state.personnel.filter(isDeparted);
   const ltCount = active.filter(p=>personLongTerm(p).mode!=='off').length;
+  const svcNone = active.filter(p=>!p.serviceType).length; // v195：役別還沒填的
   app.innerHTML = `
     <div class="page-head">
       <div class="ph-text"><h1 class="page-title">人員</h1><div class="page-sub" id="pplSummary">${personListSummaryHTML(active.filter(pplFilterFn()), active)}</div></div>
@@ -14025,6 +14421,7 @@ function renderPeople(){
     <div class="group-label mt">名冊工具</div>
     <div class="group">
       <button type="button" class="cell" id="pplBatchLtBtn"><span class="cell-icon warn">${ico('layers')}</span><span class="cell-body"><span class="cell-title">批次設定長期事故</span><span class="cell-sub">勾選多位人員，套用同一組設定${ltCount? `（目前 ${ltCount} 人有長期事故）`:''}</span></span><span class="cell-chev">${ico('chevR')}</span></button>
+      <button type="button" class="cell" id="pplBatchSvcBtn"><span class="cell-icon">${ico('users')}</span><span class="cell-body"><span class="cell-title">批次設定役別</span><span class="cell-sub">義務役、志願役收假時間不同${svcNone? `（<span class="warn">還有 ${svcNone} 人沒填</span>）` : ''}</span></span><span class="cell-chev">${ico('chevR')}</span></button>
       <button type="button" class="cell" id="pplDepartedBtn"><span class="cell-icon gray">${ico('inbox')}</span><span class="cell-body"><span class="cell-title">已離退人員</span><span class="cell-sub">恢復或永久刪除</span></span><span class="cell-end">${departed.length? `<span class="badge">${departed.length}</span>`:''}</span><span class="cell-chev">${ico('chevR')}</span></button>
       <button type="button" class="cell" id="pplCheckpoint"><span class="cell-icon">${ico('database')}</span><span class="cell-body"><span class="cell-title">名冊存檔點</span><span class="cell-sub">先存一份，改壞了可以整份還原</span></span><span class="cell-chev">${ico('chevR')}</span></button>
     </div>
@@ -14035,6 +14432,7 @@ function renderPeople(){
   document.getElementById('pplFilterBtn').onclick=()=>openPeopleFilterSheet();
   document.getElementById('pplAddBtn').onclick=()=>openAddPersonSheet();
   document.getElementById('pplBatchLtBtn').onclick=()=>openBatchLongTermSheet();
+  document.getElementById('pplBatchSvcBtn').onclick=()=>openBatchServiceTypeSheet();
   document.getElementById('pplDepartedBtn').onclick=()=>openDepartedPeopleSheet();
   document.getElementById('pplCheckpoint').onclick=()=>openCheckpointModal('personnel', '人員名冊',
     ()=>state.personnel,
@@ -14416,6 +14814,68 @@ function openBatchLongTermSheet(){
       showToast(`已套用到 ${personIds.length} 人`);
     });
   };
+  return modal;
+}
+/* ---- v195：批次設定役別 ----
+   役別決定收假時間（義務役休假最後一天晚上前回營、志願役隔天早上收假），名冊上一個都還沒填的話全部照志願役算。
+   一個一個點開設太慢：勾選多位，一次設定；改了的人今天以後的休假、留守放假照新的役別重算（跟個人資料改役別一樣）。 */
+let batchSvcChecked=new Set();
+function openBatchServiceTypeSheet(){
+  const SOL=['訓練役','二兵','一兵','上兵'];
+  const active=()=>state.personnel.filter(p=>!isDeparted(p)).sort((a,b)=>groupIndex(a.group)-groupIndex(b.group)||rankIndex(a.rank)-rankIndex(b.rank));
+  const buf=state.unitRules.leaveBuffer||{};
+  let search='';
+  const modal=openPeopleSheet('批次設定役別', `
+    <div class="hint" style="margin:-2px 0 10px">役別決定收假時間：<b>義務役</b>休假最後一天 ${esc(buf.conscriptBackEnd||'21:00')} 前回營，<b>志願役</b>隔天 ${esc(buf.backEnd||'07:30')} 收假。沒填的照志願役算。勾選多位人員，一次設定。</div>
+    <div id="bsCounts" class="hint" style="margin-bottom:8px"></div>
+    <div class="row wrap" style="gap:6px;margin-bottom:8px">
+      <button class="ghost small" id="bsPickSol">勾選所有士兵（訓練役～上兵）</button>
+      <button class="ghost small" id="bsPickNone">勾選還沒填的</button>
+      <button class="ghost small" id="bsClear">全部取消</button>
+    </div>
+    <input type="text" id="bsSearch" placeholder="搜尋姓名" autocomplete="off" style="margin-bottom:6px">
+    <div id="bsList" style="max-height:42vh;overflow:auto;border-radius:10px;background:var(--panel);padding:4px 10px;margin-bottom:10px"></div>
+    <div class="row wrap" style="gap:8px">
+      <button class="primary grow" data-bs-set="義務役">設成義務役</button>
+      <button class="primary grow" data-bs-set="志願役">設成志願役</button>
+    </div>
+    <button class="ghost small" data-bs-set="" style="margin-top:8px">勾選的人改回「未填」</button>
+  `);
+  const $=id=>modal.querySelector('#'+id);
+  const drawCounts=()=>{
+    const a=active(), sel=[...batchSvcChecked].filter(id=>a.some(p=>p.id===id)).length;
+    $('bsCounts').innerHTML=`目前：義務役 <b>${a.filter(p=>p.serviceType==='義務役').length}</b> 人、志願役 <b>${a.filter(p=>p.serviceType==='志願役').length}</b> 人、還沒填 <b>${a.filter(p=>!p.serviceType).length}</b> 人。已勾選 <b>${sel}</b> 人。`;
+  };
+  const drawList=()=>{
+    const list=active().filter(p=>!search || p.name.includes(search));
+    $('bsList').innerHTML=list.length? list.map(p=>`<label style="display:flex;align-items:center;gap:10px;font-size:14px;min-height:44px;border-bottom:1px solid var(--line)">
+      <input type="checkbox" class="bs-cb" value="${p.id}" style="width:auto" ${batchSvcChecked.has(p.id)?'checked':''}>
+      <span class="grow">${esc(p.name)}（<span class="nw">${esc(p.group||'未分組')}</span>·<span class="nw">${esc(p.rank)}</span>）</span>
+      <span class="tag">${esc(p.serviceType||'未填')}</span></label>`).join('') : '<div class="empty">找不到符合的人員</div>';
+    modal.querySelectorAll('.bs-cb').forEach(cb=>{ cb.onchange=()=>{ if(cb.checked) batchSvcChecked.add(cb.value); else batchSvcChecked.delete(cb.value); drawCounts(); }; });
+    drawCounts();
+  };
+  $('bsSearch').oninput=e=>{ search=e.target.value.trim(); drawList(); };
+  $('bsPickSol').onclick=()=>{ active().filter(p=>SOL.includes(p.rank)).forEach(p=>batchSvcChecked.add(p.id)); drawList(); };
+  $('bsPickNone').onclick=()=>{ active().filter(p=>!p.serviceType).forEach(p=>batchSvcChecked.add(p.id)); drawList(); };
+  $('bsClear').onclick=()=>{ batchSvcChecked.clear(); drawList(); };
+  modal.querySelectorAll('[data-bs-set]').forEach(b=>{ b.onclick=()=>{
+    const v=b.dataset.bsSet, label=v||'未填';
+    const ids=[...batchSvcChecked].filter(id=>active().some(p=>p.id===id));
+    if(!ids.length){ showAlert('請先勾選人員'); return; }
+    const change=ids.filter(id=>{ const p=personById(id); return p && (p.serviceType||'')!==v; });
+    if(!change.length){ showAlert(`勾選的人已經都是「${label}」了。`); return; }
+    showConfirm(`把 ${change.length} 人的役別設成「${label}」？\n今天以後的休假、留守放假會照新的役別重算收假時間（已經過去的不動）。`, ()=>{
+      change.forEach(id=>{ const p=personById(id); if(v) p.serviceType=v; else delete p.serviceType; });
+      // 跟個人資料改役別一樣：這幾個人今天以後的休假收假時間照新的役別重寫
+      change.forEach(id=>Object.keys(((state.preplan||{}).leave||{})[id]||{}).forEach(cat=>applyLeavePlan(id, cat, undefined, {force:true})));
+      resyncDerivedLeaveFor(change);
+      batchSvcChecked.clear();
+      saveState(); render(); drawList();
+      showToast(`已把 ${change.length} 人設成${label}`);
+    }, {confirmLabel:'設定'});
+  }; });
+  drawList();
   return modal;
 }
 /* ---- 已離退人員 ---- */
@@ -14864,12 +15324,14 @@ document.getElementById('importFile').addEventListener('change', (e)=>{
       const data=JSON.parse(reader.result);
       if(data.personnel && data.categories && !Array.isArray(data.dutyDefinitions)){
         // 很舊的備份（還沒有崗位定義）：存進手機後重新開一次，讓開 App 時的整套升級從頭跑過
+        releaseUnreadableStorage();
         if(!writeStateToStorage(JSON.stringify(data))) return;
         try{ sessionStorage.setItem('drs_import_reload','1'); }catch(e2){}
         location.reload();
         return;
       }
       if(data.personnel && data.categories){
+        releaseUnreadableStorage();
         state=data;
         if(!state.preplan) state.preplan={};
         if(!state.ruleExceptions) state.ruleExceptions={};
@@ -15754,6 +16216,20 @@ function isEligibleForOuting(personId, date){
   }
   return true;
 }
+/* v195：行政院人事行政總處公告的辦公日曆表——平日（週一到五）放假的日子（週末本來就是假日，不用列）。
+   116 年（2027）：無補班。春節 2/4～2/10（小年夜、除夕、初一～初三、初一初二補假）、228 補假 3/1、
+   清明及兒童節補假 4/5～4/6、勞動節補假 4/30、端午 6/9、中秋 9/15、教師節 9/28、國慶補假 10/11、
+   光復節 10/25、行憲紀念日補假 12/24、117 年元旦補假 12/31。新的一年公告後照這個格式加一段。 */
+const OFFICIAL_DAYS_OFF={
+  '2027':[
+    {d:'2027-01-01', name:'元旦'}, {d:'2027-02-04', name:'小年夜'}, {d:'2027-02-05', name:'除夕'}, {d:'2027-02-08', name:'春節初三'},
+    {d:'2027-02-09', name:'春節補假'}, {d:'2027-02-10', name:'春節補假'}, {d:'2027-03-01', name:'和平紀念日補假'},
+    {d:'2027-04-05', name:'清明節'}, {d:'2027-04-06', name:'兒童節補假'}, {d:'2027-04-30', name:'勞動節補假'},
+    {d:'2027-06-09', name:'端午節'}, {d:'2027-09-15', name:'中秋節'}, {d:'2027-09-28', name:'教師節'},
+    {d:'2027-10-11', name:'國慶日補假'}, {d:'2027-10-25', name:'台灣光復節'}, {d:'2027-12-24', name:'行憲紀念日補假'},
+    {d:'2027-12-31', name:'元旦補假（117 年）'},
+  ],
+};
 const COMMON_HOLIDAYS_FIXED = [
   {m:1,d:1,name:'元旦'}, {m:2,d:28,name:'和平紀念日'}, {m:4,d:4,name:'兒童節'},
   {m:5,d:1,name:'勞動節'}, {m:9,d:3,name:'軍人節'}, {m:9,d:28,name:'教師節'}, {m:10,d:10,name:'國慶日'},
@@ -19644,6 +20120,8 @@ function planSyncOnOpen(){
 setTimeout(planSyncOnOpen, 400);
 // 很舊的備份匯入後重新開的：說一聲
 try{ if(sessionStorage.getItem('drs_import_reload')){ sessionStorage.removeItem('drs_import_reload'); setTimeout(()=>showAlert('匯入完成'), 500); } }catch(e){}
+// v195：手機裡的資料讀不出來：頂端掛紅色提示＋說明（這段期間完全不存，保護原本的資料）
+if(storageReadFailed) setTimeout(()=>{ refreshStorageWarning(); showAlert(STORAGE_READ_FAIL_MSG); }, 700);
 /* 標題區的實際高度量出來寫進 --banner-h，這樣彈窗/抽屜/內容區要讓出的空間
    永遠跟標題區真正的高度一致，不會因為估計值跟實際渲染出來的不一樣而被
    蓋到一部分。第一次量、視窗尺寸變動（例如轉橫向）時也重量一次。 */
