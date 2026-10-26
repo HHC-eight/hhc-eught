@@ -610,7 +610,7 @@ label:has(> input[type=checkbox]),label:has(> input[type=radio]){min-height:44px
       <span class="unit-banner-badge"><i data-ico="star"></i></span>
       <span class="unit-banner-titles">
         <span class="unit-banner-text">陸軍第八軍團 本部連</span>
-        <h1 id="pageTitle">衛哨排班系統 <span class="muted">v196</span></h1>
+        <h1 id="pageTitle">衛哨排班系統 <span class="muted">v197</span></h1>
       </span>
     </span>
     <span class="banner-side right">
@@ -6719,15 +6719,18 @@ function leadRankSet(cat, slotIdx, shift){
 }
 function rankRangeLabel(range){ return range? (range.from===range.to? range.from : `${range.from}～${range.to}`) : '（沒有）'; }
 /* v196：24 小時的勤務（救護車、中央監控值班、留守值班…）排衛哨輪流時每次算幾班
-   （以前沒算：做這種勤務的那天不能站哨，輪流就在別天把衛哨補回給他，結果他總負擔比別人重很多） */
+   （以前沒算：做這種勤務的那天不能站哨，輪流就在別天把衛哨補回給他，結果他總負擔比別人重很多）
+   v197：一次 12 小時以上的也算（軍餐班、督伙這種一天 15 小時左右的；使用者選的。只算 24 小時的時候，
+   原本排給那幾位的哨轉到軍餐班的人身上，他們變成負擔最重的） */
 const LONG_DUTY_WEIGHT=2;
+const LONG_DUTY_MIN_HOURS=12;
 function isDayLongDuty(e){
   if(!e || !e.start || !e.end || e.role==='值星') return false;          // 值星原則上不自己出勤，另外處理
-  if(spanMin(toMin(e.start), toMin(e.end))<23*60) return false;           // 只算 24 小時的（交接差半小時也算）
+  if(spanMin(toMin(e.start), toMin(e.end))<LONG_DUTY_MIN_HOURS*60) return false; // 一次 12 小時以上的才算
   return standbyModeOf(presetForEntry(e))!=='flexible';                   // 待命：時段內還可以站哨，不算
 }
 /* 每個人在這一天前後 days 天（不含這一天）的班表上排了幾班衛哨／打飯班（支援的人不算）；
-   v196 起 24 小時的勤務（isDayLongDuty，掛名不算）每次算 LONG_DUTY_WEIGHT 班 */
+   v196 起長時間的勤務（isDayLongDuty，掛名不算）每次算 LONG_DUTY_WEIGHT 班 */
 function recentDutyCounts(date, days){
   const m=new Map();
   for(let k=-days;k<=days;k++){
@@ -19240,7 +19243,7 @@ function openCategoryEditor(catId, initialScope, onDone){
       <div class="divider"></div>
       <div class="section-title"><h3 style="margin:0">階級優先順序（可自行調整，越上面越優先）</h3><button class="ghost small" id="priToggle">▼ 展開</button></div>
       <div id="priSection" style="display:none">
-        <div class="hint" style="margin-bottom:8px">自動排班時，「輪流範圍」裡的階級（標「輪流」）一起輪流，前後 7 天排得少的先排（救護車、中央監控這種 24 小時的勤務，每次算 2 班）；夜哨盡量不排給前一晚、後一晚已經站夜哨的人。範圍以外的最後考慮——範圍裡的人都排不上才排，照下面的順序。</div>
+        <div class="hint" style="margin-bottom:8px">自動排班時，「輪流範圍」裡的階級（標「輪流」）一起輪流，前後 7 天排得少的先排（救護車、中央監控、軍餐班、督伙這種一次 12 小時以上的勤務，每次算 2 班）；夜哨盡量不排給前一晚、後一晚已經站夜哨的人。範圍以外的最後考慮——範圍裡的人都排不上才排，照下面的順序。</div>
         <div id="priLists">${catPriorityListsHTML(cat.needsNCO)}</div>
         <button class="ghost small" id="priReset" style="margin-top:8px">還原成預設順序</button>
       </div>
