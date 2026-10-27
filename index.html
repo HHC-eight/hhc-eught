@@ -612,7 +612,7 @@ label:has(> input[type=checkbox]),label:has(> input[type=radio]){min-height:44px
       <span class="unit-banner-badge"><i data-ico="star"></i></span>
       <span class="unit-banner-titles">
         <span class="unit-banner-text">陸軍第八軍團 本部連</span>
-        <h1 id="pageTitle">衛哨排班系統 <span class="muted">v198</span></h1>
+        <h1 id="pageTitle">衛哨排班系統 <span class="muted">v199</span></h1>
       </span>
     </span>
     <span class="banner-side right">
@@ -1519,7 +1519,7 @@ function releaseUnreadableStorage(){
   storageReadFailed=false;
   refreshStorageWarning();
 }
-const STORAGE_READ_FAIL_MSG='⚠️ 這支手機裡存的排班資料讀不出來，所以現在先用空白的資料開。\n\n為了不把原本的資料蓋掉，在你處理好之前，這裡做的任何修改都不會存進手機。\n\n請按「匯入備份」，選最近一次匯出的備份檔。匯入之後就會恢復正常存檔。';
+const STORAGE_READ_FAIL_MSG='⚠️ 這支手機裡存的排班資料讀不出來，所以現在先用空白的資料開。\n\n為了不把原本的資料蓋掉，在你處理好之前，這裡做的任何修改都不會存進手機。\n\n請按「匯入備份」，選最近一次匯出的備份檔（或貼上備份文字）。匯入之後就會恢復正常存檔。';
 function refreshStorageWarning(){
   const bar=document.getElementById('storageWarnBar');
   if(!bar) return;
@@ -7588,7 +7588,7 @@ document.getElementById('unitRulesBtn').addEventListener('click', ()=>openUnitRu
 // 出空間了），還是存不進去才顯示處理方式，並可直接開匯出備份。
 document.getElementById('storageWarnBar').addEventListener('click', ()=>{
   // v195：手機裡原本的資料讀不出來——不能重存（會蓋掉），只能匯入備份
-  if(storageReadFailed){ showConfirm(STORAGE_READ_FAIL_MSG, ()=>{ const f=document.getElementById('importFile'); if(f) f.click(); }, {confirmLabel:'📥 匯入備份', cancelLabel:'關閉'}); return; }
+  if(storageReadFailed){ showConfirm(STORAGE_READ_FAIL_MSG, ()=>openImportChooser(), {confirmLabel:'📥 匯入備份', cancelLabel:'關閉'}); return; }
   if(typeof lastSavedSnapshot==='string' && writeStateToStorage(lastSavedSnapshot)){ showToast('已重新存進手機 ✓'); return; }
   showConfirm(STORAGE_FULL_MSG, ()=>openExportModal(), {confirmLabel:'📤 匯出備份', cancelLabel:'關閉'});
 });
@@ -7788,7 +7788,7 @@ document.addEventListener('click', e=>{
   flashPressed(t);
   if(t.id==='clearRangeBtn') openClearRangeModal();
   else if(t.id==='exportBtn') openExportModal();
-  else if(t.id==='importBtn') document.getElementById('importFile').click();
+  else if(t.id==='importBtn') openImportChooser();
   else if(t.id==='adhocQueryTopBtn') openAdhocQueryModal();
   else if(t.id==='preplanDrawerBtn'){ currentTab='preplan'; window.scrollTo(0,0); render(); }
 });
@@ -8264,7 +8264,7 @@ function openUnitRulesModal(opts){
       <div class="group-label mt">資料</div>
       <div class="group">
         <button type="button" class="cell" id="exportBtn"><span class="cell-icon">${ico('upload')}</span><span class="cell-body"><span class="cell-title">匯出備份</span><span class="cell-sub">${lastExportDate()? `上次匯出：${shortDateLabel(lastExportDate())}` : '還沒有匯出過'}</span></span>${chev}</button>
-        <button type="button" class="cell" id="importBtn"><span class="cell-icon">${ico('download')}</span><span class="cell-body"><span class="cell-title">匯入備份</span><span class="cell-sub">用備份檔換掉這支手機上的全部資料</span></span>${chev}</button>
+        <button type="button" class="cell" id="importBtn"><span class="cell-icon">${ico('download')}</span><span class="cell-body"><span class="cell-title">匯入備份</span><span class="cell-sub">用備份檔或備份文字，換掉這支手機上的全部資料</span></span>${chev}</button>
         <button type="button" class="cell" id="clearRangeBtn"><span class="cell-icon danger">${ico('eraser')}</span><span class="cell-body"><span class="cell-title">清除排班資料</span><span class="cell-sub">選一段日期清掉</span></span>${chev}</button>
       </div>
       <div class="group-note">資料只存在這支手機的瀏覽器裡，記得定期匯出備份。</div>`;
@@ -14029,7 +14029,7 @@ function openExportModal(){
         <button class="ghost grow" id="copyExportBtn">📋 複製全部文字</button>
       </div>
       <div class="hint">這個網頁在手機上已用約 ${Math.max(1,Math.round(used.total/10000))} 萬字（主資料約${Math.max(1,Math.round(used.main/10000))}萬${used.checkpoints? `、存檔點約${Math.max(1,Math.round(used.checkpoints/10000))}萬`:''}）${storageSaveFailed? '。⚠️ 手機儲存空間已滿，最近的修改還沒存進手機，請先把這份備份存好':''}。</div>
-      <div class="hint">若上面按鈕在你的瀏覽器沒有反應，按下面「顯示全部文字」，再全選、複製，貼到備忘錄或傳給自己保存。</div>
+      <div class="hint">複製的文字請貼到「備忘錄」保存（通訊軟體可能有字數限制，太長會被截斷），之後在「匯入備份 → 貼上備份文字」貼回來就能還原。若上面按鈕在你的瀏覽器沒有反應，按下面「顯示全部文字」，再全選、複製。</div>
       <button class="ghost small" id="showExportTextBtn" style="margin-top:6px">📄 顯示全部文字（備用方式）</button>
       <textarea id="exportBackupText" readonly style="display:none;min-height:220px;font-family:monospace;font-size:11px;margin-top:8px;white-space:pre"></textarea>
     </div>
@@ -15541,19 +15541,25 @@ function openPersonEditor(personId){
   });
   return modal;
 }
-document.getElementById('importFile').addEventListener('change', (e)=>{
-  const f=e.target.files[0]; if(!f) return;
-  const reader=new FileReader();
-  reader.onload=()=>{
+/* v199：匯入備份——備份檔、貼上的備份文字都走這裡。成功（或要重新開）回 true；失敗跳說明、資料不動、回 false */
+function importBackupText(text){
+  const t=String(text==null? '' : text).trim();
+  if(!t){ showAlert('沒有內容可以匯入。'); return false; }
+  // 從訊息、備忘錄複製的，前後可能多了別的字：從第一個 { 到最後一個 }
+  const a=t.indexOf('{'), b=t.lastIndexOf('}');
+  const body=(a>=0 && b>a)? t.slice(a, b+1) : t;
+  let data;
+  try{ data=JSON.parse(body); }
+  catch(err){ showAlert('讀不懂這份內容，可能不完整（例如複製或傳送的時候被截斷）。手機裡的資料沒有被改動。\n\n請確認是「匯出備份」的全部內容，或改用備份檔匯入。'); return false; }
+  if(!data || typeof data!=='object' || !data.personnel || !data.categories){ showAlert('這不是排班系統的備份（格式不正確）。手機裡的資料沒有被改動。'); return false; }
     try{
-      const data=JSON.parse(reader.result);
       if(data.personnel && data.categories && !Array.isArray(data.dutyDefinitions)){
         // 很舊的備份（還沒有崗位定義）：存進手機後重新開一次，讓開 App 時的整套升級從頭跑過
         releaseUnreadableStorage();
-        if(!writeStateToStorage(JSON.stringify(data))) return;
+        if(!writeStateToStorage(JSON.stringify(data))) return false;
         try{ sessionStorage.setItem('drs_import_reload','1'); }catch(e2){}
         location.reload();
-        return;
+        return true;
       }
       if(data.personnel && data.categories){
         releaseUnreadableStorage();
@@ -15585,13 +15591,56 @@ document.getElementById('importFile').addEventListener('change', (e)=>{
         notifyStateReplaced(); // 開著的設定、編輯畫面照匯入的資料重畫
         showAlert('匯入完成');
         setTimeout(()=>maybeShowPlanDrift('import'), 0);
+        return true;
       }
-      else showAlert('檔案格式不正確');
-    }catch(err){ showAlert('讀取失敗：'+err.message); }
-  };
+      showAlert('這不是排班系統的備份（格式不正確）。'); return false;
+    }catch(err){ showAlert('讀取失敗：'+err.message); return false; }
+}
+document.getElementById('importFile').addEventListener('change', (e)=>{
+  const f=e.target.files[0]; if(!f) return;
+  const reader=new FileReader();
+  reader.onload=()=>{ if(importBackupText(reader.result)){ const m=document.getElementById('importChooser'); if(m) m.remove(); } };
+  reader.onerror=()=>showAlert('檔案讀不出來，請再試一次。');
   reader.readAsText(f);
   e.target.value='';
 });
+/* v199：「匯入備份」先問要用備份檔，還是貼上備份文字（匯出備份可以「複製全部文字」，以前只能用檔案匯入，對不起來） */
+function openImportChooser(){
+  const old=document.getElementById('importChooser'); if(old) old.remove();
+  const modal=document.createElement('div');
+  modal.className='sheet-modal'; modal.id='importChooser'; modal.style.zIndex=String(overlayZAbove(150));
+  modal.innerHTML=`<div class="sheet-inner">
+    <div class="section-title"><h2 style="margin:0">匯入備份</h2><button class="ghost small" id="impClose" data-back>關閉</button></div>
+    <div class="hint" style="margin-bottom:10px">匯入會用備份換掉這支手機上的全部資料。</div>
+    <button type="button" class="primary" id="impFileBtn" style="width:100%;margin-bottom:8px">📁 選備份檔</button>
+    <button type="button" class="ghost" id="impPasteBtn" style="width:100%">📋 貼上備份文字</button>
+    <div id="impPasteBox" style="display:none;margin-top:12px">
+      <div class="hint" style="margin-bottom:8px">貼上「匯出備份 → 複製全部文字」複製的內容：按「從剪貼簿貼上」，或在下面的框裡長按 → 貼上，再按「匯入」。</div>
+      <button type="button" class="ghost small" id="impClipBtn" style="margin-bottom:8px">📋 從剪貼簿貼上</button>
+      <textarea id="impText" rows="5" placeholder="在這裡長按 → 貼上" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" style="font-family:monospace;font-size:11px"></textarea>
+      <div class="hint" id="impInfo"></div>
+      <button type="button" class="primary" id="impGo" style="width:100%;margin-top:8px">匯入</button>
+    </div>
+  </div>`;
+  document.body.appendChild(modal);
+  const ta=modal.querySelector('#impText'), info=modal.querySelector('#impInfo');
+  const showInfo=()=>{ const n=ta.value.length; info.textContent=n? `已貼上約 ${n>=10000? Math.round(n/10000)+' 萬' : n} 字` : ''; };
+  modal.querySelector('#impClose').onclick=()=>modal.remove();
+  modal.addEventListener('click', e=>{ if(e.target===modal) modal.remove(); });
+  modal.querySelector('#impFileBtn').onclick=()=>{ const f=document.getElementById('importFile'); if(f) f.click(); };
+  modal.querySelector('#impPasteBtn').onclick=()=>{ modal.querySelector('#impPasteBox').style.display='block'; modal.querySelector('#impPasteBtn').style.display='none'; };
+  ta.addEventListener('input', showInfo);
+  modal.querySelector('#impClipBtn').onclick=async()=>{
+    try{
+      if(!navigator.clipboard || !navigator.clipboard.readText) throw new Error('no clipboard');
+      const txt=await navigator.clipboard.readText();
+      if(!txt){ showAlert('剪貼簿是空的。請先到備忘錄（或你存的地方）把備份文字全部複製起來。'); return; }
+      ta.value=txt; showInfo();
+    }catch(err){ showAlert('沒辦法直接讀剪貼簿。請在框裡長按 →「貼上」。'); }
+  };
+  modal.querySelector('#impGo').onclick=()=>{ if(importBackupText(ta.value)) modal.remove(); };
+  return modal;
+}
 
 /* ---- 統計分頁的休假/長期事故相關輔助 ---- */
 function renderLeaveGroupSummary(date){
