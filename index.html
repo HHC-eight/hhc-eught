@@ -4,11 +4,13 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<!-- v198：iOS 26 起，主畫面 App 的內容如果畫到狀態列底下（black-translucent），iPhone 會在最上面蓋一層模糊（看起來霧霧的）。
+     改成不透明的狀態列（顏色照 theme-color），App 從狀態列下面開始畫，就不會被蓋。iPhone 只在「加入主畫面」時讀這一行，要刪掉圖示重新加入才會生效。 -->
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="mobile-web-app-capable" content="yes">
 <title>衛哨排班</title>
-<meta name="theme-color" content="#1C2718">
-<script id="themeInit">try{if(localStorage.getItem('drs_theme_v1')==='night')document.documentElement.dataset.theme='night';}catch(e){}</script>
+<meta name="theme-color" content="#1C2718" id="themeColorMeta">
+<script id="themeInit">try{if(localStorage.getItem('drs_theme_v1')==='night'){document.documentElement.dataset.theme='night';var tcm=document.getElementById('themeColorMeta');if(tcm)tcm.setAttribute('content','#090C08');}}catch(e){}</script>
 <style>
 /* ================================================================
    「勤務板」設計系統（v159 全面改版）
@@ -34,7 +36,7 @@
   --scrim:rgba(24,32,20,.46);
   --shadow:0 1px 1px rgba(27,33,23,.04),0 2px 10px rgba(27,33,23,.045);
   --shadow-pop:0 18px 50px rgba(20,28,16,.28);
-  --banner-bg:linear-gradient(135deg,#1C2718 0%,#2A3B25 100%);
+  --banner-bg:linear-gradient(180deg,#1C2718 0%,#2A3B25 100%); /* v198：直的漸層，最上面跟狀態列（theme-color）同色，接起來沒有色差 */
   --banner-ink:#F1F4EC; --banner-sub:#A9BA9C; --banner-btn:rgba(255,255,255,.09);
   --bar-bg:rgba(250,251,248,.88);
   --rank-officer:#B42318; --rank-nco:#9A5405; --rank-enlisted:#1F7040;
@@ -55,7 +57,7 @@ html[data-theme="night"]{
   --ok:#80CF95;     --ok-soft:rgba(128,207,149,.13);
   --scrim:rgba(0,0,0,.66);
   --shadow:none; --shadow-pop:0 18px 50px rgba(0,0,0,.6);
-  --banner-bg:linear-gradient(135deg,#090C08 0%,#121A10 100%);
+  --banner-bg:linear-gradient(180deg,#090C08 0%,#121A10 100%);
   --banner-ink:#E6EBE0; --banner-sub:#8E9A86; --banner-btn:rgba(255,255,255,.07);
   --bar-bg:rgba(22,27,20,.9);
   --rank-officer:#F28B82; --rank-nco:#EBAE55; --rank-enlisted:#80CF95;
@@ -610,7 +612,7 @@ label:has(> input[type=checkbox]),label:has(> input[type=radio]){min-height:44px
       <span class="unit-banner-badge"><i data-ico="star"></i></span>
       <span class="unit-banner-titles">
         <span class="unit-banner-text">陸軍第八軍團 本部連</span>
-        <h1 id="pageTitle">衛哨排班系統 <span class="muted">v197</span></h1>
+        <h1 id="pageTitle">衛哨排班系統 <span class="muted">v198</span></h1>
       </span>
     </span>
     <span class="banner-side right">
@@ -7630,9 +7632,12 @@ document.getElementById('weekStrip').addEventListener('click', (e)=>{
 });
 /* 日間／夜間配色：只存在這支手機（localStorage），不進資料、不影響備份 */
 const THEME_LS_KEY='drs_theme_v1';
+const THEME_STATUS_COLOR={day:'#1C2718', night:'#090C08'}; // v198：狀態列（theme-color）＝標題列最上面的顏色
 function applyTheme(t){
   const de=document.documentElement;
   if(t==='night') de.dataset.theme='night'; else delete de.dataset.theme;
+  const tcm=document.getElementById('themeColorMeta') || document.querySelector('meta[name="theme-color"]');
+  if(tcm) tcm.setAttribute('content', THEME_STATUS_COLOR[t==='night'? 'night' : 'day']);
   document.querySelectorAll('[data-theme-state]').forEach(x=>{ x.textContent = t==='night'? '夜間' : '日間'; });
 }
 function currentTheme(){ return document.documentElement.dataset.theme==='night'? 'night' : 'day'; }
