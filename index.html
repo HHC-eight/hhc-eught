@@ -680,6 +680,13 @@ button.bt-cell.sel{border-color:var(--accent);background:var(--accent-soft);box-
 button.bt-cell.off{opacity:.38;cursor:default;}
 .bt-check{font-size:14px;font-weight:800;color:var(--accent);line-height:1.1;margin-top:2px;}
 .bt-tag{font-size:10px;color:var(--dim);line-height:1.1;margin-top:2px;}
+/* v204：儲存／套用固定在視窗最下面（內容再長都不用捲到最下面才按得到） */
+.sheet-actions{position:sticky;bottom:calc(-16px - env(safe-area-inset-bottom));z-index:3;display:flex;flex-wrap:wrap;gap:8px;align-items:stretch;
+  background:var(--panel);margin:12px -16px calc(-16px - env(safe-area-inset-bottom));padding:10px 16px calc(12px + env(safe-area-inset-bottom));
+  border-top:1px solid var(--line);}
+.sheet-actions>button{margin:0 !important;flex:0 0 auto;}
+.sheet-actions>button.primary{flex:1 1 140px;}
+.fullscreen-modal>.sheet-actions{background:var(--bg);bottom:calc(-24px - env(safe-area-inset-bottom));margin:12px -14px calc(-24px - env(safe-area-inset-bottom));padding:10px 14px calc(14px + env(safe-area-inset-bottom));}
 @media (prefers-reduced-motion:reduce){*{transition:none !important;animation:none !important;}}
 </style>
 </head>
@@ -695,7 +702,7 @@ button.bt-cell.off{opacity:.38;cursor:default;}
       <span class="unit-banner-badge"><i data-ico="star"></i></span>
       <span class="unit-banner-titles">
         <span class="unit-banner-text">陸軍第八軍團 本部連</span>
-        <h1 id="pageTitle">衛哨排班系統 <span class="muted">v203</span></h1>
+        <h1 id="pageTitle">衛哨排班系統 <span class="muted">v204</span></h1>
       </span>
     </span>
     <span class="banner-side right">
@@ -10722,7 +10729,7 @@ function openDutyRangeFillModal(onDone){
         <div class="grow"><label>交接時間</label>${timeSelectHTML('dfHandover', H0)}</div>
       </div>
       <div class="hint" id="dfPreview" style="margin-bottom:8px"></div>
-      <button class="primary" id="dfSave" style="width:100%">排這一段</button>
+      <div class="sheet-actions"><button class="primary" id="dfSave">排這一段</button></div>
     </div>`;
   document.body.appendChild(modal);
   document.getElementById('dfClose').onclick=()=>modal.remove();
@@ -10856,7 +10863,7 @@ function openBatchTimeSheet(opts){
       <div class="hint no-mh" id="btCount" style="margin-bottom:8px"></div>
       <div class="divider"></div>
       <div id="btTimes">${timesHTML(timesNow())}</div>
-      <button class="primary" id="btApply" style="width:100%;margin-top:6px"></button>
+      <div class="sheet-actions"><button class="primary" id="btApply"></button></div>
     </div>`;
   document.body.appendChild(modal);
   const drawCal=()=>{
@@ -11360,9 +11367,9 @@ function openStandbyEditor(date, onSaved){
             </div>`;
           }).join('') : `<div class="empty">尚未設定子勤務項目</div>`}
         </div>`).join('') : ''}
-      <div class="row wrap" style="margin-top:10px">
-        <button class="ghost grow danger" id="sbDelete">清除這筆留守</button>
-        <button class="primary grow" id="sbSave">儲存</button>
+      <button class="ghost danger" id="sbDelete" style="width:100%;margin-top:10px">清除這筆留守</button>
+      <div class="sheet-actions">
+        <button class="primary" id="sbSave">儲存</button>
       </div>`;
     document.getElementById('sbClose').onclick=()=>modal.remove();
     const sync=()=>{
@@ -11806,9 +11813,9 @@ function openStandbySubDutyEditor(plan, role, d, onDone, anchor){
         ${pool.length? (()=>{ const iss=issuesAt(initCfg, 0, {groupRules:false});
             return [...pool].sort((a,b)=>iss.get(a.id).rank-iss.get(b.id).rank).map(p=>rowHTML(p, `<input type="checkbox" class="sd-person" value="${p.id}" style="width:auto;margin-top:2px" ${(cfg.personIds||[]).includes(p.id)?'checked':''}>`, iss.get(p.id))).join(''); })() : `<div class="empty">請先選擇留守人員</div>`}
       </div>`}
-      <div class="row wrap">
-        <button class="ghost grow danger" id="sdClear">清除</button>
-        <button class="primary grow" id="sdSave">儲存</button>
+      <button class="ghost danger" id="sdClear" style="width:100%">清除</button>
+      <div class="sheet-actions">
+        <button class="primary" id="sdSave">儲存</button>
       </div>
     </div>`;
   document.body.appendChild(modal);
@@ -12319,10 +12326,10 @@ function openPreplanDayEditor(key, date, onSaved){
       <div class="section-title"><h2 style="margin:0"><span class="nw">${type.icon} ${type.name}：</span><span class="nw">${minguoLabel(date)}</span></h2><button class="ghost small" id="ppClose">關閉</button></div>
       <div class="hint" style="margin-bottom:8px">${type.hint}${date>=todayStr()? '<br>按「＋選人」打開挑人清單。這天有衝突的人（長期事故、休假／事故、同時段的勤務…）排在「有衝突」那一區，還是可以選；存檔時會列出來，問你要不要忽略一次。' : ''}</div>
       ${body}
-      <div class="row wrap" style="margin-top:10px">
-        <button class="ghost grow" id="ppCopy">複製到其他日期</button>
-        <button class="ghost grow danger" id="ppDelete">清除這天</button>
-        <button class="primary grow" id="ppSave" style="flex:1 1 100%">儲存</button>
+      <button class="ghost danger" id="ppDelete" style="width:100%;margin-top:10px">清除這天</button>
+      <div class="sheet-actions">
+        <button class="ghost" id="ppCopy">複製到其他日期</button>
+        <button class="primary" id="ppSave">儲存</button>
       </div>
     </div>`;
   document.body.appendChild(modal);
@@ -12618,7 +12625,7 @@ function openPreplanCopyModal(key, fromDate, onDone){
           </label>`;
         }).join('')}
       </div>
-      <button class="primary" id="pcSave" style="width:100%">複製過去</button>
+      <div class="sheet-actions"><button class="primary" id="pcSave">複製過去</button></div>
     </div>`;
   document.body.appendChild(modal);
   document.getElementById('pcClose').onclick=()=>{ modal.remove(); if(onDone) onDone(); };
@@ -13906,7 +13913,7 @@ function openQuickLeaveModal(presetPid){
           ${category&&category.buffer? `這個類型有前後緩衝：登記後系統會自動加上前一天18:00起（榮譽假12:00起）、隔天07:30前（義務役當天21:00前）的緩衝時段，範圍內每一天整天不可排。留守期間不在留守名單的日子本來就自動算休假，接在假日前後登就好。` : `這個類型沒有前後緩衝，範圍內的平日整天不可排（假日跳過，照留守名單算休假；他在留守名單上的假日照登；整段都是假日就照填的登）。`}
           ${category&&category.fiveDayRule? (leave5dayMode()==='approve'? ' 超過5天（連同前後假日算）會再跳出來確認是否已經同意保留。' : leave5dayHint()) : ''}
         </div>
-        <button class="primary" id="qlSave" style="width:100%;margin-bottom:6px">✅ 登記（立即生效）</button>
+        <div class="sheet-actions"><button class="primary" id="qlSave">✅ 登記（立即生效）</button></div>
       ` : `<div class="empty">請先搜尋並選擇一位人員</div>`}
     `;
     document.getElementById('qlClose').onclick=()=>modal.remove();
@@ -19778,6 +19785,7 @@ function recentMiscCounts(date, role, skipId){
    order(p)＝同一區裡的排序（陣列，小的在前）、badges＝列駕照／醫證／專長、
    單選：current、onPick(pid)、onClear()（有排人才有「清空這一格」）
    多選：multi:true、selected、need（需要幾人）、onDone(ids) */
+var PICK_TOUCH=(typeof window!=='undefined') && (('ontouchstart' in window) || (typeof navigator!=='undefined' && (navigator.maxTouchPoints||0)>0)); // v204：手機（摸螢幕的）
 function openPersonPickSheet(opts){
   const multi=!!opts.multi;
   const picked=new Set(multi? (opts.selected||[]).filter(Boolean) : []);
@@ -19797,7 +19805,8 @@ function openPersonPickSheet(opts){
   const rowHTML=r=>{
     const p=r.p, on=picked.has(p.id);
     const why=r.msg? `<div class="pick-why s-${r.sec}">${esc(r.msg)}</div>` : (r.rem? `<div class="pick-why rem">💡 ${esc(r.rem)}</div>` : '');
-    return `<div class="pick-row s-${r.sec}${p.id===cur?' cur':''}" data-pick-pid="${p.id}" role="button" tabindex="0">
+    // v204：手機上名單的每一列不拿焦點——不然一點名字，焦點從搜尋框跑掉、鍵盤收起來、整個清單跳下去，那一下就點空了
+    return `<div class="pick-row s-${r.sec}${p.id===cur?' cur':''}" data-pick-pid="${p.id}" role="button"${PICK_TOUCH? '' : ' tabindex="0"'}>
       ${multi? `<input type="checkbox" tabindex="-1" ${on?'checked':''}>` : `<span class="pick-dot s-${r.sec}"></span>`}
       <span class="pick-main"><b>${esc(p.name)}</b> <span class="pick-meta">${esc(p.rank)}・${esc(p.group||'未分組')}${opts.badges? personBadges(p) : ''}</span>${why}</span>
       ${r.n!==null? `<span class="pick-count">近 7 天 ${r.n} 班</span>` : ''}
@@ -19860,6 +19869,8 @@ function openPersonPickSheet(opts){
     }
     close(); opts.onPick(pid);
   };
+  // v204：鍵盤開著（在搜尋框打字）時點名單：焦點留在搜尋框，鍵盤不收、清單不跳
+  listEl.addEventListener('mousedown', e=>{ if(document.activeElement===searchEl && e.target.closest('[data-pick-pid],[data-pick-sec]')) e.preventDefault(); });
   listEl.addEventListener('click', e=>{
     const head=e.target.closest('[data-pick-sec]');
     if(head){ const k=head.dataset.pickSec; if(k!=='ok' && !term){ if(open.has(k)) open.delete(k); else open.add(k); draw(); } return; }
