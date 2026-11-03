@@ -671,6 +671,15 @@ button.lv-switch{display:flex;flex-wrap:wrap;align-items:center;justify-content:
 .guide dt{margin-top:10px;font-weight:800;}
 .guide dd{margin:1px 0 0;color:var(--dim);}
 .guide p{margin:4px 0;}
+/* v203：駕駛／車長不分位置的預覽、一次改很多天的時段 */
+.pp-crew-preview{margin:6px 0 2px;font-size:13px;color:var(--text);}
+.pp-crew-preview:empty{display:none;}
+.bt-quick{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 8px;}
+button.bt-cell{font:inherit;color:inherit;margin:0;}
+button.bt-cell.sel{border-color:var(--accent);background:var(--accent-soft);box-shadow:inset 0 0 0 1px var(--accent);}
+button.bt-cell.off{opacity:.38;cursor:default;}
+.bt-check{font-size:14px;font-weight:800;color:var(--accent);line-height:1.1;margin-top:2px;}
+.bt-tag{font-size:10px;color:var(--dim);line-height:1.1;margin-top:2px;}
 @media (prefers-reduced-motion:reduce){*{transition:none !important;animation:none !important;}}
 </style>
 </head>
@@ -686,7 +695,7 @@ button.lv-switch{display:flex;flex-wrap:wrap;align-items:center;justify-content:
       <span class="unit-banner-badge"><i data-ico="star"></i></span>
       <span class="unit-banner-titles">
         <span class="unit-banner-text">陸軍第八軍團 本部連</span>
-        <h1 id="pageTitle">衛哨排班系統 <span class="muted">v202</span></h1>
+        <h1 id="pageTitle">衛哨排班系統 <span class="muted">v203</span></h1>
       </span>
     </span>
     <span class="banner-side right">
@@ -2108,31 +2117,115 @@ function validateMiscEntry(entry){
   });
   return issues;
 }
-/* if the chief ends up junior to the driver (violates "車長不可低階於駕駛"),
-   swap them instead of just flagging it — but only when the swap actually
-   works: the newly-promoted driver (the old chief) still needs to meet the
-   driver's own requirements, most importantly a valid license, since a
-   swap that fixes rank order by breaking the license rule isn't a fix at
-   all. If the swap wouldn't be clean, nothing changes and the existing
-   warning in validateMiscEntry still applies. */
-function autoSwapDriverChief(entry, presetOverride){
-  if(!entry.roles) return false;
-  const chiefIdx=entry.roles.indexOf('車長');
-  const driverIdx=entry.roles.indexOf('駕駛');
-  if(chiefIdx===-1 || driverIdx===-1) return false;
-  const chiefId=entry.personIds[chiefIdx], driverId=entry.personIds[driverIdx];
-  if(!chiefId || !driverId || chiefId===driverId) return false;
-  const chief=state.personnel.find(p=>p.id===chiefId);
-  const driver=state.personnel.find(p=>p.id===driverId);
-  if(!chief || !driver) return false;
-  if(rankIndex(chief.rank)<=rankIndex(driver.rank)) return false; // already fine, no swap needed
-  const preset = presetOverride || presetForEntry(entry);
-  // 換過來之後兩個人都要符合新位置的資格（同一套資格判斷），不然不換
-  if(slotQualificationIssues(chief, preset, '駕駛', entry).length) return false;
-  if(slotQualificationIssues(driver, preset, '車長', entry).length) return false;
-  entry.personIds[chiefIdx]=driverId;
-  entry.personIds[driverIdx]=chiefId;
+/* ===== v203：駕駛／車長（車輛勤務）的預排只選人、不分位置 =====
+   採買、救護車的預排，還有留守表裡的消防車、救護車：只選人，排進班表的時候照資格自動分——
+   有駕照的開車、車長要士官以上而且階級不低於駕駛（兩個人都可以的話就是階級高的當車長）。
+   - 原本放的位置（上一次分好的、排班頁對調過的）符合資格就照原本的；不符合、換過來比較好才換。
+   - 別單位支援的人（打名字的）佔的那一格固定不動；🔒 保留空白的也不動。
+   - 預排上記了 fixedRoles（排班頁照自己的意思放、自動分會換掉的）：照記的位置，不自動分。 */
+function isDriverChiefRoles(roles){ return Array.isArray(roles) && roles.length===2 && roles.includes('駕駛') && roles.includes('車長'); }
+// 這樣放的問題（只看駕駛、車長自己的資格跟「車長不低於駕駛」；支援的人不在名冊上，不算）
+function driverChiefProblems(roles, ids, spec, entry){
+  const di=roles.indexOf('駕駛'), ci=roles.indexOf('車長');
+  const own=id=>id && !isSupportId(id)? personById(id) : null;
+  const d=own((ids||[])[di]), c=own((ids||[])[ci]);
+  const out=[];
+  if(d) slotQualificationIssues(d, spec, '駕駛', entry).forEach(q=>out.push({who:d.id, key:q.key, msg:`駕駛 ${d.name}：${q.msg}`}));
+  if(c) slotQualificationIssues(c, spec, '車長', entry).forEach(q=>out.push({who:c.id, key:q.key, msg:`車長 ${c.name}：${q.msg}`}));
+  if(d && c && d.id!==c.id && rankIndex(c.rank)>rankIndex(d.rank)) out.push({who:'', key:'chiefRank', msg:`車長 ${c.name}（${c.rank}）階級低於駕駛 ${d.name}（${d.rank}）`});
+  return out;
+}
+// 幾項不符合：同一個人的資格問題算一項，「車長低於駕駛」另外算一項
+function driverChiefMisfit(roles, ids, spec, entry){
+  return new Set(driverChiefProblems(roles, ids, spec, entry).map(p=>p.who||'#rank')).size;
+}
+/* 照原本的位置，不符合的話試著換過來（兩格都有人：兩個人互換；只有一個人：換到另一格），
+   換過來不符合的項目比較少才換。回傳有沒有換。 */
+function arrangeDriverChief(entry, spec){
+  if(!entry || !isDriverChiefRoles(entry.roles)) return false;
+  const roles=entry.roles, di=roles.indexOf('駕駛'), ci=roles.indexOf('車長');
+  const ids=(entry.personIds||[]).slice(); while(ids.length<roles.length) ids.push(undefined);
+  const a=ids[di], b=ids[ci];
+  if((!a && !b) || (a && a===b)) return false;
+  if((a && isSupportId(a)) || (b && isSupportId(b))) return false;
+  if(entry.lockedSlots && (entry.lockedSlots[di] || entry.lockedSlots[ci])) return false;
+  const preset=spec||presetForEntry(entry);
+  const cur=driverChiefMisfit(roles, ids, preset, entry);
+  if(!cur) return false;
+  const sw=ids.slice(); sw[di]=b; sw[ci]=a;
+  if(driverChiefMisfit(roles, sw, preset, entry)>=cur) return false;
+  entry.personIds=sw;
   return true;
+}
+/* 編輯畫面選好的人（不分位置）放進駕駛、車長兩格：
+   原本就在某一格的人先放回原本那一格；新加的人放空著的格子（兩格都空：一個人的話，可以當車長就當車長、
+   不然當駕駛；兩個人的話階級高的當車長，一樣高照選的順序）；最後照資格調一次。
+   blocked：別單位支援的人佔掉的格子（index）。回傳跟 roles 對齊的 personIds。 */
+function placeDriverChief(roles, ids, spec, prevIds, blocked){
+  const di=roles.indexOf('駕駛'), ci=roles.indexOf('車長');
+  const out=roles.map(()=>undefined);
+  const bl=new Set(blocked||[]);
+  const free=[di,ci].filter(i=>!bl.has(i));
+  const list=[...new Set((ids||[]).filter(id=>id && !isSupportId(id)))].slice(0, free.length);
+  const prev=prevIds||[];
+  const rest=[];
+  list.forEach(id=>{ const k=prev.indexOf(id); if(k>-1 && free.includes(k) && out[k]===undefined) out[k]=id; else rest.push(id); });
+  const open=free.filter(i=>out[i]===undefined);
+  if(rest.length===1 && open.length===2){
+    const p=personById(rest[0]);
+    out[(p && !slotQualificationIssues(p, spec, '車長').length)? ci : di]=rest[0];
+  } else if(rest.length===2 && open.length===2){
+    const p0=personById(rest[0]), p1=personById(rest[1]);
+    const r0=p0? rankIndex(p0.rank) : 99, r1=p1? rankIndex(p1.rank) : 99;
+    if(r1<r0){ out[ci]=rest[1]; out[di]=rest[0]; } else { out[ci]=rest[0]; out[di]=rest[1]; }
+  } else rest.forEach((id,k)=>{ if(open[k]!==undefined) out[open[k]]=id; });
+  const e={roles, personIds:out};
+  if(!bl.size) arrangeDriverChief(e, spec);
+  return e.personIds;
+}
+/* 排班頁「⇅ 對調」：駕駛、車長兩格互換（只有一個人就換到另一格）。換過去不符合資格
+   （駕照、救護證照、車長要士官以上、車長不低於駕駛…；規則等級設成「提醒」的不算）就不換，說明原因。 */
+function swapDriverChief(date, id){
+  const m=(state.misc[date]||[]).find(x=>x.id===id);
+  if(!m || !isDriverChiefRoles(m.roles)) return;
+  const di=m.roles.indexOf('駕駛'), ci=m.roles.indexOf('車長');
+  const ids=(m.personIds||[]).slice(); while(ids.length<m.roles.length) ids.push(undefined);
+  const sw=ids.slice(); sw[di]=ids[ci]; sw[ci]=ids[di];
+  const probs=driverChiefProblems(m.roles, sw, presetForEntry(m), m).filter(p=>ruleLevel(p.key==='chiefRank'? 'chiefRank' : 'qualification')!=='remind');
+  if(probs.length){ showAlert(`對調之後不符合，沒有換：\n・${probs.map(p=>p.msg).join('\n・')}`); return; }
+  m.personIds=sw;
+  saveState();
+  const now=(state.misc[date]||[]).find(x=>x.id===id);
+  render();
+  if(now && JSON.stringify(now.personIds)===JSON.stringify(sw)) showToast('已對調駕駛、車長');
+}
+/* 挑人清單（不分位置）：每個人「當駕駛」「當車長」各算一次規則問題（另一格放已經選的另一個人），
+   取問題比較少的那一種。evalAt(base, idx, people)→Map(pid→candidateIssueGroups)；
+   base＝這一次另一格放誰（跟 roles 對齊），blocked＝支援的人佔掉的格子（那一格的 base 已經放好） */
+function bestCrewIssues(roles, selected, people, evalAt, blocked, baseFill){
+  const di=roles.indexOf('駕駛'), ci=roles.indexOf('車長');
+  const bl=new Set(blocked||[]);
+  const sel=(selected||[]).filter(Boolean);
+  const out=new Map();
+  const byPartner=new Map();
+  people.forEach(p=>{ const q=sel.find(x=>x!==p.id)||''; if(!byPartner.has(q)) byPartner.set(q, []); byPartner.get(q).push(p); });
+  byPartner.forEach((list, q)=>{
+    const res=[];
+    [ci, di].forEach(i=>{
+      if(bl.has(i)) return;
+      const other=i===di? ci : di;
+      const base=roles.map((_,k)=>(baseFill||[])[k]);
+      if(q && !bl.has(other)) base[other]=q;
+      base[i]=undefined;
+      try{ res.push([i, evalAt(base, i, list)]); }catch(e){ console.error(e); }
+    });
+    list.forEach(p=>{
+      let best=null;
+      res.forEach(([i,m])=>{ const g=m && m.get(p.id); if(g && (!best || g.rank<best.g.rank)) best={i, g}; });
+      if(best) out.set(p.id, best.g);
+    });
+  });
+  return out;
 }
 
 let state = loadState();
@@ -4050,6 +4143,12 @@ function writeBackTypeDate(type, date, prevList){
       next.start=a.start||''; next.end=a.end||''; next.restUntil=a.restUntil||'';
       // 這種預排一天只有一筆，整天的支援說明就是這一筆的，可以直接照班表記
       if((next.support||'')!==(a.support||'')) next.support=a.support||'';
+      // v203：駕駛／車長排班頁怎麼放就怎麼記——自動分會把它換掉的話，記 fixedRoles（之後照記的位置，不自動分）
+      if(isDriverChiefRoles(type.roles)){
+        const probe={role:a.role, roles:[...type.roles], personIds:type.roles.map((_,i)=>at(i)||null)};
+        if(arrangeDriverChief(probe)) next.fixedRoles=true; else delete next.fixedRoles;
+        if(next.fixedRoles) a.fixedRoles=true; else delete a.fixedRoles;
+      }
     }
   } else if(type.mode==='dayNight'){
     const by={};
@@ -4110,7 +4209,7 @@ function writeBackMismatchMsg(type, role, date, regen, actual){
   if(same({support:''})) return `「${role}」${day}的支援/備註文字預排沒辦法照樣記，請到預排修改。`;
   if(same({nominalIds:[]})) return `「${role}」${day}的掛名設定預排沒辦法照樣記，請到預排修改。`;
   if(same({restUntil:''})) return `「${role}」${day}的補休時間預排沒辦法照樣記（例如沒填補休時，預排會自動帶入預設的補休時間），請到預排修改。`;
-  if(type.mode==='roles' && same({personIds:[], nominalIds:[]})) return `「${role}」這樣排，預排匯入時會自動調整（例如車長階級低於駕駛會自動對調），沒辦法照這樣記。請調整後再存，或到預排修改。`;
+  if(type.mode==='roles' && same({personIds:[], nominalIds:[]})) return `「${role}」${day}的${(type.roles||[]).join('、')}這樣排，預排沒辦法照樣記。請調整後再存，或到預排修改。`;
   if(same({start:'', end:''})) return `「${role}」${day}的時間預排沒辦法照樣記，請到預排修改。`;
   return `「${role}」${day}這樣改，預排沒辦法完全照樣記下來，請到預排修改。`;
 }
@@ -4128,8 +4227,14 @@ function writeBackStandbyEntry(before, after, date){
   cfg.personIds=(after.roles? after.roles.map((_,i)=>(after.personIds||[])[i]||null) : (after.personIds||[]).filter(Boolean));
   if(isEmptyPlanEntry(after)) return {ok:true};
   cfg.start=after.start||''; cfg.end=after.end||''; cfg.restUntil=after.restUntil||'';
+  // v203：駕駛／車長排班頁怎麼放就怎麼記——自動分會把它換掉的話，記 fixedRoles（之後照記的位置）
+  if(isDriverChiefRoles(after.roles)){
+    const probe={role, roles:[...after.roles], personIds:cfg.personIds.slice()};
+    if(arrangeDriverChief(probe, standbySubSpec(role))) cfg.fixedRoles=true; else delete cfg.fixedRoles;
+    if(cfg.fixedRoles) after.fixedRoles=true; else delete after.fixedRoles;
+  }
   const regen=makeStandbySubEntry(anchor, role, cfg);
-  if(!regen || !sameEntrySet([regen], [after])) return {ok:false, msg:`留守的「${role}」${minguoLabel(date)}這樣改，留守預排沒辦法完全照樣記下來（例如車長階級低於駕駛會自動對調），請到留守預排修改。`};
+  if(!regen || !sameEntrySet([regen], [after])) return {ok:false, msg:`留守的「${role}」${minguoLabel(date)}這樣改，留守預排沒辦法完全照樣記下來，請到留守預排修改。`};
   return {ok:true};
 }
 
@@ -5867,7 +5972,7 @@ function guideHTML(){
     <h3>每個分頁做什麼</h3>
     <ul>
       <li><b>人員</b>：名冊和每個人的資料（階級、排組、證照、專長）。排組標題按了可以收合；最下面「名冊工具」有排組、自訂欄位、選單清單、批次設定。</li>
-      <li><b>預排</b>：最上面「要處理」；留守、休假暨事故大表；值星、查哨、救護車這類先排一段日子的勤務。</li>
+      <li><b>預排</b>：最上面「要處理」；留守、休假暨事故大表；值星、查哨、救護車這類先排一段日子的勤務。月曆下面「🕘 一次改很多天的時段」可以一次改好幾天（例如這個月的假日）。採買、救護車、消防車只要選人，誰開車、誰當車長系統會分（排班頁可以「⇅ 對調」）。</li>
       <li><b>排班</b>：每天排人（打開 App 就在這頁）。</li>
       <li><b>統計</b>：每個時段在勤人數、不在營名單、可外散宿人員、破例紀錄。</li>
       <li><b>⚙️設定</b>：每種勤務的時段、人數、資格、補休（「勤務」）；規則等級；假日；放假收假時間；備份。</li>
@@ -7122,6 +7227,28 @@ function autoAssignMiscForDate(date, opts){
         // slot we can, rather than leaving the whole item untouched
         if(driverPool.length) entry.personIds[driverIdx]=driverPool.sort((a,b)=>rankOf(a)-rankOf(b))[0].id;
         else if(chiefPool.length) entry.personIds[chiefIdx]=chiefPool.sort((a,b)=>rankOf(a)-rankOf(b))[0].id;
+      }
+    }
+    /* v203：預排、留守排進來的駕駛／車長位置沒有固定（fixedRoles 除外）：只有一個人、另一格空著，
+       照現在的位置補不上人的時候，把他換到另一格再補——例如採買預排的是有駕照的士官，
+       找不到駕駛、但有別的士官可以當車長，就讓他開車。照現在的位置補得上就不動。 */
+    if(driverIdx>-1 && chiefIdx>-1 && (entry.fromPreplan || entry.standbyAnchor) && !entry.fixedRoles
+       && !(entry.lockedSlots && (entry.lockedSlots[driverIdx] || entry.lockedSlots[chiefIdx]))){
+      const has=[driverIdx, chiefIdx].filter(i=>entry.personIds[i]);
+      const pid=has.length===1? entry.personIds[has[0]] : null;
+      if(pid && !isSupportId(pid)){
+        const at=has[0], other=at===driverIdx? chiefIdx : driverIdx;
+        if(!state.personnel.some(p=>freeForEntry(p) && okAt(p, other))){
+          const saved=entry.personIds.slice();
+          entry.personIds[at]=undefined;
+          const me=state.personnel.find(p=>p.id===pid);
+          let moved=false;
+          if(me && okAt(me, other)){
+            entry.personIds[other]=pid;
+            moved=state.personnel.some(p=>freeForEntry(p) && okAt(p, at));
+          }
+          if(!moved) entry.personIds=saved;
+        }
       }
     }
     entry.roles.forEach((r,i)=>{
@@ -10651,7 +10778,8 @@ function openDutyRangeFillModal(onDone){
       if(changed) setPreplan('duty', prevDay, pg.length===1 && !preplanFor('duty', prevDay).groups? pg[0] : {groups:pg});
     }
     days.forEach(x=>{
-      const existing=peopleGroupsOf(preplanFor('duty', x.date)).map(g=>JSON.parse(JSON.stringify(g)));
+      // v203：只有時段、還沒排人的那一組（一次改時段先記的）不用留
+      const existing=peopleGroupsOf(preplanFor('duty', x.date)).filter(g=>(g.personIds||[]).some(Boolean) || g.support || g.note || (g.posNotes||[]).some(Boolean)).map(g=>JSON.parse(JSON.stringify(g)));
       let keep=[];
       if(x.part==='first'){
         // 交接前（前一組）留著；跨過交接時間的剪到交接時間
@@ -10687,6 +10815,186 @@ function openDutyRangeFillModal(onDone){
     });
   };
 }
+/* ===== v203：一次改很多天的時段 =====
+   月曆上點日子（可以一鍵選這個月的假日／平日，再自己加減），一次改開始、結束（要的話補休一起改）；已經排好的人不動。
+   opts：{title, ym, hint, roleChoices?:[{value,label}]（留守：先選哪一個勤務）, canPick(d, role)→{ok, tag?, why?},
+          timesFor(role)→{start,end,rest}, hasRest, preselect?:[日期], onApply(dates, {start,end,setRest,rest}, role), zIndex} */
+function openBatchTimeSheet(opts){
+  const modal=document.createElement('div');
+  modal.className='sheet-modal'; modal.style.zIndex=String(opts.zIndex||96);
+  let ym=opts.ym;
+  let role=opts.roleChoices && opts.roleChoices.length? opts.roleChoices[0].value : '';
+  const sel=new Set(opts.preselect||[]);
+  const pick=d=>{ try{ return (opts.canPick && opts.canPick(d, role)) || {ok:false}; }catch(e){ console.error(e); return {ok:false}; } };
+  const monthDates=()=>{ const n=daysInMonth(ym); return Array.from({length:n},(_,i)=>`${ym}-${String(i+1).padStart(2,'0')}`); };
+  const timesNow=()=>(opts.timesFor? opts.timesFor(role) : null) || {start:'', end:'', rest:''};
+  const timesHTML=t=>`
+      <div class="row wrap" style="margin-bottom:6px">
+        <div class="grow"><label>開始</label>${timeSelectHTML('btStart', t.start||'08:00')}</div>
+        <div class="grow"><label>結束</label>${timeSelectHTML('btEnd', t.end||'17:00')}</div>
+      </div>
+      <div class="hint" style="margin-bottom:6px">⏰ 結束時間不晚於開始時間，代表跨到隔天（例：07:00 → 隔天07:00）。</div>
+      ${opts.hasRest? `<label style="display:flex;align-items:center;gap:6px;font-size:13px;margin-bottom:6px"><input type="checkbox" id="btSetRest" style="width:auto"> 補休時間也一起改</label>
+      <div id="btRestRow" style="display:none;margin-bottom:6px"><label>補休至（留空＝照這個勤務的預設）</label>${timeSelectHTML('btRest', t.rest||'', {allowEmpty:true})}</div>` : ''}`;
+  modal.innerHTML=`
+    <div class="sheet-inner">
+      <div class="section-title"><h2 style="margin:0">${esc(opts.title)}</h2><button class="ghost small" id="btClose">關閉</button></div>
+      ${opts.roleChoices? `<label>要改哪一個勤務</label><select id="btRole" style="margin-bottom:8px">${opts.roleChoices.map(c=>`<option value="${esc(c.value)}">${esc(c.label)}</option>`).join('')}</select>` : ''}
+      <div class="hint no-mh" style="margin-bottom:8px">點日期選要改的日子，再點一次取消。${opts.hint? esc(opts.hint) : ''}</div>
+      <div class="row" style="gap:6px;align-items:center;margin-bottom:6px">
+        <button class="ghost small" id="btPrev" aria-label="上個月">◀</button>
+        <span class="grow" id="btMonth" style="text-align:center;font-weight:600"></span>
+        <button class="ghost small" id="btNext" aria-label="下個月">▶</button>
+      </div>
+      <div class="bt-quick">
+        <button type="button" class="ghost small" data-bt-quick="hol">這個月的假日</button>
+        <button type="button" class="ghost small" data-bt-quick="wd">這個月的平日</button>
+        <button type="button" class="ghost small" data-bt-quick="all">這個月全部</button>
+        <button type="button" class="ghost small" data-bt-quick="none">這個月全部取消</button>
+      </div>
+      <div class="cal-grid" id="btCal" style="margin-bottom:6px"></div>
+      <div class="hint no-mh" id="btCount" style="margin-bottom:8px"></div>
+      <div class="divider"></div>
+      <div id="btTimes">${timesHTML(timesNow())}</div>
+      <button class="primary" id="btApply" style="width:100%;margin-top:6px"></button>
+    </div>`;
+  document.body.appendChild(modal);
+  const drawCal=()=>{
+    const [y,m]=ym.split('-').map(Number);
+    document.getElementById('btMonth').textContent=`民國${y-1911}年${m}月`;
+    const firstDow=new Date(y,m-1,1).getDay();
+    const cells=['日','一','二','三','四','五','六'].map(w=>`<div class="cal-head">${w}</div>`);
+    for(let i=0;i<firstDow;i++) cells.push('<div class="cal-cell empty"></div>');
+    monthDates().forEach(d=>{
+      const r=pick(d), on=sel.has(d) && r.ok;
+      cells.push(`<button type="button" class="cal-cell bt-cell${on?' sel':''}${r.ok?'':' off'}${isHolidayDate(d)?' holiday':''}" data-bt-date="${d}"${r.ok? '' : ' disabled'} aria-pressed="${on}" aria-label="${esc(minguoLabel(d))}${on? '（已選）' : ''}${r.ok? '' : `（不能選${r.why? '：'+esc(r.why) : ''}）`}">
+        <span class="cal-day">${Number(d.slice(8))}</span>${on? '<span class="bt-check">✓</span>' : (r.tag? `<span class="bt-tag">${esc(r.tag)}</span>` : '')}</button>`);
+    });
+    document.getElementById('btCal').innerHTML=cells.join('');
+    const list=[...sel].filter(d=>pick(d).ok).sort();
+    document.getElementById('btCount').textContent=list.length? `已選 ${list.length} 天：${compressDates(list)}` : '還沒選日子';
+    const ap=document.getElementById('btApply');
+    ap.textContent=list.length? `套用到 ${list.length} 天` : '套用';
+  };
+  drawCal();
+  const close=()=>modal.remove();
+  document.getElementById('btClose').onclick=close;
+  document.getElementById('btPrev').onclick=()=>{ ym=shiftMonth(ym,-1); drawCal(); };
+  document.getElementById('btNext').onclick=()=>{ ym=shiftMonth(ym,1); drawCal(); };
+  document.getElementById('btCal').addEventListener('click', e=>{
+    const c=e.target.closest('[data-bt-date]'); if(!c || c.disabled) return;
+    const d=c.dataset.btDate; if(sel.has(d)) sel.delete(d); else sel.add(d);
+    drawCal();
+  });
+  modal.querySelectorAll('[data-bt-quick]').forEach(b=>{ b.onclick=()=>{
+    const q=b.dataset.btQuick, ds=monthDates();
+    ds.forEach(d=>sel.delete(d));
+    if(q!=='none') ds.filter(d=>pick(d).ok && (q==='all' || (q==='hol')===isHolidayDate(d))).forEach(d=>sel.add(d));
+    drawCal();
+  }; });
+  const wireRest=()=>{ const cb=document.getElementById('btSetRest'); if(cb) cb.onchange=()=>{ document.getElementById('btRestRow').style.display=cb.checked? 'block' : 'none'; }; };
+  wireRest();
+  const rs=document.getElementById('btRole');
+  if(rs) rs.onchange=()=>{ role=rs.value; document.getElementById('btTimes').innerHTML=timesHTML(timesNow()); wireRest(); drawCal(); };
+  document.getElementById('btApply').onclick=()=>{
+    const dates=[...sel].filter(d=>pick(d).ok).sort();
+    if(!dates.length){ showAlert('請先在月曆上點選要改的日子。'); return; }
+    const start=getTimeSelectValue('btStart'), end=getTimeSelectValue('btEnd');
+    if(!start || !end){ showAlert('請選開始、結束時間。'); return; }
+    const setRest=!!(document.getElementById('btSetRest')||{}).checked;
+    const t={start, end, setRest, rest:setRest? getTimeSelectValue('btRest') : ''};
+    close();
+    opts.onApply(dates, t, role);
+  };
+  return modal;
+}
+/* 一天的預排換成新的時段（人不動）：沒有預排的那天先記一筆只有時段的（還沒排人，班表上不會出現） */
+function withPlanTime(type, plan, t){
+  const next=plan? JSON.parse(JSON.stringify(plan)) : null;
+  const apply=g=>{ g.start=t.start; g.end=t.end; if(t.setRest) g.restUntil=t.rest||''; };
+  if(type.mode==='roles'){
+    const n=next || {personIds:type.roles.map(()=>null), notes:type.roles.map(()=>''), nominalIds:[], support:''};
+    apply(n); return n;
+  }
+  if(!next){ const g={personIds:[], nominalIds:[]}; apply(g); return {groups:[g]}; }
+  const gs=peopleGroupsOf(next);
+  if(!gs.length){ const g={personIds:[], nominalIds:[]}; apply(g); next.groups=[g]; return next; }
+  apply(gs[0]);
+  return next;
+}
+/* 每日預排：一次改時段（月曆頁按鈕） */
+function openPlanBatchTime(key, ym, onDone){
+  const type=PREPLAN_TYPES.find(t=>t.key===key);
+  if(!type) return;
+  const preset=type.presetRole? state.miscPresets.find(p=>p.role===type.presetRole) : null;
+  const t0=preset? (presetTimes(preset)[0]||{start:'',end:''}) : {start:'',end:''};
+  openBatchTimeSheet({
+    title:`${type.icon} ${type.name}：一次改時段`, ym,
+    hint:'已經排好的人不會動，只改時段；還沒排人的日子也先記住這個時段（排人的時候就是這個時段）。今天以前的不能改。',
+    hasRest:true,
+    canPick:d=>{
+      if(d<todayStr()) return {ok:false, why:'已經過去'};
+      if(type.mode==='people' && peopleGroupsOf(preplanFor(key, d)).length>1) return {ok:false, tag:'兩組', why:'這天有兩組（例如交接那天），請點進那天改'};
+      return {ok:true};
+    },
+    timesFor:()=>({start:preplanDefault(key,'start',t0.start), end:preplanDefault(key,'end',t0.end), rest:preplanDefault(key,'rest',(preset&&preset.restUntil)||'')}),
+    onApply:(dates, t)=>{
+      const factsBefore=planFactSnapshot(dates);
+      dates.forEach(d=>setPreplan(key, d, withPlanTime(type, preplanFor(key, d), t)));
+      saveState();
+      if(onDone) onDone();
+      const msg=`已改 ${dates.length} 天的「${type.name}」時段：${compressDates(dates)}（${t.start}-${t.end}${t.setRest? `，補休至 ${t.rest||'照預設'}` : ''}）`;
+      const items=newPlanFacts(factsBefore, dates);
+      if(items.length) confirmPlanConflicts(items, null, null, msg); else showToast(msg);
+    }
+  });
+}
+/* 留守：一次改某一個勤務的時段。plan 有給（留守表編輯畫面裡）：改的是那一份還沒存的；沒給（月曆頁）：今天以後所有留守表，直接存 */
+function standbyBatchRoles(roles){ return (roles||[]).filter(r=>!PREPLAN_TYPES.find(t=>t.presetRole===r && t.mode!=='standby' && t.key!=='duty')); }
+function openStandbyBatchTime(ym, draft, onDone){
+  const today=todayStr();
+  const blocks=()=>draft? [['__draft', draft.plan]] : Object.entries((state.preplan.standby)||{}).filter(([,p])=>p && p.startDate && p.endDate);
+  const roles=standbyBatchRoles(draft? draft.roles : (state.standbySubRoles||[]));
+  if(!roles.length){ showAlert('留守表還沒有要排的勤務項目（留守表的「留守日子勤務」→「設定項目」）。'); return; }
+  const inBlock=d=>blocks().some(([,p])=>standbySubActive(p, d));
+  openBatchTimeSheet({
+    title:'🏠 留守：一次改時段', ym, roleChoices:roles.map(r=>({value:r, label:r})),
+    hint: draft? '改的是這張留守表，按留守表的「儲存」才會存。已經排好的人不會動，只改時段。' : '只能選有留守表的日子。已經排好的人不會動，只改時段；還沒排人的也先記住這個時段。今天以前的不能改。',
+    hasRest:true,
+    preselect: draft? (draft.dates||[]).filter(d=>d>=today) : [],
+    canPick:d=>{
+      if(!inBlock(d)) return {ok:false, why:'沒有留守表'};
+      if(d<today) return {ok:false, why:'已經過去'};
+      return {ok:true};
+    },
+    timesFor:role=>{
+      // 這個月這個勤務最常用的時段；沒有就照勤務的預設
+      const cnt=new Map();
+      blocks().forEach(([,p])=>Object.entries(((p.subDuties||{})[role])||{}).forEach(([d,c])=>{ if(d.startsWith(ym) && c && c.start && c.end){ const k=c.start+'|'+c.end; cnt.set(k,(cnt.get(k)||0)+1); } }));
+      const top=[...cnt.entries()].sort((a,b)=>b[1]-a[1])[0];
+      const preset=state.miscPresets.find(p=>p.role===role);
+      const t=preset? (presetTimes(preset)[0]||{}) : {};
+      const [st,en]=top? top[0].split('|') : [t.start, t.end];
+      return {start:st||'08:00', end:en||'17:00', rest:(preset&&preset.restUntil)||''};
+    },
+    onApply:(dates, t, role)=>{
+      const factsBefore=draft? null : planFactSnapshot(dates);
+      dates.forEach(d=>blocks().forEach(([,p])=>{
+        if(!standbySubActive(p, d)) return;
+        if(!p.subDuties) p.subDuties={};
+        if(!p.subDuties[role]) p.subDuties[role]={};
+        const cfg=p.subDuties[role][d] || (p.subDuties[role][d]={personIds:[]});
+        cfg.start=t.start; cfg.end=t.end; if(t.setRest) cfg.restUntil=t.rest||'';
+      }));
+      const msg=`已改 ${dates.length} 天的「${role}」時段：${compressDates(dates)}（${t.start}-${t.end}${t.setRest? `，補休至 ${t.rest||'照預設'}` : ''}）`;
+      if(draft){ if(onDone) onDone(); showToast(msg+'，按「儲存」才會存'); return; }
+      saveState();
+      if(onDone) onDone();
+      const items=newPlanFacts(factsBefore, dates);
+      if(items.length) confirmPlanConflicts(items, null, null, msg); else showToast(msg);
+    }
+  });
+}
 function openPreplanCalendar(key){
   const type = PREPLAN_TYPES.find(t=>t.key===key);
   if(!type) return;
@@ -10695,6 +11003,8 @@ function openPreplanCalendar(key){
   if(type.mode==='leaveTable') return openLeaveTableEditor(preplanMonth+'-01', ()=>render());
   const modal=document.createElement('div');
   modal.className='fullscreen-modal'; modal.style.zIndex='92';
+  // v203：一次改很多天的時段（時段可以改的每日預排、留守）
+  const batchTimeOk = key==='standby' || (type.editableTime && (type.mode==='people' || type.mode==='roles'));
   const draw=()=>{
     const ym=preplanMonth;
     const [y,m]=ym.split('-').map(Number);
@@ -10737,6 +11047,7 @@ function openPreplanCalendar(key){
       <button class="ghost" id="calPatrolSettings" style="width:100%;margin-bottom:6px">⚙️ 查哨設定（補休、輪值單位、階級平均、候選名單）</button>
       <button class="primary" id="calPatrolAutoFill" style="width:100%;margin-bottom:6px">🎯 依規則自動排本月（本部連）</button>
       ` : ''}
+      ${batchTimeOk? `<button class="ghost" id="calBatchTime" style="width:100%;margin-bottom:6px">🕘 ${key==='standby'? '一次改留守勤務的時段' : '一次改很多天的時段'}</button>` : ''}
       ${preplanSupportsTextFormat(type)? `
       <button class="ghost" id="calExportText" style="width:100%;margin-bottom:6px">📝 匯出本月文字（給人填空缺）</button>
       <button class="ghost" id="calImportText" style="width:100%;margin-bottom:6px">📝 匯入填好的文字</button>
@@ -10772,6 +11083,8 @@ function openPreplanCalendar(key){
     document.getElementById('calCheckpoint').onclick=()=>openCheckpointModal(key, type.name,
       ()=>state.preplan[key]||{},
       (data)=>{ state.preplan[key]=data; draw(); });
+    { const bt=document.getElementById('calBatchTime');
+      if(bt) bt.onclick=()=>{ if(key==='standby') openStandbyBatchTime(ym, null, draw); else openPlanBatchTime(key, ym, draw); }; }
     if(preplanSupportsTextFormat(type)){
       document.getElementById('calExportText').onclick=()=>{
         if(key==='patrol') openPatrolExportModal(ym);
@@ -11016,7 +11329,7 @@ function openStandbyEditor(date, onSaved){
       <div id="sbOffList" style="max-height:40vh;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:4px 8px;margin-bottom:8px">${offListHTML()}
       </div>
       <div class="divider"></div>
-      <div class="section-title"><h3 style="margin:0">留守日子勤務</h3><button class="ghost small" id="sbEditRoles">設定項目</button></div>
+      <div class="section-title"><h3 style="margin:0">留守日子勤務</h3><span class="row" style="gap:6px">${staying.length && standbyBatchRoles(subRoles).length? `<button class="ghost small" id="sbBatchTime">🕘 一次改時段</button>` : ''}<button class="ghost small" id="sbEditRoles">設定項目</button></span></div>
       <div class="hint" style="margin-bottom:8px">只能從上面的留守名單裡指派。時段預設沿用「常用項目」，可個別調整。如果這個項目本身也是預排分頁裡的獨立預排（例如中央監控值班），會直接沿用那邊排好的內容，不用在這裡重填。</div>
       ${staying.length? blockDates.map(d=>`
         <div class="card" style="padding:8px 10px">
@@ -11038,7 +11351,9 @@ function openStandbyEditor(date, onSaved){
             const preset=state.miscPresets.find(p=>p.role===role);
             const t0=preset? (presetTimes(preset)[0]||{start:'',end:''}) : {start:'',end:''};
             const st=cfg.start||t0.start, en=cfg.end||t0.end;
-            const names=(cfg.personIds||[]).map(pid=>{const p=state.personnel.find(x=>x.id===pid);return p?p.name:'';}).filter(Boolean);
+            // v203：駕駛／車長寫出誰當哪一個（存的時候自動分的）
+            const slotR=standbySubSlotRoles(role);
+            const names=(cfg.personIds||[]).map((pid,i)=>{const p=state.personnel.find(x=>x.id===pid);return p? (slotR && slotR[i]? `${slotR[i]} ${p.name}` : p.name) : '';}).filter(Boolean);
             return `<div class="row" style="align-items:flex-start;margin-bottom:4px">
               <span class="muted grow">${esc(role)}${st&&en? `（${st}-${en}）`:''}：${names.length? esc(names.join('、')) : '（未指派）'}</span>
               <button class="ghost small" data-sb-sub="${esc(role)}" data-sb-subdate="${d}">編輯</button>
@@ -11125,6 +11440,10 @@ function openStandbyEditor(date, onSaved){
       }, 60);
     }; }
     document.getElementById('sbEditRoles').onclick=()=>{ sync(); openStandbySubRolePicker(draw); };
+    // v203：一次改這張留守表某一個勤務的時段（改的是還沒存的這一份）
+    { const bt=document.getElementById('sbBatchTime');
+      if(bt) bt.onclick=()=>{ sync(); const ds=(plan.startDate<=plan.endDate)? dateRangeList(plan.startDate, plan.endDate) : [plan.startDate];
+        openStandbyBatchTime(ds[0].slice(0,7), {plan, roles:state.standbySubRoles||[], dates:ds}, draw); }; }
     modal.querySelectorAll('[data-sb-remove]').forEach(b=>{
       b.onclick=()=>{ sync(); plan.personIds=plan.personIds.filter(id=>id!==b.dataset.sbRemove); delete plan.overrides[b.dataset.sbRemove]; draw(); };
     });
@@ -11432,9 +11751,14 @@ function openStandbySubDutyEditor(plan, role, d, onDone, anchor){
     .sort((a,b)=>groupIndex(a.group)-groupIndex(b.group)||rankIndex(a.rank)-rankIndex(b.rank));
   const isRoleMode = !!slotRoles;
   const subCfg = {roles:slotRoles, restUntil:(spec&&spec.restUntil)||''};
+  /* v203：駕駛／車長不分位置：勾人就好，存的時候照資格放進駕駛、車長（排班頁照自己的意思放過、人沒改的照原本的位置） */
+  const crewSel=()=>[...modal.querySelectorAll('.sd-crew:checked')].map(cb=>cb.value);
+  const crewPrevIds=(cfg.personIds||[]).filter(Boolean);
+  const crewKeep=sel=>{ if(!cfg.fixedRoles) return false; const x=[...new Set(sel)].sort(), y=[...new Set(crewPrevIds)].sort(); return x.length===y.length && x.every((v,i)=>v===y[i]); };
+  const crewPlaceSd=sel=>crewKeep(sel)? subCfg.roles.map((_,i)=>(cfg.personIds||[])[i]||undefined) : placeDriverChief(subCfg.roles, sel, spec, cfg.personIds, []);
   // 這一格放誰會有什麼問題（規則引擎、用畫面上還沒存的留守表試算）
   const draftCfg=()=>({start:getTimeSelectValue('sdStart')||cfg.start||t0.start, end:getTimeSelectValue('sdEnd')||cfg.end||t0.end,
-    restUntil:getTimeSelectValue('sdRest')||'', personIds: isRoleMode? (subCfg.roles.map((_,i)=>{ const sel=modal.querySelector(`.sd-role${i}:checked`); return sel&&sel.value? sel.value : undefined; }))
+    restUntil:getTimeSelectValue('sdRest')||'', personIds: isRoleMode? crewPlaceSd(crewSel())
       : [...modal.querySelectorAll('.sd-person:checked')].map(cb=>cb.value)});
   const initCfg={start:cfg.start||t0.start, end:cfg.end||t0.end, restUntil:cfg.restUntil||subCfg.restUntil||'', personIds:(cfg.personIds||[]).slice()};
   const issuesAt=(c, i, opts)=>standbySubDraftIssues(anchor||'', plan, role, d, i, c, pool, opts);
@@ -11442,20 +11766,20 @@ function openStandbySubDutyEditor(plan, role, d, onDone, anchor){
         ${input}
         <span>${esc(p.name)}（<span class="nw">${esc(p.group||'未分組')}</span>·<span class="nw">${esc(p.rank)}</span>${personBadges(p)}）${candidateIssuesHTML(g)}</span>
       </label>`;
-  const roleRowsHTML=(i, c, selId)=>{
-    const iss=issuesAt(c, i);
-    return [...pool].sort((a,b)=>iss.get(a.id).rank-iss.get(b.id).rank).map(p=>rowHTML(p, `<input type="radio" name="sd-role${i}" class="sd-role${i}" value="${p.id}" style="width:auto;margin-top:2px" ${p.id===selId?'checked':''}>`, iss.get(p.id))).join('');
+  // 名單的順序打開時排一次（照問題多少），之後勾來勾去不再跳動，只更新每個人的問題
+  let crewOrder=null;
+  const crewRowsHTML=(sel, c)=>{
+    const iss=bestCrewIssues(subCfg.roles, sel, pool, (base,i)=>issuesAt(Object.assign({}, c, {personIds:base}), i), [], []);
+    const g=p=>iss.get(p.id)||candidateIssueGroups([]);
+    if(!crewOrder) crewOrder=[...pool].sort((a,b)=>g(a).rank-g(b).rank).map(p=>p.id);
+    return crewOrder.map(personById).filter(Boolean).map(p=>rowHTML(p, `<input type="checkbox" class="sd-crew" value="${p.id}" style="width:auto;margin-top:2px" ${sel.includes(p.id)?'checked':''}>`, g(p))).join('');
   };
   const modal=document.createElement('div');
   modal.className='sheet-modal'; modal.style.zIndex='94';
-  const roleBlockHTML = isRoleMode? subCfg.roles.map((r,i)=>{
-    const selId=(cfg.personIds||[])[i]||'';
-    return `<div class="hint" style="margin:6px 0 2px"><b>${esc(r)}</b></div>
-      <label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0">
-        <input type="radio" name="sd-role${i}" class="sd-role${i}" value="" style="width:auto" ${!selId?'checked':''}>（未指派）
-      </label>
-      <div id="sdRoleList${i}" style="max-height:30vh;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:8px;margin-bottom:8px">${pool.length? roleRowsHTML(i, initCfg, selId) : `<div class="empty">請先選擇留守人員</div>`}</div>`;
-  }).join('') : '';
+  const roleBlockHTML = isRoleMode? `<div class="hint" style="margin:6px 0 2px"><b>人員</b>（2 人，不用分${subCfg.roles.join('、')}）</div>
+      <div id="sdCrewList" style="max-height:40vh;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:8px;margin-bottom:6px">${pool.length? crewRowsHTML(crewPrevIds, initCfg) : `<div class="empty">請先選擇留守人員</div>`}</div>
+      <div class="hint no-mh pp-crew-preview" id="sdCrewPreview"></div>
+      <div class="hint no-mh" style="margin:2px 0 8px">存的時候自動分：有駕照的開車，車長要士官以上、階級不低於駕駛（兩個人都可以，就階級高的當車長）。排班頁可以按「⇅ 對調」。</div>` : '';
   modal.innerHTML=`
     <div class="sheet-inner">
       <div class="section-title"><h2 style="margin:0"><span class="nw">${esc(role)}：</span><span class="nw">${minguoLabel(d)}</span></h2><button class="ghost small" id="sdClose">關閉</button></div>
@@ -11497,26 +11821,38 @@ function openStandbySubDutyEditor(plan, role, d, onDone, anchor){
     };
     keepSearchFocusOnPick(le, se);
   } else {
-    // 選駕駛後車長清單要即時重新判斷（規則引擎，含車長不低於駕駛）
-    const chiefIdx=subCfg.roles.indexOf('車長'), driverIdx=subCfg.roles.indexOf('駕駛');
-    modal.querySelectorAll('.sd-role'+driverIdx).forEach(r=>{
-      r.addEventListener('change', ()=>{
-        const chiefListEl=document.getElementById('sdRoleList'+chiefIdx);
-        const curChief=modal.querySelector('.sd-role'+chiefIdx+':checked');
-        const curVal=curChief? curChief.value : '';
-        if(chiefListEl && pool.length) chiefListEl.innerHTML=roleRowsHTML(chiefIdx, draftCfg(), curVal);
-      });
+    // v203：勾了誰：會怎麼分寫在下面；每個人的問題照「另一個勾的人」重算（名單順序不變）
+    const crewPreviewSd=()=>{
+      const el=document.getElementById('sdCrewPreview'); if(!el) return;
+      const sel=crewSel();
+      if(!sel.length){ el.innerHTML=''; return; }
+      const ids=crewPlaceSd(sel);
+      const probs=driverChiefProblems(subCfg.roles, ids, spec);
+      el.innerHTML=`存的時候：${subCfg.roles.map((r,i)=>`${esc(r)} ${ids[i]? `<b>${esc(personName(ids[i]))}</b>` : '（未指派）'}`).join('・')}${crewKeep(sel)? '（照排班頁放的位置）' : ''}`
+        + (sel.length>subCfg.roles.length? `<br><span class="warn">人太多：只有 ${subCfg.roles.length} 個位置</span>` : '')
+        + (probs.length? `<br><span class="warn">⚠️ ${esc(probs.map(p=>p.msg).join('；'))}</span>` : '');
+    };
+    const listEl=document.getElementById('sdCrewList');
+    if(listEl && pool.length) listEl.addEventListener('change', ()=>{
+      const sel=crewSel();
+      const top=listEl.scrollTop;
+      listEl.innerHTML=crewRowsHTML(sel, Object.assign(draftCfg(), {personIds:[]}));
+      listEl.scrollTop=top;
+      crewPreviewSd();
     });
+    crewPreviewSd();
   }
   document.getElementById('sdClear').onclick=()=>{
     if(plan.subDuties[role]) delete plan.subDuties[role][d];
     modal.remove(); onDone();
   };
   document.getElementById('sdSave').onclick=()=>{
+    if(isRoleMode && crewSel().length>subCfg.roles.length){ showAlert(`${subCfg.roles.join('、')}只有 ${subCfg.roles.length} 個位置：勾了 ${crewSel().length} 人，請拿掉 ${crewSel().length-subCfg.roles.length} 人再存。`); return; }
+    // v203：駕駛／車長照資格放（人沒改、排班頁照自己的意思放過的照原本的位置）
+    const keepFixed = isRoleMode && crewKeep(crewSel());
     const ids = isRoleMode
-      ? subCfg.roles.map((_,i)=>{ const sel=modal.querySelector(`.sd-role${i}:checked`); return sel&&sel.value? sel.value:undefined; })
+      ? crewPlaceSd(crewSel())
       : [...modal.querySelectorAll('.sd-person:checked')].map(cb=>cb.value);
-    if(isRoleMode) autoSwapDriverChief({roles:subCfg.roles, personIds:ids}, spec);
     const support=document.getElementById('sdSupport').value.trim();
     const allDays=document.getElementById('sdAllDays');
     const targets = (allDays && allDays.checked)? blockDates : [d];
@@ -11525,7 +11861,7 @@ function openStandbySubDutyEditor(plan, role, d, onDone, anchor){
     targets.forEach(td=>{
       if(!hasAny && !support) delete plan.subDuties[role][td];
       else plan.subDuties[role][td]={personIds:ids, start:getTimeSelectValue('sdStart'),
-        end:getTimeSelectValue('sdEnd'), restUntil:getTimeSelectValue('sdRest'), support};
+        end:getTimeSelectValue('sdEnd'), restUntil:getTimeSelectValue('sdRest'), support, ...(keepFixed? {fixedRoles:true} : {})};
     });
     modal.remove(); onDone();
   };
@@ -11750,6 +12086,24 @@ function openPreplanDayEditor(key, date, onSaved){
   const ownEntry=m=>m.role===planRole && !m.standbyAnchor;
   // 「勤務」裡設定的需要幾人（挑人清單的「確定」上寫「需要 N 人」；沒設定就不寫）
   const planNeedCount=()=>{ const d=(state.dutyDefinitions||[]).find(x=>x.key===key); const n=d? Number(d.requiredCount) : 0; return n>0? n : undefined; };
+  /* v203：駕駛／車長不分位置（採買、救護車）：一份名單選人；支援的人（別單位）打在哪一格就佔哪一格 */
+  const crewMode = type.mode==='roles' && isDriverChiefRoles(type.roles);
+  const crewPrev = crewMode? (plan.personIds||[]).filter(id=>id && !isSupportId(id)) : [];
+  const crewNote = i=>{ const el=document.getElementById('ppRoleNote'+i); return el? el.value.trim() : String((plan.notes||[])[i]||'').trim(); };
+  const crewBlocked = ()=>crewMode? type.roles.map((_,i)=>i).filter(i=>crewNote(i)) : [];
+  const crewBase = ()=>type.roles? type.roles.map((_,i)=>crewNote(i)? supportIdOf(crewNote(i)) : undefined) : [];
+  const crewNeed = ()=>Math.max(0, (type.roles||[]).length-crewBlocked().length);
+  const crewShape = ()=>({start:type.editableTime? liveTime('ppTStart', plan.start||preplanDefault(key,'start',t0.start)) : t0.start,
+    end:type.editableTime? liveTime('ppTEnd', plan.end||preplanDefault(key,'end',t0.end)) : t0.end,
+    restUntil:liveTime('ppRest', plan.restUntil||''), roles:[...(type.roles||[])], personIds:[]});
+  const sameIdSet=(a,b)=>{ const x=[...new Set((a||[]).filter(Boolean))].sort(), y=[...new Set((b||[]).filter(Boolean))].sort(); return x.length===y.length && x.every((v,i)=>v===y[i]); };
+  // 這天在排班頁照自己的意思放過（fixedRoles）、人跟支援的人都沒改：照原本的位置
+  const crewKeepFixed = (sel, notes)=>!!plan.fixedRoles && sameIdSet(sel, crewPrev) && notes.every((n,i)=>n===String((plan.notes||[])[i]||'').trim());
+  const crewPlace = sel=>{
+    const notes=type.roles.map((_,i)=>crewNote(i));
+    if(crewKeepFixed(sel, notes)) return {ids:type.roles.map((_,i)=>{ const v=(plan.personIds||[])[i]; return v && !isSupportId(v)? v : undefined; }), notes, keep:true};
+    return {ids:placeDriverChief(type.roles, sel, preset, plan.personIds, type.roles.map((_,i)=>i).filter(i=>notes[i])), notes, keep:false};
+  };
   const modal=document.createElement('div');
   modal.className='sheet-modal'; modal.style.zIndex='93';
   /* v202：挑人改用跟排班頁一樣的「挑人清單」（搜尋、分組、看近 7 天幾班；有問題的照規則分在下面）。
@@ -11769,6 +12123,12 @@ function openPreplanDayEditor(key, date, onSaved){
   }
   const issuesFor=(b, people)=>{
     const out=new Map();
+    if(b.crew){
+      // v203：不分位置：每個人當駕駛、當車長各算一次，取問題少的那一種
+      const evalAt=(base, i, list)=>{ const m=new Map(); draftSlotIssues(date, Object.assign({role:planRole}, b.shape(), {personIds:base}), i, list, {replace:ownEntry}).forEach((vs,id)=>m.set(id, candidateIssueGroups(vs))); return m; };
+      try{ return bestCrewIssues(type.roles, b.ids, people, evalAt, b.blocked(), b.baseFill()); }
+      catch(e){ console.error(e); return out; }
+    }
     try{ draftSlotIssues(date, Object.assign({role:planRole}, b.shape()), b.idx||0, people, Object.assign({replace:ownEntry}, b.issueOpts||{})).forEach((vs,id)=>out.set(id, candidateIssueGroups(vs))); }
     catch(e){ console.error(e); }
     return out;
@@ -11818,7 +12178,7 @@ function openPreplanDayEditor(key, date, onSaved){
       issue:p=>iss.get(p.id)||null, count:p=>planCounts.get(p.id)||0,
       // 近 7 天排得少的先，再照原本名單的順序
       order:p=>[planCounts.get(p.id)||0, poolIdx.has(p.id)? poolIdx.get(p.id) : 9999]};
-    if(b.multi) openPersonPickSheet(Object.assign(common, {multi:true, selected:b.ids, need:b.need, onDone:ids=>setPicked(listId, ids)}));
+    if(b.multi) openPersonPickSheet(Object.assign(common, {multi:true, selected:b.ids, need:b.needFn? b.needFn() : b.need, onDone:ids=>setPicked(listId, ids)}));
     else openPersonPickSheet(Object.assign(common, {current:b.ids[0]||'', onPick:pid=>setPicked(listId, [pid]), onClear:b.ids[0]? ()=>setPicked(listId, []) : null}));
   };
   const timeRow = (idBase, st, en, label)=>`
@@ -11883,6 +12243,16 @@ function openPreplanDayEditor(key, date, onSaved){
     const initialGroups = peopleGroupsOf(plan).length? peopleGroupsOf(plan) : [{}];
     body = (dutyPosFallback? `<div class="badge-issue" style="margin-bottom:8px">這天的預排有一組人數比值星官／值星班長兩個位置多，這天先照舊不分位置；要分位置，請把多的人拿掉再存。</div>` : '') + `<div id="ppGroupsWrap">${initialGroups.map((g,gi)=>groupBlockHTML(g,gi)).join('')}</div>
       <button class="ghost" id="ppAddGroup" style="width:100%;margin-bottom:8px">＋新增一組（同一天不同時段/不同人時使用）</button>`;
+  } else if(crewMode){
+    // v203：駕駛／車長不分位置：選人就好（排進班表時自動分）；別單位支援的人還是要說他當哪一個
+    body = (type.editableTime? timeRow('ppT', plan.start||preplanDefault(key,'start',t0.start), plan.end||preplanDefault(key,'end',t0.end)) : '')
+      + restRow('ppRest', plan.restUntil||preplanDefault(key,'rest',(preset&&preset.restUntil)||''))
+      + supportRow('ppSupport', plan.support)
+      + `<div class="hint" style="margin:6px 0 2px"><b>人員</b>（${type.roles.length} 人，不用分${type.roles.join('、')}）</div>`
+      + pickBox('ppCrew', {cls:'pp-crew', multi:true, crew:true, ids:crewPrev, nominalIds:plan.nominalIds, idx:0, label:'人員', needFn:crewNeed, shape:crewShape, blocked:crewBlocked, baseFill:crewBase})
+      + `<div class="hint no-mh pp-crew-preview" id="ppCrewPreview"></div>`
+      + `<div class="hint no-mh" style="margin:2px 0 8px">排進班表時自動分：有駕照的開車，車長要士官以上、階級不低於駕駛（兩個人都可以，就階級高的當車長）。排班頁可以按「⇅ 對調」。</div>`
+      + type.roles.map((r,i)=>`<div class="row wrap" style="margin:6px 0 2px"><div class="grow"><label>${esc(r)}由支援的人擔任（別單位的人，手打姓名；會佔這個位置）</label><input type="text" class="pp-sup-people pp-crew-sup" id="ppRoleNote${i}" value="${esc((plan.notes||[])[i]||'')}" placeholder="例：王小明"></div></div>`).join('');
   } else if(type.mode==='roles'){
     const sib=()=>type.roles.map((_,k)=>'ppList'+k);
     const shape=()=>({start:type.editableTime? liveTime('ppTStart', plan.start||preplanDefault(key,'start',t0.start)) : t0.start,
@@ -11965,6 +12335,26 @@ function openPreplanDayEditor(key, date, onSaved){
     const un=e.target.closest('[data-pp-unpick]');
     if(un){ const b=pickBoxes.get(un.dataset.ppUnpick); if(b) setPicked(b.listId, b.ids.filter(id=>id!==un.dataset.pid)); }
   });
+  // v203：駕駛／車長不分位置：選的人會怎麼分，即時寫在名單下面
+  const crewPreview=()=>{
+    const el=document.getElementById('ppCrewPreview'), b=pickBoxes.get('ppCrew');
+    if(!el || !b) return;
+    const pl=crewPlace(b.ids);
+    const full=type.roles.map((_,i)=>pl.ids[i] || (pl.notes[i]? supportIdOf(pl.notes[i]) : undefined));
+    if(!full.some(Boolean)){ el.innerHTML=''; return; }
+    const parts=type.roles.map((r,i)=>`${esc(r)} ${full[i]? (isSupportId(full[i])? esc(supportNameOf(full[i]))+'（支援）' : `<b>${esc(personName(full[i]))}</b>`) : '（未指派）'}`);
+    const over=b.ids.length>crewNeed();
+    const probs=driverChiefProblems(type.roles, full, preset);
+    el.innerHTML=`排進班表時：${parts.join('・')}${pl.keep? '（照排班頁放的位置）' : ''}`
+      + (over? `<br><span class="warn">人太多：駕駛、車長${crewBlocked().length? `扣掉支援的人只剩 ${crewNeed()} 個位置` : `只有 ${type.roles.length} 個位置`}</span>` : '')
+      + (probs.length? `<br><span class="warn">⚠️ ${esc(probs.map(p=>p.msg).join('；'))}</span>` : '');
+  };
+  if(crewMode){
+    const listEl=document.getElementById('ppCrew');
+    if(listEl) listEl.addEventListener('change', crewPreview);
+    type.roles.forEach((_,i)=>{ const el=document.getElementById('ppRoleNote'+i); if(el) el.addEventListener('input', crewPreview); });
+    crewPreview();
+  }
   if(type.mode==='people'){
     let groupCounter = modal.querySelectorAll('.pp-group').length;
     const wireGroup=(gi)=>{
@@ -12044,6 +12434,17 @@ function openPreplanDayEditor(key, date, onSaved){
       if(!groups.length) return null;
       return {groups};
     }
+    if(crewMode){
+      // v203：選的人照資格放進駕駛、車長（支援的人打在哪一格就佔哪一格）
+      const sel=[...modal.querySelectorAll('.pp-crew:checked')].map(cb=>cb.value);
+      const pl=crewPlace(sel);
+      const nominalIds=[...modal.querySelectorAll('.pp-crew-nom:checked')].map(cb=>cb.value).filter(id=>pl.ids.includes(id));
+      if(!pl.ids.some(Boolean) && !pl.notes.some(Boolean) && !support) return null;
+      return {personIds:pl.ids, notes:pl.notes, nominalIds, support, ...(pl.keep? {fixedRoles:true} : {}),
+        start:type.editableTime? getTimeSelectValue('ppTStart') : undefined,
+        end:type.editableTime? getTimeSelectValue('ppTEnd') : undefined,
+        restUntil:getTimeSelectValue('ppRest')};
+    }
     if(type.mode==='roles'){
       const ids=type.roles.map((_,i)=>{
         const sel=modal.querySelector(`.pp-role${i}:checked`);
@@ -12117,7 +12518,12 @@ function openPreplanDayEditor(key, date, onSaved){
       });
       if(probs.length){ showAlert([...new Set(probs)].join('\n')+'\n\n一個位置只能一個人，請改一下再存。'); return false; }
     }
-    if(type.mode==='roles'){
+    if(crewMode){
+      // v203：位置只有兩個：我們的人＋支援的人加起來不能超過
+      const sel=[...modal.querySelectorAll('.pp-crew:checked')].map(cb=>cb.value);
+      const nSup=crewBlocked().length;
+      if(sel.length+nSup>type.roles.length){ showAlert(`${type.roles.join('、')}一共 ${type.roles.length} 個位置：選了 ${sel.length} 人${nSup? `、又填了 ${nSup} 位支援的人` : ''}，太多了。請拿掉${sel.length+nSup-type.roles.length}位再存。`); return false; }
+    } else if(type.mode==='roles'){
       // 同一個位置只能一個人：選了我們的人就不能再填支援的人
       const both=type.roles.filter((_,i)=>{
         const sel=modal.querySelector(`.pp-role${i}:checked`);
@@ -13591,7 +13997,8 @@ function makeStandbySubEntry(anchor, role, cfg){
                           // someone entered by hand
     fromPreplan:true, // 從留守子項目匯入寫入的，清除範圍時可以選擇排除
     ...(cfg.support? {support:cfg.support}:{})};
-  if(isRoleMode) autoSwapDriverChief(newEntry, standbySubSpec(role));
+  // v203：駕駛／車長不分位置，照資格自動分；記了 fixedRoles（排班頁照自己的意思放的）就照記的位置
+  if(isRoleMode){ if(cfg.fixedRoles) newEntry.fixedRoles=true; else arrangeDriverChief(newEntry, standbySubSpec(role)); }
   return newEntry;
 }
 function importPreplanForDate(key, date){
@@ -13713,7 +14120,9 @@ function importPreplanForDate(key, date){
       restUntil:plan.restUntil||(preset&&preset.restUntil)||'', roles:[...type.roles], personIds:ids,
       nominalIds:plan.nominalIds||[], lockedSlots:type.roles.map(()=>false), fromPreplan:true, ...mergeSupport(plan.support),
       ...(planImportTagging? {pp:{kind:'roles'}} : {})};
-    autoSwapDriverChief(newEntry);
+    // v203：駕駛／車長不分位置，照資格自動分；預排上記了 fixedRoles（排班頁照自己的意思放的）就照記的位置
+    if(plan.fixedRoles && isDriverChiefRoles(newEntry.roles)) newEntry.fixedRoles=true;
+    else arrangeDriverChief(newEntry);
     state.misc[date].push(newEntry);
   } else if(type.mode==='dayNight'){
     const dayT = times[0]||{start:'',end:''};
@@ -18677,6 +19086,8 @@ function renderSchedule(){
   document.querySelectorAll('[data-duty-change]').forEach(b=>{
     b.onclick=()=>openDutyChangeModal(b.dataset.dutyChange);
   });
+  // v203：駕駛／車長「⇅ 對調」
+  document.querySelectorAll('[data-swap-dc]').forEach(b=>{ b.onclick=()=>swapDriverChief(currentDate, b.dataset.swapDc); });
   // v176：其他勤務卡片右上角「⋯」：清除這天這一項已排的人
   document.querySelectorAll('[data-misc-more]').forEach(b=>{
     b.onclick=()=>{
@@ -19118,7 +19529,11 @@ function renderPreplanBundleCard(entries){
     const cover=standbyCoverFor(role, date);
     if(cover.whole) sections.push(emptyRow(t, '今天由留守表排（見上面留守）'));
     else {
-      const plan=preplanFor(t.key, date);
+      const plan0=preplanFor(t.key, date);
+      // v203：「一次改時段」先記的只有時段、還沒排人的那幾天：當作還沒排
+      const timeOnly=!!plan0 && (t.mode==='people' || t.mode==='roles') && !preplanHasDay(t, date)
+        && !String(plan0.support||'').trim() && !peopleGroupsOf(plan0).some(g=>String(g.support||'').trim());
+      const plan=timeOnly? null : plan0;
       if(!plan && !cover.times.size && planDayNeeded(planDaysOfType(t), date)) planMissing=true;
       // 今天這一種沒有項目的原因：留守表接手了某幾班／輪到別的單位／由支援負責
       const parts=[];
@@ -19184,10 +19599,13 @@ function renderMiscDutyCardInner(role, entries, preset, standalone, opts){
       : ((m.personIds||[]).filter(Boolean).length
           ? m.personIds.map((pid,i)=>pid? `${esc(personName(pid))}${nominalTag(pid)}${isSupportId(pid)? '' : ` <button class="ghost small lbl-btn" data-duty-change="${pid}" title="臨時異動：這個人臨時不能來，記下來再找人遞補">⚡<span class="btn-lbl">異動</span></button>`}<button class="ghost small lbl-btn" data-find-sub-misc="${m.id}" data-find-sub-idx="${i}" title="找補位：看誰有空、可以補這一格">🔍<span class="btn-lbl">找人</span></button>`:'').filter(Boolean).join('、')
           : (supportOnlyEntry(m)? `（由支援負責）<button class="ghost small lbl-btn" data-find-sub-misc="${m.id}" data-find-sub-idx="0" title="找補位：看誰有空、可以補這一格">🔍<span class="btn-lbl">找人</span></button>` : `（未指派）<button class="ghost small lbl-btn" data-find-sub-misc="${m.id}" data-find-sub-idx="0" title="找補位：看誰有空、可以補這一格">🔍<span class="btn-lbl">找人</span></button>`));
+    // v203：駕駛／車長可以直接對調（有我們的人、沒有 🔒 保留空白的時候）
+    const canSwapDC = isDriverChiefRoles(m.roles) && (m.personIds||[]).some(id=>id && !isSupportId(id)) && !(m.lockedSlots && m.lockedSlots.some(Boolean));
     return `
       <div class="list-item" style="flex-direction:column;align-items:stretch">
         <div class="row">
           <span class="grow">${m.start&&m.end? `<b>${m.start}-${m.end}</b>　`:''}${m.shiftLabel? `<span class="tag" style="margin-right:4px">${esc(m.shiftLabel)}</span>`:''}${peopleLabel}</span>
+          ${canSwapDC? `<button class="ghost small" data-swap-dc="${m.id}" title="駕駛、車長對調" aria-label="駕駛、車長對調">⇅ 對調</button>` : ''}
           <button class="ghost small" data-edit-misc="${m.id}">${m.adhoc? '排人' : '編輯'}</button>
           ${m.adhoc? `<button class="ghost small" data-edit-adhoc="${m.id}">任務內容</button>` : ''}
           <button class="ghost small danger" data-del-misc="${m.id}">刪除</button>
