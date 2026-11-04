@@ -687,6 +687,12 @@ button.bt-cell.off{opacity:.38;cursor:default;}
 .sheet-actions>button{margin:0 !important;flex:0 0 auto;}
 .sheet-actions>button.primary{flex:1 1 140px;}
 .fullscreen-modal>.sheet-actions{background:var(--bg);bottom:calc(-24px - env(safe-area-inset-bottom));margin:12px -14px calc(-24px - env(safe-area-inset-bottom));padding:10px 14px calc(14px + env(safe-area-inset-bottom));}
+/* v205：人員篩選的階級：最上面一排整類勾，下面一類一排 */
+.pf-rank-cats>label,.pf-rank-row>label{color:var(--text);}
+.pf-rank-cats>label{font-weight:700;}
+.pf-rank-cats{padding-bottom:2px;margin-bottom:2px;border-bottom:1px dashed var(--line);}
+.pf-rank-cats,.pf-rank-row{gap:0 10px;}
+.pf-rank-cats input,.pf-rank-row input{margin:0;}
 @media (prefers-reduced-motion:reduce){*{transition:none !important;animation:none !important;}}
 </style>
 </head>
@@ -702,7 +708,7 @@ button.bt-cell.off{opacity:.38;cursor:default;}
       <span class="unit-banner-badge"><i data-ico="star"></i></span>
       <span class="unit-banner-titles">
         <span class="unit-banner-text">陸軍第八軍團 本部連</span>
-        <h1 id="pageTitle">衛哨排班系統 <span class="muted">v204</span></h1>
+        <h1 id="pageTitle">衛哨排班系統 <span class="muted">v206</span></h1>
       </span>
     </span>
     <span class="banner-side right">
@@ -2310,7 +2316,9 @@ function saveLastDate(d){
 let currentDate = loadLastDate();
 /* persists the 人員 roster's search/filter selections across re-renders
    (e.g. saving an edit shouldn't reset what you were looking at) */
-let pplFilterState = {kw:'', group:'', gender:'', license:[], medCert:[], skills:[], custom:{}};
+// v205：加了階級（ranks）、事故原因（reasons）
+function pplEmptyFilter(kw){ return {kw:kw||'', group:'', gender:'', ranks:[], reasons:[], license:[], medCert:[], skills:[], custom:{}}; }
+let pplFilterState = pplEmptyFilter('');
 
 function todayStr(){
   const d=new Date(); const p=n=>String(n).padStart(2,'0');
@@ -2772,6 +2780,8 @@ function syncDutyDefinitionToLegacy(def){
   };
   // v173：自訂欄位的資格條件（有設才寫，沒設的不多一個空欄位）
   if((def.customReqs||[]).length) fields.customReqs=def.customReqs.map(r=>({...r, values:r.values? [...r.values] : undefined}));
+  // v206：算進衛哨的6小時規則（有勾才寫）
+  if(def.rest6h) fields.rest6h=true;
   // v168：優先階級順序也收在崗位定義（以前這裡每次存都把它清掉）
   if(def.rankPriority!==undefined) fields.rankPriority = def.rankPriority? [...def.rankPriority] : null;
   let preset = state.miscPresets.find(p=>p.role===def.presetRole);
@@ -2779,7 +2789,7 @@ function syncDutyDefinitionToLegacy(def){
   if(!preset && def.__prevRole){ preset = state.miscPresets.find(p=>p.role===def.__prevRole) || null; }
   delete def.__prevRole;
   // v169：時段以崗位定義的 times 為準（沒有時段＝空的），舊的 start/end 欄位不留（不然沒時段時會跑回舊時間）
-  if(preset){ Object.assign(preset, fields); delete preset.start; delete preset.end; if(!fields.customReqs) delete preset.customReqs; }
+  if(preset){ Object.assign(preset, fields); delete preset.start; delete preset.end; if(!fields.customReqs) delete preset.customReqs; if(!fields.rest6h) delete preset.rest6h; }
   else state.miscPresets.push({...fields, fixed: def.mode==='roles'});
   if(def.linkedPreplan){
     const bi = BUILTIN_PREPLAN_TYPES.findIndex(t=>t.key===def.key);
@@ -3032,8 +3042,18 @@ function migrateDutySpecsV174(){
   state.dutySpecV=6;
   return true;
 }
+/* v206 開 App 一次：查哨算進衛哨的6小時規則（兩班間隔、每天累計都算；查哨對查哨也算）。
+   「⚙️設定 → 勤務 → 查哨」可以取消；其他勤務要算的話也是在那裡勾 */
+function migrateDutySpecsV206(){
+  if(!Array.isArray(state.dutyDefinitions) || !state.dutyDefinitions.length) return false;
+  if(!(state.dutySpecV>=6) || state.dutySpecV>=7) return false;
+  const patrol=state.dutyDefinitions.find(d=>d.key==='patrol');
+  if(patrol && patrol.rest6h===undefined) patrol.rest6h=true;
+  state.dutySpecV=7;
+  return true;
+}
 // v168：資格收進崗位定義，每次開 App 把副本（miscPresets）照崗位定義重寫一次，兩邊永遠一樣
-const __dutySpecMigrated = migrateDutySpecsV168() | migrateDutySpecsV169() | migrateDutySpecsV170() | migrateDutySpecsV171() | migrateDutySpecsV173() | migrateDutySpecsV174();
+const __dutySpecMigrated = migrateDutySpecsV168() | migrateDutySpecsV169() | migrateDutySpecsV170() | migrateDutySpecsV171() | migrateDutySpecsV173() | migrateDutySpecsV174() | migrateDutySpecsV206();
 (state.dutyDefinitions||[]).forEach(d=>syncDutyDefinitionToLegacy(d));
 
 if(!state.preplanOrder) state.preplanOrder = PREPLAN_TYPES.map(t=>t.key);
@@ -4683,7 +4703,7 @@ var RULE_CATALOG=[
   {key:'comprest',     no:4,  name:'補休時間內',                        level:'normal'},
   {key:'dutyOfficer',  no:5,  name:'今日值星不自行出勤',                 level:'normal'},
   {key:'standby',      no:6,  name:'待命勤務（整天專職不接其他任務；待命不能離營、不能同時段排同資格的勤務）', level:'serious'},
-  {key:'rest6h',       no:7,  name:'兩班間隔滿6小時、每天累計不超過6小時', level:'serious'},
+  {key:'rest6h',       no:7,  name:'兩班間隔滿6小時、每天累計不超過6小時', level:'serious', note:'算的勤務：衛哨（勾了「套用6小時規則」的類別），和「勤務」裡勾了「算進衛哨的6小時規則」的勤務（例如查哨）。每天累計照「勤務日期定義」算'},
   {key:'prep',         no:8,  name:'開班前30分鐘準備時間',               level:'serious'},
   {key:'yesterday',    no:9,  name:'昨天同一時段又排',                   level:'serious'},
   {key:'rankExcluded', no:10, name:'階級不可排（如訓練役）',              level:'serious'},
@@ -4841,11 +4861,13 @@ function personalViolations(ctx, pid){
       });
     } else if(!selfGoverned){
       // 其他勤務（日曆日）對衛哨班：照實際時間（前一天、隔天班表的班都算）
+      // v206：這個勤務算進衛哨的6小時規則（例如查哨）：跟衛哨之間由六小時規則管，不另外算準備時間（跟衛哨對衛哨一樣）
+      const selfRest6h=miscCountsRest6h(ctx.entry);
       personCatSpans(pid, date, A0, A1).forEach(c=>{
         const lbl=catSpanLabel(c, date);
         const ovl=absOverlap(A0, A1, c.s, c.e);
         if(ovl) add('overlap', `同時段已排「${lbl}」`);
-        if((!ovl || overlapIsRemind) && c.cat.enforceRest && absOverlap(A0, A1, c.s-PREP_MINUTES, c.s)) add('prep', `「${lbl}」開班前30分鐘要準備`);
+        if((!ovl || overlapIsRemind) && c.cat.enforceRest && !selfRest6h && absOverlap(A0, A1, c.s-PREP_MINUTES, c.s)) add('prep', `「${lbl}」開班前30分鐘要準備`);
         if(c.rest && absOverlap(A0, A1, c.rest[0], c.rest[1])) add('comprest', `${lbl} 下哨後補休到 ${c.sft.restUntil}`);
       });
     }
@@ -4921,6 +4943,8 @@ function personalViolations(ctx, pid){
     const rn=miscSlotName(m, ctx.idx);
     // 14 資格、15 車長需士官以上（崗位定義那一份，全系統同一套）
     slotQualificationIssues(person, preset, rn, m).forEach(q=>add(q.key, q.msg));
+    // 7 六小時規則（v206：勾了「算進衛哨的6小時規則」的勤務，例如查哨）
+    miscRest6hIssues(pid, date, m).forEach(msg=>add('rest6h', msg));
     // 4 這個勤務下班後的補休跟他其他已排的勤務衝突
     if(m.restUntil && m.end && !miscGovernedElsewhere(m, pid)){
       if(miscRestWindowConflict(pid, date, m)) add('comprest', `${m.role}後補休（到 ${m.restUntil}）的時段已排了其他勤務`);
@@ -5026,7 +5050,8 @@ function engPrepConflict(pid, date, cat, sft){
   // v176：其他勤務是日曆日，照實際時間比（班表 D 的 22:00 班，準備時間是前一天 21:30）
   const a=catShiftAbs(date, sft, date)[0];
   for(const x of personMiscSpans(pid, date, a-PREP_MINUTES, a)){
-    if(x.span && !miscWindowFree(x.m, pid) && absOverlap(a-PREP_MINUTES, a, x.span[0], x.span[1])) return true;
+    // v206：算進衛哨6小時規則的勤務（例如查哨）由六小時規則管，不算準備時間（跟衛哨對衛哨一樣）
+    if(x.span && !miscWindowFree(x.m, pid) && !miscCountsRest6h(x.m) && absOverlap(a-PREP_MINUTES, a, x.span[0], x.span[1])) return true;
   }
   const dayAssign=state.assign[date]||{};
   for(const c of state.categories){
@@ -5978,7 +6003,7 @@ function guideHTML(){
     </ol>
     <h3>每個分頁做什麼</h3>
     <ul>
-      <li><b>人員</b>：名冊和每個人的資料（階級、排組、證照、專長）。排組標題按了可以收合；最下面「名冊工具」有排組、自訂欄位、選單清單、批次設定。</li>
+      <li><b>人員</b>：名冊和每個人的資料（階級、排組、證照、專長）。右上角「篩選」可以照階級、事故原因、排組、證照找人。排組標題按了可以收合；最下面「名冊工具」有排組、自訂欄位、選單清單、批次設定。</li>
       <li><b>預排</b>：最上面「要處理」；留守、休假暨事故大表；值星、查哨、救護車這類先排一段日子的勤務。月曆下面「🕘 一次改很多天的時段」可以一次改好幾天（例如這個月的假日）。採買、救護車、消防車只要選人，誰開車、誰當車長系統會分（排班頁可以「⇅ 對調」）。</li>
       <li><b>排班</b>：每天排人（打開 App 就在這頁）。</li>
       <li><b>統計</b>：每個時段在勤人數、不在營名單、可外散宿人員、破例紀錄。</li>
@@ -6772,63 +6797,97 @@ function personEnforcedShifts(personId, date, excludeCatShift){
   return out.sort((a,b)=>a.abs_s-b.abs_s);
 }
 
+/* v206：規則7（兩班間隔滿6小時、每天累計不超過6小時）算的勤務：套用6小時規則的衛哨類別，
+   加上「⚙️勤務」裡勾了「算進衛哨的6小時規則」的勤務（例如查哨；掛名的不算）。
+   全部放在同一條時間軸上（ref 那天 00:00 為 0 的分鐘）。每天累計照勤務日（勤務日期定義）：
+   衛哨照它的班表日；其他勤務是日曆日，照開始時間落在哪一個勤務日（預設前一天 22:00～當天 22:00：
+   當天 22-24 的查哨算隔天的，跟衛哨 22-24 那班一樣）。
+   兩班間隔：跟前一個、後一個最近的比（前一天、隔天班表的也算，v177）；只看跟這一班有關的。 */
+function miscCountsRest6h(m){
+  if(!m || !m.start || !m.end) return false;
+  const p=presetForEntry(m); return !!(p && p.rest6h);
+}
+// 日曆日 X 的 t 分開始的勤務，算哪一個班表日（勤務日）
+function dutyDayOfCalendar(X, t){
+  const X0=dutyDayStartMin();
+  if(X0===0) return X;
+  if(dutyDayAnchor()==='start') return t>=X0? X : prevDateStr(X);
+  return t>=X0? nextDateStr(X) : X;
+}
+// 某人班表日 D 算規則7的勤務：[{s,e,kind,name,label,date}]（時間軸 ref）；excl＝這一格自己：{date,catId,shiftId} 或 {miscId}
+function rest6hSpans(pid, D, ref, excl){
+  const out=[];
+  const da=state.assign[D];
+  if(da) for(const cat of state.categories){
+    if(!cat.enforceRest) continue;
+    const ca=da[cat.id]; if(!ca) continue;
+    for(const sft of effectiveShifts(cat, D)){
+      if(excl && excl.date===D && excl.catId===cat.id && excl.shiftId===sft.id) continue;
+      if(!(ca[sft.id]||[]).includes(pid)) continue;
+      const [s,e]=catShiftAbs(D, sft, ref);
+      out.push({s, e, kind:'cat', name:cat.name, label:sft.label||`${sft.start}-${sft.end}`, date:D});
+    }
+  }
+  for(const X of [prevDateStr(D), D, nextDateStr(D)]){
+    for(const m of miscOf(X, pid)){
+      if((excl && excl.miscId===m.id) || (m.nominalIds||[]).includes(pid) || !miscCountsRest6h(m)) continue;
+      if(dutyDayOfCalendar(X, toMin(m.start))!==D) continue;
+      const sp=miscAbs(m, X, ref);
+      out.push({s:sp[0], e:sp[1], kind:'misc', name:m.role, label:`${m.start}-${m.end}`, date:X});
+    }
+  }
+  return out;
+}
+function rest6hLabel(x, ref){
+  if(x.kind==='misc') return `${x.date!==ref? shortDateLabel(x.date)+' ' : ''}${x.name} ${x.label}`;
+  return `${x.name} ${x.label}${x.date!==ref? `（${shortDateLabel(x.date)} 班表）` : ''}`;
+}
+// 這一格（me：{D 班表日, ref, s, e, excl}）放這個人會違反規則7的話
+function rest6hIssuesFor(pid, me){
+  const {D, ref}=me;
+  const same=rest6hSpans(pid, D, ref, me.excl);
+  const near=same.concat(rest6hSpans(pid, prevDateStr(D), ref, me.excl), rest6hSpans(pid, nextDateStr(D), ref, me.excl));
+  const h=m=>Math.round(m/60*10)/10;
+  const issues=[];
+  let before=null, after=null;
+  near.forEach(x=>{
+    if(absOverlap(me.s, me.e, x.s, x.e)) issues.push(`與「${rest6hLabel(x, ref)}」時段重疊`);
+    else if(x.e<=me.s){ if(!before || x.e>before.e) before=x; }
+    else if(!after || x.s<after.s) after=x;
+  });
+  if(before && me.s-before.e<360) issues.push(`與「${rest6hLabel(before, ref)}」間隔僅 ${h(me.s-before.e)} 小時（需滿6小時）`);
+  if(after && after.s-me.e<360) issues.push(`與「${rest6hLabel(after, ref)}」間隔僅 ${h(after.s-me.e)} 小時（需滿6小時）`);
+  const total=same.reduce((a,x)=>a+(x.e-x.s), me.e-me.s);
+  if(total>360) issues.push(`當日累計勤務 ${h(total)} 小時，超過上限6小時`);
+  return issues;
+}
 function restIssues(personId, date, catId, shift){
   // returns array of warning strings if assigning personId to this shift breaks the 6h rest / 6h per day rule
   const cat = state.categories.find(c=>c.id===catId);
-  if(!cat.enforceRest) return [];
-  const abs = absoluteShiftTimes(cat, date)[shift.id];
-  const existing = personEnforcedShifts(personId, date, {catId, shiftId:shift.id});
-  const me = {abs_s:abs.abs_s, abs_e:abs.abs_e, catName:cat.name, label: shift.label||(shift.start+'-'+shift.end)};
-  const all = [...existing, me].sort((a,b)=>a.abs_s-b.abs_s);
-  const issues=[];
-  let totalMin=0;
-  for(let i=0;i<all.length;i++){
-    totalMin += (all[i].abs_e-all[i].abs_s);
-    if(i>0){
-      const gap = all[i].abs_s - all[i-1].abs_e;
-      if(gap < 0){ issues.push(`與「${all[i-1].catName} ${all[i-1].label}」時段重疊`); }
-      else if(gap < 360){ issues.push(`與「${all[i-1].catName} ${all[i-1].label}」間隔僅 ${Math.round(gap/60*10)/10} 小時（需滿6小時）`); }
-    }
-  }
-  if(totalMin>360){ issues.push(`當日累計勤務 ${Math.round(totalMin/60*10)/10} 小時，超過上限6小時`); }
-  // v177：兩班間隔跨班表也算（班表 D 的 18-22 跟隔天班表的 22-24 是連著的）；每天累計還是照勤務日
-  crossDayRestNeighbors(personId, date, me, existing).forEach(x=>{
-    const gap = x.after? x.abs_s - me.abs_e : me.abs_s - x.abs_e;
-    const lbl = `${x.catName} ${x.label}（${shortDateLabel(x.date)} 班表）`;
-    if(gap < 0) issues.push(`與「${lbl}」時段重疊`);
-    else if(gap < 360) issues.push(`與「${lbl}」間隔僅 ${Math.round(gap/60*10)/10} 小時（需滿6小時）`);
-  });
-  return issues;
+  if(!cat || !cat.enforceRest) return [];
+  const [s,e]=catShiftAbs(date, shift, date);
+  return rest6hIssuesFor(personId, {D:date, ref:date, s, e, excl:{date, catId, shiftId:shift.id}});
 }
-/* v177：前一天、隔天班表上離這一班最近的衛哨（換到這個班表的時間軸；absoluteShiftTimes 每個班表日
-   差 1440 分）。同一個班表裡有一班夾在中間的，就照同一個班表那條算，不再另外算 */
-function crossDayRestNeighbors(personId, date, me, sameDay){
-  const out=[];
-  [[prevDateStr(date), -1440, false], [nextDateStr(date), 1440, true]].forEach(([D, shiftMin, after])=>{
-    const list=personEnforcedShifts(personId, D, null).map(x=>Object.assign({}, x, {abs_s:x.abs_s+shiftMin, abs_e:x.abs_e+shiftMin, date:D, after}));
-    if(!list.length) return;
-    const near = after? list.reduce((a,b)=>a.abs_s<=b.abs_s? a : b) : list.reduce((a,b)=>a.abs_e>=b.abs_e? a : b);
-    const between = (sameDay||[]).some(x=> after? (x.abs_s>=me.abs_e && x.abs_s<near.abs_s) : (x.abs_e<=me.abs_s && x.abs_e>near.abs_e));
-    if(!between) out.push(near);
-  });
-  return out;
+// v206：勾了「算進衛哨的6小時規則」的其他勤務（日曆日 date 的 m）
+function miscRest6hIssues(personId, date, m){
+  if(!miscCountsRest6h(m) || (m.nominalIds||[]).includes(personId)) return [];
+  const [s,e]=miscAbs(m, date, date);
+  return rest6hIssuesFor(personId, {D:dutyDayOfCalendar(date, toMin(m.start)), ref:date, s, e, excl:{miscId:m.id}});
 }
 
 /* the smallest gap this candidate would end up with, immediately before or
    after this shift, against their other enforceRest shifts today — used to
    prefer spacing people out further apart rather than always clustering
-   everyone right at the 6-hour minimum */
+   everyone right at the 6-hour minimum（v177 前一天、隔天班表的也算；v206 勾了6小時規則的勤務也算） */
 function minAdjacentGap(personId, date, cat, shift){
   if(!cat.enforceRest) return Infinity;
-  const abs=absoluteShiftTimes(cat, date)[shift.id];
-  const existing=personEnforcedShifts(personId, date, {catId:cat.id, shiftId:shift.id});
-  // v177：前一天、隔天班表上最近的那一班也算（跨班表的間隔）
-  crossDayRestNeighbors(personId, date, {abs_s:abs.abs_s, abs_e:abs.abs_e}, existing).forEach(x=>existing.push(x));
+  const [s,e]=catShiftAbs(date, shift, date);
+  const excl={date, catId:cat.id, shiftId:shift.id};
   let minGap=Infinity;
-  existing.forEach(ex=>{
-    if(ex.abs_e<=abs.abs_s) minGap=Math.min(minGap, abs.abs_s-ex.abs_e);
-    else if(abs.abs_e<=ex.abs_s) minGap=Math.min(minGap, ex.abs_s-abs.abs_e);
-  });
+  [date, prevDateStr(date), nextDateStr(date)].forEach(D=>rest6hSpans(personId, D, date, excl).forEach(x=>{
+    if(x.e<=s) minGap=Math.min(minGap, s-x.e);
+    else if(e<=x.s) minGap=Math.min(minGap, x.s-e);
+  }));
   return minGap;
 }
 
@@ -8285,7 +8344,7 @@ function patrolSettingsBlockHTML(){
   const anchorText=(a, units)=>`${minguoLabel(a.date)} ${PATROL_SHORT[a.slotIdx]}＝${esc(units[a.unitIndex]||'?')}`;
   return `<div class="card patrol-settings" style="padding:10px;margin-bottom:8px">
     <h3 style="margin-top:0">🔦 查哨設定</h3>
-    <div class="hint" style="margin-bottom:8px">每一班 2 人，同性別、每組至少 1 名士官（規則 18）。自動排的挑人順序：階級平均次數少的先 → 不同排組 → 一士一兵 → 12-14 優先有駕照的。</div>
+    <div class="hint" style="margin-bottom:8px">每一班 2 人，同性別、每組至少 1 名士官（規則 17）。自動排的挑人順序：階級平均次數少的先 → 不同排組 → 一士一兵 → 12-14 優先有駕照的。跟衛哨的 6 小時間隔：看最下面「算進衛哨的 6 小時規則」。</div>
     <h4 style="margin:6px 0 4px">各時段補休（查完哨補休到幾點，留空＝不補休）</h4>
     <div class="row wrap" style="gap:8px;margin-bottom:8px">${PATROL_CHRONO_ORDER.map(i=>`<div style="min-width:130px"><label>${PATROL_SHORT[i]}</label>${timeSelectHTML('ddePatRest'+i, (state.patrolRestDefaults||{})[i]||'', {allowEmpty:true})}</div>`).join('')}</div>
     <h4 style="margin:6px 0 4px">輪值單位（依序輪流，用「、」分開）</h4>
@@ -8970,6 +9029,9 @@ function openUnitRulesModal(opts){
         <div class="grow"><label>補休到（選填）</label>${timeSelectHTML('ddeRest', def.restUntil||'', {allowEmpty:true})}</div>
       </div>
       <div class="hint" style="margin-bottom:8px">選「--」＝沒有補休（下勤後就可以排別的勤務）。</div>`}
+      <label style="display:flex;align-items:flex-start;gap:6px;font-size:13px;margin:4px 0 10px">
+        <input type="checkbox" id="ddeRest6h" style="width:auto;margin-top:2px" ${def.rest6h?'checked':''}> <span>算進衛哨的 6 小時規則<br><span class="hint">跟衛哨、其他也有勾這個的勤務之間要隔滿 6 小時；時數也算進每天累計 6 小時（規則 7）</span></span>
+      </label>
       ${def.key!=='patrol'? `<div class="divider"></div>
       <h3>時段內能不能做別的勤務</h3>
       <div style="margin-bottom:4px">
@@ -9165,6 +9227,7 @@ function openUnitRulesModal(opts){
       { const se=document.getElementById('ddeSentry'); if(se) def.isSentry=se.checked; }
       { const aw=document.getElementById('ddeAllDayAway'); if(aw) def.isAllDayAway=aw.checked; }
       { const ne=document.getElementById('ddeNoExport'); if(ne && ne.checked!==!!def.excludeFromExport) def.excludeFromExport=ne.checked; } // v176：從排班頁搬過來
+      { const r6=document.getElementById('ddeRest6h'); if(r6 && r6.checked!==!!def.rest6h) def.rest6h=r6.checked; } // v206
       if(hasRankPriority){
         const dflt=RANK_DEFS.map(r=>r.rank);
         const rp = (rankPriorityDraft.length===dflt.length && rankPriorityDraft.every((r,i)=>r===dflt[i]))? null : [...rankPriorityDraft];
@@ -14840,7 +14903,7 @@ function purgePersonEverywhere(personId){
 function pplCustomFilter(){ return pplFilterState.custom || (pplFilterState.custom={}); }
 function pplActiveFilterCount(){
   const f=pplFilterState;
-  let n=(f.group?1:0)+(f.gender?1:0)+(f.license.length?1:0)+(f.medCert.length?1:0)+(f.skills.length?1:0);
+  let n=(f.group?1:0)+(f.gender?1:0)+((f.ranks||[]).length?1:0)+((f.reasons||[]).length?1:0)+(f.license.length?1:0)+(f.medCert.length?1:0)+(f.skills.length?1:0);
   Object.entries(pplCustomFilter()).forEach(([id,v])=>{ if(customFieldById(id) && pplCustomFilterActive(v)) n++; });
   return n;
 }
@@ -15065,8 +15128,75 @@ function copyText(text){
     if(ok) done(); else showAlert('沒辦法自動複製，請長按選取：\n'+text);
   }
 }
+/* v205：人員篩選「階級」「事故原因」
+   階級：勾的那幾個階級；「其他」＝沒填、或不是系統裡的階級。
+   事故原因：看兩種——每個人設定的長期事故（不管今天有沒有暫停），和今天登記的休假／事故
+   （休假暨事故大表、事故登載、快速登記、留守期間放假；前一天傍晚出發、早上收假那段不算，見 pplIsLeaveEdge）。
+   留守期間放假、榮譽假都算「休假」；沒寫原因的算「沒寫原因」；「沒有事故」＝沒有長期事故、今天也沒有登記。 */
+const PPL_REASON_NONE='__none', PPL_REASON_CLEAR='__clear';
+function pplReasonKey(r){
+  r=String(r||'').trim();
+  if(!r) return PPL_REASON_NONE;
+  if(r===STANDBY_LEAVE_TAG || r==='榮譽假') return '休假';
+  return r;
+}
+function pplReasonLabel(k){ return k===PPL_REASON_NONE? '沒寫原因' : k===PPL_REASON_CLEAR? '沒有事故' : k; }
+/* 今天的休假／事故：personId → 那天算數的每一筆。
+   全天的、義務役收假那天（21:00 前返營）、大表登的部分時段、事故登載的幾個小時都算；
+   休假前一天傍晚出發、收假那天早上回來、留守期間頭尾那一段不算——那天人還在營裡（跟統計的不在營名單一樣）。 */
+function pplIsLeaveEdge(u){
+  if(u.allDay || u.conscriptLast || u.partial) return false;
+  if(u.reason===STANDBY_LEAVE_TAG) return true;
+  return !!u.leaveId && isLeaveBufferEntry(u);
+}
+function pplDayIncidentMap(date){
+  const m=new Map();
+  ((state.unavail||{})[date]||[]).forEach(u=>{ if(!u || !u.personId || pplIsLeaveEdge(u)) return; if(!m.has(u.personId)) m.set(u.personId, []); m.get(u.personId).push(u); });
+  return m;
+}
+function pplReasonKeysOf(p, dayList){
+  const keys=new Set();
+  const lt=personLongTerm(p);
+  if(lt.mode!=='off') keys.add(pplReasonKey(lt.reason));
+  (dayList||[]).forEach(u=>keys.add(pplReasonKey(u.reason)));
+  return keys;
+}
+function pplRankKey(p){ return RANK_DEFS.some(r=>r.rank===p.rank)? p.rank : '__none'; }
+// 篩選中的小標籤：一整類都勾了就寫「士官」，不然一個一個寫
+function pplRankChipText(ranks){
+  const out=[];
+  ['軍官','士官','士兵'].forEach(c=>{
+    const all=RANK_DEFS.filter(r=>r.cat===c).map(r=>r.rank), sel=all.filter(r=>ranks.includes(r));
+    if(sel.length===all.length) out.push(c); else out.push(...sel);
+  });
+  if(ranks.includes('__none')) out.push('其他階級');
+  return out.join('、');
+}
+// 篩選選單上的事故原因：現在有人用的（長期事故的原因＋今天登記的），照選單清單的順序；勾著的就算沒人用了也留著（才拿得掉）
+function pplReasonChoices(date){
+  const map=pplDayIncidentMap(date), used=new Set();
+  state.personnel.filter(p=>!isDeparted(p)).forEach(p=>pplReasonKeysOf(p, map.get(p.id)).forEach(k=>used.add(k)));
+  (pplFilterState.reasons||[]).forEach(k=>{ if(k!==PPL_REASON_CLEAR) used.add(k); });
+  const order=[...(state.longtermReasonOptions||[]), ...(state.dailyReasonOptions||[]), ...(state.leaveCategories||[]).map(c=>c.name)];
+  const at=k=>{ const i=order.indexOf(k); return i<0? 1e9 : i; };
+  const named=[...used].filter(k=>k!==PPL_REASON_NONE).sort((a,b)=>at(a)-at(b) || a.localeCompare(b, 'zh-Hant'));
+  return [...named, ...(used.has(PPL_REASON_NONE)? [PPL_REASON_NONE] : []), PPL_REASON_CLEAR];
+}
+// 名冊上一列：篩選事故原因的時候，今天登記的、而且是勾的那幾種原因，寫出來（例：休假（全天）、出車（06:00–12:00））
+function pplDayIncidentText(dayList, reasons){
+  const out=[];
+  (dayList||[]).forEach(u=>{
+    if(!reasons.includes(pplReasonKey(u.reason))) return;
+    const r=u.reason===STANDBY_LEAVE_TAG? '休假' : (u.reason||'沒寫原因');
+    const t=`${r}（${u.allDay? '全天' : `${u.start||''}–${u.end||''}`}）${u.note? `（${u.note}）` : ''}`;
+    if(!out.includes(t)) out.push(t);
+  });
+  return out.join('、');
+}
 function pplFilterFn(){
   const {kw, group:gf, gender:genf, license:lf, medCert:mf, skills:sf}=pplFilterState;
+  const rkf=pplFilterState.ranks||[], rsf=pplFilterState.reasons||[];
+  const dayMap=rsf.length? pplDayIncidentMap(todayStr()) : null;
   const cf=Object.entries(pplCustomFilter()).map(([id,want])=>({f:customFieldById(id), want})).filter(x=>x.f && pplCustomFilterActive(x.want));
   return p=>{
     if(isDeparted(p)) return false;
@@ -15075,6 +15205,11 @@ function pplFilterFn(){
     if(gf && gf!=='__none' && p.group!==gf) return false;
     if(genf==='__none' && p.gender) return false;
     if(genf && genf!=='__none' && p.gender!==genf) return false;
+    if(rkf.length && !rkf.includes(pplRankKey(p))) return false;
+    if(rsf.length){
+      const ks=pplReasonKeysOf(p, dayMap.get(p.id));
+      if(!rsf.some(k=>k===PPL_REASON_CLEAR? !ks.size : ks.has(k))) return false;
+    }
     if(lf.length){
       const matchLicense = lf.includes('__none')? !p.license : false;
       if(!matchLicense && !lf.includes(p.license)) return false;
@@ -15135,16 +15270,17 @@ function renderPeopleGroups(groups, filterFn, opts){
       const head=`<button type="button" class="group-label ppl-grp-head" data-ppl-grp="${esc(g)}" aria-expanded="${!folded}"><span class="ppl-grp-chev" aria-hidden="true">${ico('chevD')}</span>${name}<span class="muted" style="font-weight:600">　${members.length} 人</span>${folded? '<span class="ppl-grp-more">按一下展開</span>' : ''}</button>`;
       if(folded) return `<div class="ppl-grp folded" data-ppl-grp-box="${esc(g)}">${head}</div>`;
       return `<div class="ppl-grp" data-ppl-grp-box="${esc(g)}">${head}
-      <div class="group">${pplGroupRowsHTML(members, kw, autoOpen)}</div></div>`;
+      <div class="group">${pplGroupRowsHTML(members, kw, autoOpen, opts.day)}</div></div>`;
     }
     return `<div class="group-label">${name}<span class="muted" style="font-weight:600">　${members.length} 人</span></div>
-      <div class="group">${pplGroupRowsHTML(members, kw, autoOpen)}</div>`;
+      <div class="group">${pplGroupRowsHTML(members, kw, autoOpen, opts.day)}</div>`;
   }).join('');
 }
-function pplGroupRowsHTML(members, kw, autoOpen){
+function pplGroupRowsHTML(members, kw, autoOpen, day){
   return members.map(p=>{
         const hits=kw? (pplSearchMatch(p, kw)||[]) : [];
         const open=pplCardOpen[p.id]!==undefined? pplCardOpen[p.id] : autoOpen;
+        const dayText=day? pplDayIncidentText(day.map.get(p.id), day.reasons) : ''; // v205：篩選事故原因：今天登記的那一筆
         return `
         <div class="cell ppl-row${open?' open':''}">
           <button type="button" class="ppl-open" data-edit-person="${p.id}">
@@ -15152,6 +15288,7 @@ function pplGroupRowsHTML(members, kw, autoOpen){
             <span class="cell-body">
               <span class="cell-title">${esc(p.name)} <span class="tag rank-${rankCategory(p.rank)}">${esc(p.rank)}</span></span>
               ${hits.length? `<span class="cell-sub hit">符合：${hits.map(h=>`${esc(h.label)} ${esc(h.value)}`).join('・')}</span>` : ''}
+              ${dayText? `<span class="cell-sub hit">今天：${esc(dayText)}</span>` : ''}
               ${open? '' : personRowSubHTML(p)}
             </span>
           </button>
@@ -15177,6 +15314,8 @@ function pplFilterChipsHTML(){
   const opt=(arr)=>arr.map(v=>v==='__none'?'未登記':v).join('、');
   if(f.group) chips.push(['group', f.group==='__none'?'未分組':f.group]);
   if(f.gender) chips.push(['gender', f.gender==='__none'?'性別未填':f.gender]);
+  if((f.ranks||[]).length) chips.push(['ranks', '階級：'+pplRankChipText(f.ranks)]);
+  if((f.reasons||[]).length) chips.push(['reasons', '事故：'+f.reasons.map(pplReasonLabel).join('、')]);
   if(f.license.length) chips.push(['license', '駕照：'+opt(f.license)]);
   if(f.medCert.length) chips.push(['medCert', '救護：'+opt(f.medCert)]);
   if(f.skills.length) chips.push(['skills', '專長：'+opt(f.skills)]);
@@ -15202,7 +15341,9 @@ function refreshPeopleList(){
   const shown=active.filter(fn);
   // 有搜尋、找到 3 人以內：直接展開資料卡
   const kw=(pplFilterState.kw||'').trim();
-  area.innerHTML = renderPeopleGroups(pplGroupsInUse(), fn, {kw, autoOpen: !!kw && shown.length<=3, foldable:true}) || (active.length? `<div class="empty">找不到符合的人員${kw? `<div class="hint" style="margin-top:6px">可以找名字、電話、備考、專長、自訂欄位；日期可以打「10月生日」「108年入伍」</div>` : ''}</div>` : `<div class="empty">還沒有人員，按右上角＋新增</div>`);
+  const rsf=pplFilterState.reasons||[];
+  const day=rsf.length? {map:pplDayIncidentMap(todayStr()), reasons:rsf} : null;
+  area.innerHTML = renderPeopleGroups(pplGroupsInUse(), fn, {kw, autoOpen: !!kw && shown.length<=3, foldable:true, day}) || (active.length? `<div class="empty">找不到符合的人員${kw? `<div class="hint" style="margin-top:6px">可以找名字、電話、備考、專長、自訂欄位；日期可以打「10月生日」「108年入伍」</div>` : ''}</div>` : `<div class="empty">還沒有人員，按右上角＋新增</div>`);
   const sum=document.getElementById('pplSummary');
   if(sum) sum.innerHTML = personListSummaryHTML(shown, active);
   const chipsWrap=document.getElementById('pplChipsWrap');
@@ -15248,7 +15389,7 @@ function wirePeopleListButtons(){
     };
   });
   const clr=document.getElementById('pplClearFilter');
-  if(clr) clr.onclick=()=>{ pplFilterState={kw:pplFilterState.kw, group:'', gender:'', license:[], medCert:[], skills:[], custom:{}}; refreshPeopleList(); };
+  if(clr) clr.onclick=()=>{ pplFilterState=pplEmptyFilter(pplFilterState.kw); refreshPeopleList(); };
 }
 // 刪除一個人（個人頁、已離退人員都用這個）
 function deletePersonFlow(id, onDone){
@@ -15341,6 +15482,17 @@ function openPeopleFilterSheet(){
     if(fl.type==='date') return head+`<div class="row wrap" style="gap:6px;align-items:center"><input type="date" class="pf-cf-from" data-cf="${esc(fl.id)}" value="${v&&v.from?esc(v.from):''}" style="flex:1 1 9.5em;width:auto"><span class="muted">～</span><input type="date" class="pf-cf-to" data-cf="${esc(fl.id)}" value="${v&&v.to?esc(v.to):''}" style="flex:1 1 9.5em;width:auto"></div>`; // v196：窄的手機（320 寬）兩個日期放不下就換行，不擠出畫面
     return head+`<input type="text" class="pf-cf-text" data-cf="${esc(fl.id)}" placeholder="包含的字" value="${typeof v==='string'?esc(v):''}">`;
   }).join('');
+  // v205：階級——最上面一排整類勾（軍官／士官／士兵），下面一類一排
+  const rankSel=f.ranks||[];
+  const otherRank=rankSel.includes('__none') || state.personnel.some(p=>!isDeparted(p) && pplRankKey(p)==='__none');
+  const cats=['軍官','士官','士兵'];
+  const rankHTML=`<div class="row wrap ce-ranks pf-rank-cats">${cats.map(c=>`<label><input type="checkbox" class="ppl-rankcat-cb" value="${c}">全部${c}</label>`).join('')}</div>
+    ${cats.map(c=>`<div class="row wrap ce-ranks pf-rank-row">${RANK_DEFS.filter(r=>r.cat===c).map(r=>`<label><input type="checkbox" class="ppl-rank-cb" data-cat="${c}" value="${r.rank}" ${rankSel.includes(r.rank)?'checked':''}>${r.rank}</label>`).join('')}</div>`).join('')}
+    ${otherRank? `<div class="row wrap ce-ranks pf-rank-row"><label><input type="checkbox" class="ppl-rank-cb" value="__none" ${rankSel.includes('__none')?'checked':''}>其他階級</label></div>` : ''}`;
+  // v205：事故原因——長期事故＋今天登記的休假／事故，有人用的才列
+  const today=todayStr(), reasonSel=f.reasons||[];
+  const reasonHTML=`<div class="row wrap" style="gap:10px">${pplReasonChoices(today).map(k=>`
+      <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text)"><input type="checkbox" class="ppl-reason-cb" value="${esc(k)}" style="width:auto" ${reasonSel.includes(k)?'checked':''}> ${esc(pplReasonLabel(k))}</label>`).join('')}</div>`;
   const modal=openPeopleSheet('篩選', `
     <div class="hint" id="pfCount" style="margin:-2px 0 10px"></div>
     <div class="form-section">
@@ -15362,13 +15514,15 @@ function openPeopleFilterSheet(){
         </div>
       </div>
     </div>
+    <div class="form-section" id="pfRankSec"><h3>階級</h3>${rankHTML}<div style="height:8px"></div></div>
+    <div class="form-section" id="pfReasonSec"><h3>事故原因（勾了的其中一種就算）</h3><div class="hint" style="margin:-4px 0 6px">看長期事故，和今天（${shortDateLabel(today)}）登記的休假、事故</div>${reasonHTML}<div style="height:8px"></div></div>
     <div class="form-section"><h3>駕照（勾了的其中一種就算）</h3>${cbRow('ppl-license-cb', ['小型車','大型車','大客車'], f.license, '未登記駕照')}<div style="height:8px"></div></div>
     <div class="form-section"><h3>救護證照</h3>${cbRow('ppl-medcert-cb', [...new Set([...medCertOptionsList(), ...state.personnel.map(p=>p.medCert).filter(Boolean)])], f.medCert, '未登記救護證照')}<div style="height:8px"></div></div>
     <div class="form-section"><h3>特殊專長</h3>${cbRow('ppl-skill-cb', state.skillOptions, f.skills, '未登記專長')}<div style="height:8px"></div></div>
     ${customHTML? `<div class="form-section"><h3>自訂欄位</h3>${customHTML}<div style="height:8px"></div></div>` : ''}
-    <div class="row" style="gap:8px">
-      <button class="ghost" id="pfReset" style="flex:1">清除篩選</button>
-      <button class="primary" id="pfDone" style="flex:1">看結果</button>
+    <div class="sheet-actions">
+      <button class="ghost" id="pfReset" style="flex:1 1 0">清除篩選</button>
+      <button class="primary" id="pfDone" style="flex:1 1 0">看結果</button>
     </div>
   `);
   const read=()=>{
@@ -15380,21 +15534,35 @@ function openPeopleFilterSheet(){
     modal.querySelectorAll('.pf-cf-text').forEach(i=>{ const v=i.value.trim(); if(v) custom[i.dataset.cf]=v; });
     pplFilterState={kw:pplFilterState.kw,
       group:modal.querySelector('#pplGroupFilter').value, gender:modal.querySelector('#pplGenderFilter').value,
+      ranks:[...modal.querySelectorAll('.ppl-rank-cb:checked')].map(c=>c.value),
+      reasons:[...modal.querySelectorAll('.ppl-reason-cb:checked')].map(c=>c.value),
       license:[...modal.querySelectorAll('.ppl-license-cb:checked')].map(c=>c.value),
       medCert:[...modal.querySelectorAll('.ppl-medcert-cb:checked')].map(c=>c.value),
       skills:[...modal.querySelectorAll('.ppl-skill-cb:checked')].map(c=>c.value), custom};
     refreshPeopleList();
-    const active=state.personnel.filter(p=>!isDeparted(p));
-    modal.querySelector('#pfCount').textContent=`符合的有 ${active.filter(pplFilterFn()).length} 人（共 ${active.length} 人）`;
+    const active=state.personnel.filter(p=>!isDeparted(p)), n=active.filter(pplFilterFn()).length;
+    modal.querySelector('#pfCount').textContent=`符合的有 ${n} 人（共 ${active.length} 人）`;
+    modal.querySelector('#pfDone').textContent=`看結果（${n} 人）`; // v205：最下面的按鈕也看得到幾個人
   };
+  // 「全部士官」那排：一整類都勾了就打勾，勾了一部分就顯示一槓
+  const syncRankCats=()=>modal.querySelectorAll('.ppl-rankcat-cb').forEach(cb=>{
+    const rs=[...modal.querySelectorAll(`.ppl-rank-cb[data-cat="${cb.value}"]`)], n=rs.filter(x=>x.checked).length;
+    cb.checked=n>0 && n===rs.length; cb.indeterminate=n>0 && n<rs.length;
+  });
+  syncRankCats();
   read();
-  modal.addEventListener('change', read);
+  modal.addEventListener('change', e=>{
+    if(e.target.matches('.ppl-rankcat-cb')) modal.querySelectorAll(`.ppl-rank-cb[data-cat="${e.target.value}"]`).forEach(x=>x.checked=e.target.checked);
+    syncRankCats();
+    read();
+  });
   modal.addEventListener('input', e=>{ if(e.target.matches('input[type=text],input[type=number]')) read(); });
   modal.querySelector('#pfReset').onclick=()=>{
     modal.querySelectorAll('select').forEach(s=>s.value='');
     modal.querySelectorAll('input[type=checkbox]').forEach(c=>c.checked=false);
     modal.querySelectorAll('input[type=number],input[type=date],input.pf-cf-text').forEach(i=>i.value='');
     modal.querySelectorAll('input.pf-cf[value=""]').forEach(r=>r.checked=true);
+    syncRankCats();
     read();
   };
   modal.querySelector('#pfDone').onclick=()=>modal.remove();
