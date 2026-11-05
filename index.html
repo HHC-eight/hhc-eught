@@ -11,6 +11,9 @@
 <title>衛哨排班</title>
 <meta name="theme-color" content="#1C2718" id="themeColorMeta">
 <script id="themeInit">try{if(localStorage.getItem('drs_theme_v1')==='night'){document.documentElement.dataset.theme='night';var tcm=document.getElementById('themeColorMeta');if(tcm)tcm.setAttribute('content','#090C08');}}catch(e){}</script>
+<!-- v207：瀏覽器太舊（例如 IE、舊的 Edge）看不懂 App 的程式，以前畫面一片空白、按了沒反應；改成直接寫要換瀏覽器。
+     這一段只用最舊的寫法，舊瀏覽器也看得懂；只測 App 本來就有用到的寫法，新的瀏覽器不會跳 -->
+<script id="oldBrowserCheck">(function(){var old=false;try{new Function('"use strict";let a={b:1};const c={...a};const [d]=[1];const f=async()=>{await 0;};return `${a?.b??d}`+c.b;');}catch(e){old=(typeof SyntaxError!=='undefined'&&e instanceof SyntaxError);}if(!old)return;window.__oldBrowser=true;var show=function(){try{document.title='衛哨排班：瀏覽器太舊';document.body.innerHTML='<div style="max-width:560px;margin:40px auto;padding:24px;font-family:sans-serif;font-size:20px;line-height:1.8;color:#1C2718;background:#fff;border:2px solid #9a5b13;border-radius:12px"><b>這個瀏覽器太舊，衛哨排班系統打不開。</b><br><br>請改用新版的 Edge 或 Chrome 打開這個檔案：<br>在檔案上按右鍵 →「開啟檔案」→ 選 Microsoft Edge 或 Google Chrome。</div>';document.body.style.background='#F3F1EA';document.documentElement.style.background='#F3F1EA';}catch(e){}};if(document.addEventListener){document.addEventListener('DOMContentLoaded',show);}else{window.onload=show;}})();</script>
 <style>
 /* ================================================================
    「勤務板」設計系統（v159 全面改版）
@@ -693,6 +696,13 @@ button.bt-cell.off{opacity:.38;cursor:default;}
 .pf-rank-cats{padding-bottom:2px;margin-bottom:2px;border-bottom:1px dashed var(--line);}
 .pf-rank-cats,.pf-rank-row{gap:0 10px;}
 .pf-rank-cats input,.pf-rank-row input{margin:0;}
+/* v207：電腦（寬螢幕）：跳出來的視窗不要拉滿整個螢幕寬，跟主畫面一樣在中間（手機的寬度用不到這段） */
+@media (min-width:820px){
+  .sheet-inner{max-width:760px;margin-left:auto;margin-right:auto;}
+  .fullscreen-modal{padding-left:max(14px, calc(50% - 380px));padding-right:max(14px, calc(50% - 380px));}
+}
+/* v207：電腦用滑鼠拖⠿排順序：拖的時候游標是「抓著」、不會選到字 */
+html.drag-grabbing,html.drag-grabbing *{cursor:grabbing !important;-webkit-user-select:none !important;user-select:none !important;}
 @media (prefers-reduced-motion:reduce){*{transition:none !important;animation:none !important;}}
 </style>
 </head>
@@ -14662,6 +14672,15 @@ function openClearRangeModal(){
 const LAST_EXPORT_LS_KEY='drs_last_export_v1';
 function markExported(){ try{ localStorage.setItem(LAST_EXPORT_LS_KEY, todayStr()); }catch(e){} }
 function lastExportDate(){ try{ return localStorage.getItem(LAST_EXPORT_LS_KEY)||''; }catch(e){ return ''; } }
+/* v207：是不是手機、平板（不是就當電腦）。iPad 的「桌面版網站」會說自己是 Mac：看有沒有觸控 */
+function isPhoneOrTablet(){
+  try{
+    const ua=navigator.userAgent||'';
+    if(/iPhone|iPad|iPod|Android|Mobile/i.test(ua)) return true;
+    if(/Macintosh/.test(ua) && (navigator.maxTouchPoints||0)>1) return true;
+  }catch(e){}
+  return false;
+}
 function openExportModal(){
   // v200：不加縮排（內容一樣、可以照樣匯入；用了半年後從約 520 萬字變成約 290 萬字，複製、貼上快很多）
   const dataStr = JSON.stringify(state);
@@ -14677,14 +14696,16 @@ function openExportModal(){
      個id，在排班頁開這個視窗時document.getElementById抓到的是那顆按鈕而不
      是文字方塊，「複製」的備用路徑因此一定失敗；改成不會撞名的id。 */
   const used = storageUsage();
+  const onComputer = !isPhoneOrTablet(); // v207：電腦直接下載檔案（不叫出電腦的「分享」視窗）
   modal.innerHTML=`
     <div class="sheet-inner">
       <div class="section-title"><h2 style="margin:0">匯出備份</h2><button class="ghost small" id="closeExport">關閉</button></div>
       <div class="row wrap" style="margin-bottom:8px">
-        <button class="primary grow" id="shareExportBtn">📤 分享／儲存檔案</button>
+        <button class="primary grow" id="shareExportBtn">${onComputer? '💾 下載備份檔' : '📤 分享／儲存檔案'}</button>
         <button class="ghost grow" id="copyExportBtn">📋 複製全部文字</button>
       </div>
       <div class="hint no-mh">這個網頁在手機上已用約 ${Math.max(1,Math.round(used.total/10000))} 萬字（主資料約${Math.max(1,Math.round(used.main/10000))}萬${used.checkpoints? `、存檔點約${Math.max(1,Math.round(used.checkpoints/10000))}萬`:''}）${storageSaveFailed? '。⚠️ 手機儲存空間已滿，最近的修改還沒存進手機，請先把這份備份存好':''}。</div>
+      ${onComputer? '<div class="hint no-mh">按「下載備份檔」通常會存到電腦的「下載」資料夾。</div>' : ''}
       <div class="hint">複製的文字請貼到「備忘錄」保存（通訊軟體可能有字數限制，太長會被截斷），之後在「匯入備份 → 貼上備份文字」貼回來就能還原。若上面按鈕在你的瀏覽器沒有反應，按下面「顯示全部文字」，再全選、複製。</div>
       <button class="ghost small" id="showExportTextBtn" style="margin-top:6px">📄 顯示全部文字（備用方式）</button>
       <textarea id="exportBackupText" readonly style="display:none;min-height:220px;font-family:monospace;font-size:11px;margin-top:8px;white-space:pre"></textarea>
@@ -14699,7 +14720,7 @@ function openExportModal(){
   };
   document.getElementById('showExportTextBtn').onclick=()=>{ revealText(); try{ ta.focus(); ta.select(); }catch(e){} };
   document.getElementById('shareExportBtn').onclick=async()=>{
-    try{
+    if(!onComputer) try{
       if(navigator.canShare && window.File){
         const file=new File([dataStr], fileName, {type:'application/json'});
         if(navigator.canShare({files:[file]})){
@@ -16398,6 +16419,7 @@ function importBackupText(text){
         migrateDutySpecsV171();
         migrateDutySpecsV173();
         migrateDutySpecsV174();
+        migrateDutySpecsV206(); // v207：v206 以前的備份，查哨匯入後馬上算進衛哨的6小時規則（以前要重開 App 才算）
         dropNoSentryV182();
         migrateRankRangeV185();
         ensureV173Fields();
@@ -16429,15 +16451,16 @@ function openImportChooser(){
   const old=document.getElementById('importChooser'); if(old) old.remove();
   const modal=document.createElement('div');
   modal.className='sheet-modal'; modal.id='importChooser'; modal.style.zIndex=String(overlayZAbove(150));
+  const pasteHow = isPhoneOrTablet()? '長按 → 貼上' : '按右鍵 → 貼上'; // v207：電腦沒有「長按」
   modal.innerHTML=`<div class="sheet-inner">
     <div class="section-title"><h2 style="margin:0">匯入備份</h2><button class="ghost small" id="impClose" data-back>關閉</button></div>
     <div class="hint" style="margin-bottom:10px">匯入會用備份換掉這支手機上的全部資料。</div>
     <button type="button" class="primary" id="impFileBtn" style="width:100%;margin-bottom:8px">📁 選備份檔</button>
     <button type="button" class="ghost" id="impPasteBtn" style="width:100%">📋 貼上備份文字</button>
     <div id="impPasteBox" style="display:none;margin-top:12px">
-      <div class="hint" style="margin-bottom:8px">貼上「匯出備份 → 複製全部文字」複製的內容：按「從剪貼簿貼上」，或在下面的框裡長按 → 貼上，再按「匯入」。</div>
+      <div class="hint" style="margin-bottom:8px">貼上「匯出備份 → 複製全部文字」複製的內容：按「從剪貼簿貼上」，或在下面的框裡${pasteHow}，再按「匯入」。</div>
       <button type="button" class="ghost small" id="impClipBtn" style="margin-bottom:8px">📋 從剪貼簿貼上</button>
-      <textarea id="impText" rows="5" placeholder="在這裡長按 → 貼上" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" style="font-family:monospace;font-size:11px"></textarea>
+      <textarea id="impText" rows="5" placeholder="在這裡${pasteHow}" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" style="font-family:monospace;font-size:11px"></textarea>
       <div class="hint" id="impInfo"></div>
       <button type="button" class="primary" id="impGo" style="width:100%;margin-top:8px">匯入</button>
     </div>
@@ -16451,7 +16474,7 @@ function openImportChooser(){
   const showInfo=()=>{ const n=pasted.length; info.textContent=n? `已貼上約 ${n>=10000? Math.round(n/10000)+' 萬' : n} 字` : ''; };
   const take=t=>{
     pasted=String(t==null? '' : t);
-    if(pasted.length>BIG){ ta.value=''; ta.placeholder='已貼上（內容太長，不顯示）。要重貼的話，在這裡長按 → 貼上'; }
+    if(pasted.length>BIG){ ta.value=''; ta.placeholder=`已貼上（內容太長，不顯示）。要重貼的話，在這裡${pasteHow}`; }
     showInfo();
   };
   modal.querySelector('#impClose').onclick=()=>modal.remove();
@@ -16470,7 +16493,7 @@ function openImportChooser(){
       const txt=await navigator.clipboard.readText();
       if(!txt){ showAlert('剪貼簿是空的。請先到備忘錄（或你存的地方）把備份文字全部複製起來。'); return; }
       if(txt.length>BIG) take(txt); else { ta.value=txt; take(txt); }
-    }catch(err){ showAlert('沒辦法直接讀剪貼簿。請在框裡長按 →「貼上」。'); }
+    }catch(err){ showAlert(`沒辦法直接讀剪貼簿。請在框裡${pasteHow}。`); }
   };
   modal.querySelector('#impGo').onclick=()=>{ if(importBackupText(pasted || ta.value)) modal.remove(); };
   return modal;
@@ -18158,22 +18181,23 @@ function wireDragReorder(containerId, arr, onReorder){
     if(!handle) return;
     handle.style.touchAction='none';
     let startY=0, dragging=false, currentSlot=originalIdx;
-    handle.addEventListener('touchstart', (e)=>{
+    const begin = (y)=>{
       measure();
       dragging=true;
-      startY = e.touches[0].clientY;
+      startY = y;
       currentSlot = originalIdx;
       row.style.transition='none';
       row.style.zIndex='5';
       row.style.position='relative';
       row.style.boxShadow='0 4px 10px rgba(0,0,0,.5)';
       rows.forEach(r=>{ if(r!==row) r.style.transition='transform .15s ease'; });
+    };
+    handle.addEventListener('touchstart', (e)=>{
+      begin(e.touches[0].clientY);
       e.preventDefault();
     }, {passive:false});
-    handle.addEventListener('touchmove', (e)=>{
-      if(!dragging) return;
-      e.preventDefault();
-      const deltaY = e.touches[0].clientY - startY;
+    const moveTo = (y)=>{
+      const deltaY = y - startY;
       row.style.transform = `translateY(${deltaY}px)`;
       const draggedCenter = tops[originalIdx] + heights[originalIdx]/2 + deltaY;
       let target = 0;
@@ -18191,18 +18215,48 @@ function wireDragReorder(containerId, arr, onReorder){
         });
         currentSlot = target;
       }
+    };
+    handle.addEventListener('touchmove', (e)=>{
+      if(!dragging) return;
+      e.preventDefault();
+      moveTo(e.touches[0].clientY);
     }, {passive:false});
     const finish = ()=>{
       if(!dragging) return;
       dragging=false;
-      const [item] = arr.splice(originalIdx, 1);
-      arr.splice(currentSlot, 0, item);
       row.style.transform=''; row.style.zIndex=''; row.style.position=''; row.style.boxShadow='';
       rows.forEach(r=>{ r.style.transform=''; r.style.transition=''; });
+      // v207：放回原來的位置（只按一下⠿、沒拖到別格）＝什麼都沒改，不存、不重畫
+      //   （以前也會當成改過，例如類別的「優先順序」沒改也變成自訂）
+      if(currentSlot===originalIdx) return;
+      const [item] = arr.splice(originalIdx, 1);
+      arr.splice(currentSlot, 0, item);
       onReorder();
     };
     handle.addEventListener('touchend', finish);
     handle.addEventListener('touchcancel', finish);
+    /* v207：電腦用滑鼠也可以拖（以前只有手指可以）。手指按下去的時候已經擋掉（preventDefault），
+       手機不會再多一個滑鼠的「按下」，所以手機照舊 */
+    handle.addEventListener('mousedown', (e)=>{
+      if(e.button!==0 || dragging) return;
+      e.preventDefault(); // 拖的時候不要選到字
+      begin(e.clientY);
+      let moved=false;
+      const onMove = (ev)=>{ if(Math.abs(ev.clientY-startY)>3) moved=true; moveTo(ev.clientY); };
+      const onUp = ()=>{
+        window.removeEventListener('mousemove', onMove, true);
+        window.removeEventListener('mouseup', onUp, true);
+        window.removeEventListener('blur', onUp);
+        document.documentElement.classList.remove('drag-grabbing');
+        // 真的拖過：放開時接著來的「點一下」不算（不然放在別的地方，例如彈窗外面，會把彈窗關掉）
+        if(moved){ const stop=ev=>{ ev.stopPropagation(); ev.preventDefault(); }; window.addEventListener('click', stop, true); setTimeout(()=>window.removeEventListener('click', stop, true), 0); }
+        finish();
+      };
+      window.addEventListener('mousemove', onMove, true);
+      window.addEventListener('mouseup', onUp, true);
+      window.addEventListener('blur', onUp);
+      document.documentElement.classList.add('drag-grabbing');
+    });
   });
 }
 /* innerHtml也可以傳「函式」：收合著的時候根本不去算裡面的內容。
